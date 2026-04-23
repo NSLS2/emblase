@@ -66,10 +66,12 @@ def _build_sbatch_script(
 #SBATCH --time={time_limit}
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --output={working_dir}/slurm-%j.out
-#SBATCH --error={working_dir}/slurm-%j.out
+#SBATCH --output={working_dir}/job_%j/inference.log
+#SBATCH --error={working_dir}/job_%j/inference.log
+#SBATCH --create-dirs
 
 set -euo pipefail
+set -x
 
 JOB_DIR={working_dir}/job_${{SLURM_JOB_ID}}
 export JOB_DIR

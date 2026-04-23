@@ -54,7 +54,9 @@ def test_build_sbatch_script_structure():
     assert script.startswith("#!/bin/bash")
     assert "#SBATCH --job-name=emblase-vae" in script
     assert "#SBATCH --time=0-00:10:00" in script
-    assert "#SBATCH --output=/jobs/slurm-%j.out" in script
+    assert "#SBATCH --output=/jobs/job_%j/inference.log" in script
+    assert "#SBATCH --error=/jobs/job_%j/inference.log" in script
+    assert "#SBATCH --create-dirs" in script
     assert "job_$" in script  # $SLURM_JOB_ID used for dir name
     assert "AABBCC==" in script
     assert "EMBLASE_INFERENCE_EOF" in script
