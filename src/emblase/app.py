@@ -1,18 +1,17 @@
-"""MLEX Latent Space Explorer — FastAPI application."""
+"""Emblase — EMBeddings and LAtent Space Explorer — FastAPI application."""
 
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from typing import Any
 
 import numpy as np
 from fastapi import FastAPI, HTTPException
 
-from .compute.base import ComputeBackend, JobStatus
+from .compute.base import ComputeBackend
 from .compute.local import LocalBackend
 from .compute.orion import OrionBackend
 from .config import settings
-from .schemas import EvaluateRequest, EvaluateResponse, JobStatus as JSEnum
+from .schemas import EvaluateRequest, EvaluateResponse
 
 
 def _create_backend() -> ComputeBackend:
@@ -30,8 +29,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="MLEX Latent Space Explorer",
-    description="Dimensionality reduction service for synchrotron images",
+    title="Emblase",
+    description="EMBeddings and LAtent Space Explorer — Dimensionality reduction service for synchrotron images",
     version="0.1.0",
     lifespan=lifespan,
 )
@@ -65,7 +64,7 @@ async def evaluate(req: EvaluateRequest):
     result = await backend.result(job_id)
     return EvaluateResponse(
         job_id=job_id,
-        status=JSEnum(result.status.value),
+        status=result.status,
         latent_vectors=result.latent_vectors.tolist()
         if result.latent_vectors is not None
         else None,
@@ -83,7 +82,7 @@ async def get_job(job_id: str):
 
     return EvaluateResponse(
         job_id=job_id,
-        status=JSEnum(result.status.value),
+        status=result.status,
         latent_vectors=result.latent_vectors.tolist()
         if result.latent_vectors is not None
         else None,

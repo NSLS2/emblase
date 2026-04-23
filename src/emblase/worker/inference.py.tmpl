@@ -1,0 +1,70 @@
+"""Inference script template — runs on the compute node.
+
+Placeholders (filled by OrionBackend):
+    {{models_dir}}  — path to models directory on the compute node
+    {{job_dir}}     — path to job working directory (contains input.npy)
+    {{model_name}}  — "vae" or "vit"
+    {{latent_dim}}  — integer latent dimension
+    {{image_size}}  — tuple like (512, 512)
+"""
+
+import os
+import sys
+
+import numpy as np
+import torch
+
+models_dir = "{models_dir}"
+job_dir = "{job_dir}"
+model_name = "{model_name}"
+latent_dim = {latent_dim}
+image_size = {image_size}
+
+# --- setup ---
+sys.path.insert(0, models_dir)
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Device: {{device}}")
+
+# --- load input ---
+input_path = os.path.join(job_dir, "input.npy")
+images = np.load(input_path)
+if images.ndim == 3:
+    images = images[:, np.newaxis, :, :]
+tensor = torch.from_numpy(images).float().to(device)
+print(f"Input: {{tensor.shape}}")
+
+# --- load model ---
+if model_name == "vae":
+    from vae.vae import ConvVAE
+
+    model = ConvVAE(latent_dim=latent_dim, image_size=image_size).to(device)
+    weights_path = os.path.join(models_dir, "vae", "vae_model_512_weights.npz")
+elif model_name == "vit":
+    from vit.vit import Autoencoder
+
+    model = Autoencoder(latent_dim=latent_dim).to(device)
+    weights_path = os.path.join(models_dir, "vit", "vit_model_weights.npz")
+else:
+    raise ValueError(f"Unknown model: {{model_name}}")
+
+if os.path.exists(weights_path):
+    data = np.load(weights_path, allow_pickle=True)
+    state_dict = {{k: torch.from_numpy(data[k]) for k in data.files}}
+    model.load_state_dict(state_dict, strict=False)
+    print(f"Weights loaded from {{weights_path}}")
+
+model.eval()
+
+# --- encode ---
+with torch.no_grad():
+    if model_name == "vae":
+        mu, _logvar = model.encode(tensor)
+        latent = mu.cpu().numpy()
+    elif model_name == "vit":
+        latent, _skip = model.encoder(tensor)
+        latent = latent.cpu().numpy()
+
+# --- save output ---
+output_path = os.path.join(job_dir, "output.npy")
+np.save(output_path, latent)
+print(f"Output: {{latent.shape}} -> {{output_path}}")
