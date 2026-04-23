@@ -51,18 +51,14 @@ async def evaluate(req: EvaluateRequest):
     else:
         raise HTTPException(400, "Provide either `images` or `dummy_images`")
 
-    submit_kwargs: dict = dict(
+    job_id = await backend.submit(
         model_name=req.model.value,
         image_data=images,
         image_size=req.image_size,
         latent_dim=req.latent_dim,
+        output_mode=req.output_mode.value,
+        tiled_result_path=req.tiled_result_path or "",
     )
-    if isinstance(backend, OrionBackend):
-        submit_kwargs["output_mode"] = req.output_mode.value
-        if req.tiled_result_path:
-            submit_kwargs["tiled_result_path"] = req.tiled_result_path
-
-    job_id = await backend.submit(**submit_kwargs)
     return _to_response(job_id, await backend.result(job_id))
 
 

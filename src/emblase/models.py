@@ -72,14 +72,13 @@ def load_model(model_name: str, **kwargs) -> torch.nn.Module:
 
 
 def encode(model: torch.nn.Module, images: torch.Tensor, model_name: str) -> np.ndarray:
-    """Run the encoder and return latent vectors as (B, latent_dim) numpy array."""
+    """Run the encoder and return output as (B, latent_dim) numpy array."""
     device = next(model.parameters()).device
-    images = images.to(device)
     with torch.no_grad():
         if model_name == "vae":
-            mu, _ = model.encode(images)
+            mu, _ = model.encode(images.to(device))
             return mu.cpu().numpy()
         if model_name == "vit":
-            latent, _ = model.encoder(images)
+            latent, _ = model.encoder(images.to(device))
             return latent.cpu().numpy()
     raise ValueError(f"Unknown model_name: {model_name!r}")

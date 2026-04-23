@@ -87,3 +87,32 @@ def test_cancel_job(app_with_mock_backend):
 def test_cancel_job_not_found(app_with_mock_backend):
     resp = app_with_mock_backend.delete("/jobs/ghost")
     assert resp.status_code == 404
+
+
+def test_evaluate_passes_output_mode_and_tiled_path(monkeypatch):
+    """output_mode and tiled_result_path must be forwarded to backend.submit."""
+    import emblase.app as app_module
+
+    captured = {}
+
+    class FakeBackend:
+        async def submit(self, model_name, **kwargs):
+            captured.update(kwargs)
+            return "job-x"
+
+        async def result(self, job_id):
+            return JobResult(job_id=job_id, status=JobStatus.running)
+
+    monkeypatch.setattr(app_module, "backend", FakeBackend())
+    client = TestClient(app_module.app)
+    client.post(
+        "/evaluate",
+        json={
+            "dummy_images": 1,
+            "image_size": [64, 64],
+            "output_mode": "tiled",
+            "tiled_result_path": "results/scan1",
+        },
+    )
+    assert captured.get("output_mode") == "tiled"
+    assert captured.get("tiled_result_path") == "results/scan1"

@@ -137,3 +137,93 @@ async def test_orion_backend_submit_calls_client(monkeypatch):
     assert backend._jobs[99]["model_name"] == "vae"
     assert "emblase-vae" in submitted["script"]
     assert submitted["overrides"]["account"] == "staff"
+
+
+@pytest.mark.asyncio
+async def test_orion_backend_submit_image_path():
+    """image_path source should produce a symlink line in the script."""
+    submitted = {}
+
+    class FakeClient:
+        async def submit_job(
+            self, script, working_dir, overrides=None, environment=None
+        ):
+            submitted["script"] = script
+            return 7
+
+    backend = OrionBackend(
+        client=FakeClient(), working_dir="/jobs", models_dir="/models", account="staff"
+    )
+    await backend.submit(
+        model_name="vae",
+        image_path="/data/remote.npy",
+        image_size=(512, 512),
+    )
+    assert "ln -sf /data/remote.npy" in submitted["script"]
+
+
+@pytest.mark.asyncio
+async def test_orion_backend_tiled_output_injects_env():
+    """output_mode='tiled' should add EMBLASE_TILED_URI to the job environment."""
+    submitted = {}
+
+    class FakeClient:
+        async def submit_job(
+            self, script, working_dir, overrides=None, environment=None
+        ):
+            submitted["environment"] = environment
+            return 8
+
+    backend = OrionBackend(
+        client=FakeClient(), working_dir="/jobs", models_dir="/models", account="staff"
+    )
+
+    import emblase.compute.orion as orion_module
+    import emblase.config as config_module
+
+    monkeypatch_settings = type(config_module.settings)(
+        **{
+            **config_module.settings.model_dump(),
+            "tiled_uri": "http://tiled",
+            "tiled_api_key": "key123",
+        }
+    )
+
+    original = orion_module.settings
+    orion_module.settings = monkeypatch_settings
+    try:
+        await backend.submit(
+            model_name="vae",
+            image_data=DUMMY_IMAGES,
+            image_size=(512, 512),
+            output_mode="tiled",
+            tiled_result_path="results/scan1",
+        )
+    finally:
+        orion_module.settings = original
+
+    env = submitted["environment"]
+    assert any("EMBLASE_TILED_URI=http://tiled" in e for e in env)
+    assert any("EMBLASE_TILED_API_KEY=key123" in e for e in env)
+
+
+def test_build_sbatch_script_raises_without_source():
+    with pytest.raises(ValueError, match="exactly one"):
+        _build_sbatch_script(
+            working_dir="/jobs",
+            python_script="pass",
+            project_dir="/code",
+            job_name="test",
+        )
+
+
+def test_build_sbatch_script_raises_with_two_sources():
+    with pytest.raises(ValueError, match="exactly one"):
+        _build_sbatch_script(
+            working_dir="/jobs",
+            python_script="pass",
+            project_dir="/code",
+            job_name="test",
+            images_b64="abc",
+            image_path="/data/f.npy",
+        )

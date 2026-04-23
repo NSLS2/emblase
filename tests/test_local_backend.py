@@ -31,14 +31,18 @@ def backend_with_mock_models(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_submit_returns_job_id(backend_with_mock_models):
-    job_id = await backend_with_mock_models.submit("vae", DUMMY_IMAGES, latent_dim=8)
+    job_id = await backend_with_mock_models.submit(
+        "vae", image_data=DUMMY_IMAGES, latent_dim=8
+    )
     assert isinstance(job_id, str)
     assert len(job_id) > 0
 
 
 @pytest.mark.asyncio
 async def test_submit_completed_with_output_data(backend_with_mock_models):
-    job_id = await backend_with_mock_models.submit("vae", DUMMY_IMAGES, latent_dim=8)
+    job_id = await backend_with_mock_models.submit(
+        "vae", image_data=DUMMY_IMAGES, latent_dim=8
+    )
     result = await backend_with_mock_models.result(job_id)
     assert result.status == JobStatus.completed
     assert result.output_data is not None
@@ -47,14 +51,18 @@ async def test_submit_completed_with_output_data(backend_with_mock_models):
 
 @pytest.mark.asyncio
 async def test_status_after_submit(backend_with_mock_models):
-    job_id = await backend_with_mock_models.submit("vae", DUMMY_IMAGES, latent_dim=8)
+    job_id = await backend_with_mock_models.submit(
+        "vae", image_data=DUMMY_IMAGES, latent_dim=8
+    )
     status = await backend_with_mock_models.status(job_id)
     assert status == JobStatus.completed
 
 
 @pytest.mark.asyncio
 async def test_cancel_sets_failed(backend_with_mock_models):
-    job_id = await backend_with_mock_models.submit("vae", DUMMY_IMAGES, latent_dim=8)
+    job_id = await backend_with_mock_models.submit(
+        "vae", image_data=DUMMY_IMAGES, latent_dim=8
+    )
     await backend_with_mock_models.cancel(job_id)
     result = await backend_with_mock_models.result(job_id)
     assert result.status == JobStatus.failed
@@ -71,7 +79,7 @@ async def test_submit_records_error_on_failure(monkeypatch):
     monkeypatch.setattr("emblase.models.load_model", boom)
 
     backend = LocalBackend()
-    job_id = await backend.submit("vae", DUMMY_IMAGES, latent_dim=8)
+    job_id = await backend.submit("vae", image_data=DUMMY_IMAGES, latent_dim=8)
     result = await backend.result(job_id)
     assert result.status == JobStatus.failed
     assert "model exploded" in result.error

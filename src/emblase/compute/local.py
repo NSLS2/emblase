@@ -20,8 +20,9 @@ class LocalBackend(ComputeBackend):
     async def submit(
         self,
         model_name: str,
-        images: np.ndarray,
+        image_data: np.ndarray | None = None,
         latent_dim: int = 512,
+        image_size: tuple[int, int] | None = None,
         **kwargs: Any,
     ) -> str:
         job_id = str(uuid.uuid4())[:8]
@@ -32,16 +33,14 @@ class LocalBackend(ComputeBackend):
 
             from ..models import encode, load_model
 
-            if images.ndim == 3:
-                imgs = images[:, np.newaxis, :, :]
-            else:
-                imgs = images
-            model = load_model(
-                model_name, latent_dim=latent_dim, image_size=imgs.shape[-2:]
-            )
-            latent = encode(model, torch.from_numpy(imgs).float(), model_name)
+            if image_data is None:
+                raise ValueError("image_data is required for LocalBackend")
+            imgs = image_data[:, np.newaxis] if image_data.ndim == 3 else image_data
+            size = image_size or imgs.shape[-2:]
+            model = load_model(model_name, latent_dim=latent_dim, image_size=size)
+            output = encode(model, torch.from_numpy(imgs).float(), model_name)
             return JobResult(
-                job_id=job_id, status=JobStatus.completed, output_data=latent
+                job_id=job_id, status=JobStatus.completed, output_data=output
             )
 
         try:

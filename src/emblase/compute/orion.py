@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import io
 from dataclasses import dataclass
@@ -236,8 +237,6 @@ class OrionClient:
         timeout: float = 120.0,
     ) -> OrionJob:
         """Poll until job reaches a terminal state."""
-        import asyncio
-
         elapsed = 0.0
         while elapsed < timeout:
             info = await self.get_job(job_id)
@@ -393,44 +392,6 @@ class OrionBackend(ComputeBackend):
             else None,
         )
 
-        # Return callback-delivered results immediately (job may still show RUNNING
-        # briefly after the callback fires — the stored result is authoritative).
-        if meta["output_data"] is not None:
-            return JobResult(
-                job_id=job_id,
-                status=JobStatus.completed,
-                output_data=meta["output_data"],
-            )
-        if meta["error"]:
-            return JobResult(
-                job_id=job_id, status=JobStatus.failed, error=meta["error"]
-            )
-
-        if st not in (JobStatus.completed, JobStatus.failed):
-            return JobResult(job_id=job_id, status=st)
-
-        output_mode = meta.get("output_mode", "none")
-        if output_mode != "none":
-            # Still waiting for the callback / Tiled write; job finished but
-            # results haven't arrived yet.
-            return JobResult(job_id=job_id, status=JobStatus.running)
-
-        # "none" mode — try shared filesystem.
-        output_path = Path(meta["job_dir"]).expanduser() / "output.npy"
-        if output_path.exists():
-            latent = np.load(str(output_path))
-            return JobResult(
-                job_id=job_id, status=JobStatus.completed, output_data=latent
-            )
-
-        return JobResult(
-            job_id=job_id,
-            status=st,
-            error=f"Output not found at {output_path}"
-            if st == JobStatus.completed
-            else None,
-        )
-
     async def wait(
         self,
         job_id: str,
@@ -438,7 +399,6 @@ class OrionBackend(ComputeBackend):
         timeout: float = 300.0,
     ) -> JobStatus:
         """Poll until the job reaches a terminal state. Returns final JobStatus."""
-        await self.client._ensure_client()
         info = await self.client.wait_for_job(
             int(job_id), poll_interval=poll_interval, timeout=timeout
         )

@@ -4,7 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from emblase.compute.base import JobStatus
-from emblase.schemas import EvaluateRequest, EvaluateResponse, ModelName
+from emblase.schemas import EvaluateRequest, EvaluateResponse, ModelName, OutputMode
 
 
 def test_evaluate_request_defaults():
@@ -14,6 +14,8 @@ def test_evaluate_request_defaults():
     assert req.image_size == (512, 512)
     assert req.latent_dim == 512
     assert req.images is None
+    assert req.output_mode == OutputMode.none
+    assert req.tiled_result_path is None
 
 
 def test_evaluate_request_with_images():
@@ -23,9 +25,20 @@ def test_evaluate_request_with_images():
     assert req.images is not None
 
 
+def test_evaluate_request_tiled_output_mode():
+    req = EvaluateRequest(output_mode="tiled", tiled_result_path="results/scan1")
+    assert req.output_mode == OutputMode.tiled
+    assert req.tiled_result_path == "results/scan1"
+
+
 def test_evaluate_request_invalid_model():
     with pytest.raises(ValidationError):
         EvaluateRequest(model="unknown")
+
+
+def test_evaluate_request_invalid_output_mode():
+    with pytest.raises(ValidationError):
+        EvaluateRequest(output_mode="callback")
 
 
 def test_evaluate_response_jobstatus_is_shared_enum():
