@@ -1,10 +1,10 @@
-"""Inference script template — runs on the compute node.
+"""Inference script — runs on the compute node inside `pixi run python`.
 
-Placeholders (filled by OrionBackend._render_inference_script):
-    {{models_dir}}  — path to models directory on the compute node
-    {{model_name}}  — "vae" or "vit"
-    {{latent_dim}}  — integer latent dimension
-    {{image_size}}  — tuple like (512, 512)
+Filled by _render_inference_script():
+    {models_dir}  — absolute path to the models directory on the compute node
+    {model_name}  — "vae" or "vit"
+    {latent_dim}  — integer latent dimension
+    {image_size}  — tuple like (512, 512)
 
 job_dir is read from the JOB_DIR environment variable (set by the sbatch script
 to working_dir/job_$SLURM_JOB_ID), so the folder name always matches slurm-<id>.out.
@@ -16,16 +16,24 @@ import sys
 import numpy as np
 import torch
 
-models_dir = "{models_dir}"
 job_dir = os.environ["JOB_DIR"]
 model_name = "{model_name}"
 latent_dim = {latent_dim}
 image_size = {image_size}
 
-# --- setup ---
-sys.path.insert(0, models_dir)
+# Ensure the models directory is on sys.path so vae/vae.py and vit/vit.py are importable.
+# This mirrors what emblase.models does locally; weights live alongside the source files.
+models_dir = "{models_dir}"
+if models_dir not in sys.path:
+    sys.path.insert(0, models_dir)
+
+# --- load model via emblase ---
+from emblase.models import encode, load_model  # noqa: E402
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Device: {{device}}")
+
+model = load_model(model_name, latent_dim=latent_dim, image_size=image_size)
 
 # --- load input ---
 input_path = os.path.join(job_dir, "input.npy")
@@ -35,38 +43,11 @@ if images.ndim == 3:
 tensor = torch.from_numpy(images).float().to(device)
 print(f"Input: {{tensor.shape}}")
 
-# --- load model ---
-if model_name == "vae":
-    from vae.vae import ConvVAE
-
-    model = ConvVAE(latent_dim=latent_dim, image_size=image_size).to(device)
-    weights_path = os.path.join(models_dir, "vae", "vae_model_512_weights.npz")
-elif model_name == "vit":
-    from vit.vit import Autoencoder
-
-    model = Autoencoder(latent_dim=latent_dim).to(device)
-    weights_path = os.path.join(models_dir, "vit", "vit_model_weights.npz")
-else:
-    raise ValueError(f"Unknown model: {{model_name}}")
-
-if os.path.exists(weights_path):
-    data = np.load(weights_path, allow_pickle=True)
-    state_dict = {{k: torch.from_numpy(data[k]) for k in data.files}}
-    model.load_state_dict(state_dict, strict=False)
-    print(f"Weights loaded from {{weights_path}}")
-
-model.eval()
-
 # --- encode ---
-with torch.no_grad():
-    if model_name == "vae":
-        mu, _logvar = model.encode(tensor)
-        latent = mu.cpu().numpy()
-    elif model_name == "vit":
-        latent, _skip = model.encoder(tensor)
-        latent = latent.cpu().numpy()
+latent = encode(model, tensor, model_name)
+print(f"Latent: {{latent.shape}}")
 
 # --- save output ---
 output_path = os.path.join(job_dir, "output.npy")
 np.save(output_path, latent)
-print(f"Output: {{latent.shape}} -> {{output_path}}")
+print(f"Output saved: {{output_path}}")

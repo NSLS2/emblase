@@ -67,9 +67,12 @@ def _build_sbatch_script(
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --output={working_dir}/slurm-%j.out
+#SBATCH --error={working_dir}/slurm-%j.out
 
 set -euo pipefail
+
 JOB_DIR={working_dir}/job_${{SLURM_JOB_ID}}
+export JOB_DIR
 mkdir -p "$JOB_DIR"
 cd "$JOB_DIR"
 
@@ -167,6 +170,7 @@ class OrionClient:
         script: str,
         working_dir: str = "/tmp",
         overrides: dict[str, str] | None = None,
+        environment: list[str] | None = None,
     ) -> int:
         """Submit a job script to Orion. Returns the Slurm job ID."""
         client = await self._ensure_client()
@@ -176,6 +180,8 @@ class OrionClient:
         }
         if overrides:
             payload["overrides"] = overrides
+        if environment:
+            payload["environment"] = environment
 
         resp = await client.post(
             f"{self.api_url}/api/v1/compute/{self.cluster}/jobs",
@@ -250,13 +256,17 @@ class OrionBackend(ComputeBackend):
         working_dir: str | None = None,
         models_dir: str | None = None,
         project_dir: str | None = None,
+        home: str | None = None,
         account: str | None = None,
+        path: str | None = None,
     ):
         self.client = client or OrionClient()
         self.working_dir = working_dir or settings.orion_working_dir
         self.models_dir = models_dir or settings.orion_models_dir
         self.project_dir = project_dir or settings.orion_project_dir
+        self.home = home or settings.orion_home
         self.account = account or settings.orion_account
+        self.path = path or settings.orion_path
         self._jobs: dict[int, dict[str, Any]] = {}
 
     async def submit(
@@ -291,6 +301,11 @@ class OrionBackend(ComputeBackend):
             script=script,
             working_dir=self.working_dir,
             overrides={"tres_per_job": "gres/gpu:1", "account": self.account},
+            environment=[
+                f"PATH={self.path}",
+                f"HOME={self.home}",
+                "SLURM_EXPORT_ENV=ALL",
+            ],
         )
 
         # Now we know the Slurm job ID — construct the actual job dir

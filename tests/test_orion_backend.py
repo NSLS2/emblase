@@ -78,10 +78,11 @@ async def test_orion_backend_submit_calls_client(monkeypatch):
     submitted = {}
 
     class FakeClient:
-        async def submit_job(self, script, working_dir, overrides=None):
+        async def submit_job(self, script, working_dir, overrides=None, environment=None):
             submitted["script"] = script
             submitted["working_dir"] = working_dir
             submitted["overrides"] = overrides
+            submitted["environment"] = environment
             return 99
 
     backend = OrionBackend(

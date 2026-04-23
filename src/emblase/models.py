@@ -61,11 +61,16 @@ def load_vit(
 
 
 def load_model(model_name: str, **kwargs) -> torch.nn.Module:
-    """Load a model by name ('vae' or 'vit')."""
-    loaders = {"vae": load_vae, "vit": load_vit}
-    if model_name not in loaders:
-        raise ValueError(f"Unknown model: {model_name!r}. Available: {list(loaders)}")
-    return loaders[model_name](**kwargs)
+    """Load a model by name ('vae' or 'vit').
+
+    ``image_size`` is silently dropped for ViT, which doesn't use it.
+    """
+    if model_name == "vae":
+        return load_vae(**kwargs)
+    if model_name == "vit":
+        kwargs.pop("image_size", None)
+        return load_vit(**kwargs)
+    raise ValueError(f"Unknown model: {model_name!r}. Available: ['vae', 'vit']")
 
 
 def encode(model: torch.nn.Module, images: torch.Tensor, model_name: str) -> np.ndarray:
