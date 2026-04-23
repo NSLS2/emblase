@@ -36,7 +36,7 @@ packages = ["src/emblase"]
 
 [tool.pixi.workspace]
 channels = ["conda-forge"]
-platforms = ["osx-arm64"]
+platforms = ["osx-arm64", "linux-64"]
 
 [tool.pixi.pypi-dependencies]
 emblase = { path = ".", editable = true }
