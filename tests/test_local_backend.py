@@ -37,12 +37,12 @@ async def test_submit_returns_job_id(backend_with_mock_models):
 
 
 @pytest.mark.asyncio
-async def test_submit_completed_with_latent_vectors(backend_with_mock_models):
+async def test_submit_completed_with_output_data(backend_with_mock_models):
     job_id = await backend_with_mock_models.submit("vae", DUMMY_IMAGES, latent_dim=8)
     result = await backend_with_mock_models.result(job_id)
     assert result.status == JobStatus.completed
-    assert result.latent_vectors is not None
-    assert result.latent_vectors.shape[0] == DUMMY_IMAGES.shape[0]
+    assert result.output_data is not None
+    assert result.output_data.shape[0] == DUMMY_IMAGES.shape[0]
 
 
 @pytest.mark.asyncio

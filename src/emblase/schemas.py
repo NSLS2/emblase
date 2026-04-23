@@ -8,12 +8,31 @@ from pydantic import BaseModel
 
 from .compute.base import JobStatus  # single source of truth
 
-__all__ = ["ModelName", "JobStatus", "EvaluateRequest", "EvaluateResponse"]
+__all__ = [
+    "ModelName",
+    "OutputMode",
+    "JobStatus",
+    "EvaluateRequest",
+    "EvaluateResponse",
+]
 
 
 class ModelName(str, Enum):
     vae = "vae"
     vit = "vit"
+
+
+class OutputMode(str, Enum):
+    """How the compute node should deliver results.
+
+    - ``none``  — save output.npy on the node only (retrieve manually via the
+                  Orion filesystem).
+    - ``tiled`` — write the output array into a Tiled collection at
+                  EMBLASE_TILED_URI / tiled_result_path on the compute node.
+    """
+
+    none = "none"
+    tiled = "tiled"
 
 
 class EvaluateRequest(BaseModel):
@@ -24,10 +43,14 @@ class EvaluateRequest(BaseModel):
     dummy_images: int | None = 4
     image_size: tuple[int, int] = (512, 512)
     latent_dim: int = 512
+    output_mode: OutputMode = OutputMode.none
+    # Path within the Tiled server where results are written.
+    # Only used when output_mode == "tiled".
+    tiled_result_path: str | None = None
 
 
 class EvaluateResponse(BaseModel):
     job_id: str
     status: JobStatus
-    latent_vectors: list[list[float]] | None = None
+    output_data: list[list[float]] | None = None
     error: str | None = None

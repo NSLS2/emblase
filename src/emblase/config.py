@@ -9,6 +9,10 @@ class Settings(BaseSettings):
     # Paths
     models_dir: Path = Path(__file__).resolve().parent.parent.parent / "models"
 
+    # Tiled
+    tiled_uri: str = ""
+    tiled_api_key: str = ""
+
     # Orion compute
     orion_api_url: str = "https://orion-api-staging.nsls2.bnl.gov"
     orion_api_key: str = ""

@@ -21,7 +21,7 @@ class JobStatus(str, Enum):
 class JobResult:
     job_id: str
     status: JobStatus
-    latent_vectors: np.ndarray | None = None
+    output_data: np.ndarray | None = None
     error: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 

@@ -21,13 +21,15 @@ def test_render_inference_script_substitutes_all_placeholders():
         latent_dim=512,
         image_size=(512, 512),
         models_dir="/models",
+        output_mode="none",
+        tiled_result_path="",
     )
     assert "/models" in script
     assert 'model_name = "vae"' in script
     assert "latent_dim = 512" in script
     assert "image_size = (512, 512)" in script
     assert 'models_dir = "/models"' in script
-    # job_dir is now read from JOB_DIR env var at runtime, not substituted
+    assert 'output_mode = "none"' in script
     assert 'os.environ["JOB_DIR"]' in script
 
 
@@ -37,9 +39,12 @@ def test_render_inference_script_vit():
         latent_dim=256,
         image_size=(224, 224),
         models_dir="/models",
+        output_mode="tiled",
+        tiled_result_path="results/job1",
     )
     assert "vit" in script
     assert "256" in script
+    assert "results/job1" in script
 
 
 def test_build_sbatch_script_structure():
@@ -54,14 +59,39 @@ def test_build_sbatch_script_structure():
     assert script.startswith("#!/bin/bash")
     assert "#SBATCH --job-name=emblase-vae" in script
     assert "#SBATCH --time=0-00:10:00" in script
-    assert "#SBATCH --output=/jobs/job_%j/inference.log" in script
-    assert "#SBATCH --error=/jobs/job_%j/inference.log" in script
-    assert "#SBATCH --create-dirs" in script
-    assert "job_$" in script  # $SLURM_JOB_ID used for dir name
+    assert "#SBATCH --output=/jobs/slurm-%j.out" in script
+    assert "job_$" in script
     assert "AABBCC==" in script
     assert "EMBLASE_INFERENCE_EOF" in script
     assert "print('hello')" in script
     assert "pixi run python" in script
+
+
+def test_build_sbatch_script_from_path():
+    script = _build_sbatch_script(
+        working_dir="/jobs",
+        python_script="print('hello')",
+        image_path="/data/images.npy",
+        project_dir="/code/emblase",
+        job_name="emblase-vae",
+    )
+    assert "ln -sf /data/images.npy" in script
+    assert "EMBLASE_B64_EOF" not in script
+
+
+def test_build_sbatch_script_from_tiled():
+    script = _build_sbatch_script(
+        working_dir="/jobs",
+        python_script="print('hello')",
+        tiled_uris=["path/to/scan1", "path/to/scan2"],
+        project_dir="/code/emblase",
+        job_name="emblase-vae",
+    )
+    assert "path/to/scan1" in script
+    assert "path/to/scan2" in script
+    assert "EMBLASE_TILED_URI" in script
+    assert "EMBLASE_B64_EOF" not in script
+    assert "ln -sf" not in script
 
 
 def test_images_b64_roundtrip():
@@ -80,7 +110,9 @@ async def test_orion_backend_submit_calls_client(monkeypatch):
     submitted = {}
 
     class FakeClient:
-        async def submit_job(self, script, working_dir, overrides=None, environment=None):
+        async def submit_job(
+            self, script, working_dir, overrides=None, environment=None
+        ):
             submitted["script"] = script
             submitted["working_dir"] = working_dir
             submitted["overrides"] = overrides
@@ -93,7 +125,12 @@ async def test_orion_backend_submit_calls_client(monkeypatch):
         models_dir="/models",
         account="staff",
     )
-    job_id = await backend.submit("vae", DUMMY_IMAGES, latent_dim=512)
+    job_id = await backend.submit(
+        model_name="vae",
+        image_data=DUMMY_IMAGES,
+        image_size=(512, 512),
+        latent_dim=512,
+    )
 
     assert job_id == "99"
     assert 99 in backend._jobs

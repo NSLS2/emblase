@@ -35,6 +35,8 @@ def _render_inference_script(
     latent_dim: int,
     image_size: tuple[int, int],
     models_dir: str,
+    output_mode: str = "none",
+    tiled_result_path: str = "",
 ) -> str:
     """Render the inference template with concrete values."""
     return _TEMPLATE.format(
@@ -42,43 +44,34 @@ def _render_inference_script(
         latent_dim=latent_dim,
         image_size=image_size,
         models_dir=models_dir,
+        output_mode=output_mode,
+        tiled_result_path=tiled_result_path,
     )
 
 
 def _build_sbatch_script(
     working_dir: str,
     python_script: str,
-    images_b64: str,
     project_dir: str,
     job_name: str = "emblase",
     time_limit: str = "0-00:10:00",
+    images_b64: str | None = None,
+    image_path: str | None = None,
+    tiled_uris: list[str] | None = None,
 ) -> str:
-    """Build the sbatch script that decodes input data and runs inference.
+    """Build the sbatch script. Exactly one image source must be provided:
 
-    The job directory is named job_$SLURM_JOB_ID so it matches the .out file.
-    Images and the inference script are embedded as bash heredocs (not -c args)
-    to avoid the OS 'Argument list too long' limit.
-    pixi is used to run Python so that torch and other dependencies are available.
+    - images_b64: encoded client-side, embedded as heredoc, decoded on the node.
+    - image_path: .npy already on Orion; symlinked into the job dir.
+    - tiled_uris: list of Tiled node paths; fetched on the node using
+      EMBLASE_TILED_URI / EMBLASE_TILED_API_KEY from the environment.
     """
-    return f"""\
-#!/bin/bash
-#SBATCH --job-name={job_name}
-#SBATCH --time={time_limit}
-#SBATCH --nodes=1
-#SBATCH --ntasks-per-node=1
-#SBATCH --output={working_dir}/job_%j/inference.log
-#SBATCH --error={working_dir}/job_%j/inference.log
-#SBATCH --create-dirs
+    sources = [bool(images_b64), bool(image_path), bool(tiled_uris)]
+    if sum(sources) != 1:
+        raise ValueError("Provide exactly one of images_b64, image_path, tiled_uris")
 
-set -euo pipefail
-set -x
-
-JOB_DIR={working_dir}/job_${{SLURM_JOB_ID}}
-export JOB_DIR
-mkdir -p "$JOB_DIR"
-cd "$JOB_DIR"
-
-# Write base64-encoded input to a file, then decode it
+    if images_b64:
+        input_section = f"""\
 cat > _input_b64.txt << 'EMBLASE_B64_EOF'
 {images_b64}
 EMBLASE_B64_EOF
@@ -94,12 +87,49 @@ print(f"Input saved: {{arr.shape}}")
 EMBLASE_DECODE_EOF
 
 rm -f "$JOB_DIR/_input_b64.txt"
+"""
+    elif image_path:
+        input_section = f'ln -sf {image_path} "$JOB_DIR/input.npy"\n'
+    else:
+        paths_repr = repr(tiled_uris)
+        input_section = f"""\
+cd {project_dir} && pixi run python << 'EMBLASE_TILED_EOF'
+import numpy as np, os
+from tiled.client import from_uri
+job_dir = os.environ["JOB_DIR"]
+base_uri = os.environ["EMBLASE_TILED_URI"]
+api_key = os.environ.get("EMBLASE_TILED_API_KEY") or None
+paths = {paths_repr}
+client = from_uri(base_uri, api_key=api_key)
+images = np.stack([np.asarray(client[p].read()) for p in paths])
+np.save(f"{{job_dir}}/input.npy", images)
+print(f"Fetched from Tiled: {{images.shape}}  dtype={{images.dtype}}")
+EMBLASE_TILED_EOF
+"""
 
-# Run inference
+    return f"""\
+#!/bin/bash
+#SBATCH --job-name={job_name}
+#SBATCH --time={time_limit}
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --output={working_dir}/slurm-%j.out
+#SBATCH --error={working_dir}/slurm-%j.out
+
+set -euo pipefail
+set -x
+
+JOB_DIR={working_dir}/job_${{SLURM_JOB_ID}}
+export JOB_DIR
+mkdir -p "$JOB_DIR"
+cd "$JOB_DIR"
+
+{input_section}
 cd {project_dir} && pixi run python << 'EMBLASE_INFERENCE_EOF'
 {python_script}
 EMBLASE_INFERENCE_EOF
 """
+
 
 @dataclass
 class OrionJob:
@@ -134,13 +164,8 @@ class OrionClient:
         self.cluster = cluster or settings.orion_cluster
         self._client: httpx.AsyncClient | None = None
 
-    # -- context manager for connection reuse --
-
     async def __aenter__(self) -> OrionClient:
-        self._client = httpx.AsyncClient(
-            timeout=30.0,
-            headers={"x-api-key": self.api_key, "Content-Type": "application/json"},
-        )
+        await self._ensure_client()
         return self
 
     async def __aexit__(self, *exc: Any) -> None:
@@ -148,24 +173,13 @@ class OrionClient:
             await self._client.aclose()
             self._client = None
 
-    @property
-    def _http(self) -> httpx.AsyncClient:
-        if self._client is None:
-            raise RuntimeError(
-                "Use 'async with OrionClient() as client:' or call ._ensure_client()"
-            )
-        return self._client
-
     async def _ensure_client(self) -> httpx.AsyncClient:
-        """Lazily create a client if not using context manager."""
         if self._client is None:
             self._client = httpx.AsyncClient(
                 timeout=30.0,
                 headers={"x-api-key": self.api_key, "Content-Type": "application/json"},
             )
         return self._client
-
-    # -- API methods --
 
     async def submit_job(
         self,
@@ -176,18 +190,13 @@ class OrionClient:
     ) -> int:
         """Submit a job script to Orion. Returns the Slurm job ID."""
         client = await self._ensure_client()
-        payload: dict[str, Any] = {
-            "script": script,
-            "working_dir_path": working_dir,
-        }
+        payload: dict[str, Any] = {"script": script, "working_dir_path": working_dir}
         if overrides:
             payload["overrides"] = overrides
         if environment:
             payload["environment"] = environment
-
         resp = await client.post(
-            f"{self.api_url}/api/v1/compute/{self.cluster}/jobs",
-            json=payload,
+            f"{self.api_url}/api/v1/compute/{self.cluster}/jobs", json=payload
         )
         resp.raise_for_status()
         return resp.json()["job_id"]
@@ -196,15 +205,13 @@ class OrionClient:
         """Get info for a single job."""
         client = await self._ensure_client()
         resp = await client.get(
-            f"{self.api_url}/api/v1/compute/{self.cluster}/jobs/{job_id}",
+            f"{self.api_url}/api/v1/compute/{self.cluster}/jobs/{job_id}"
         )
         resp.raise_for_status()
         data = resp.json()["jobs"][0]
-
         state = data.get("state", ["UNKNOWN"])
         if isinstance(state, list):
             state = state[0] if state else "UNKNOWN"
-
         return OrionJob(
             job_id=data["job_id"],
             state=state,
@@ -218,7 +225,7 @@ class OrionClient:
         """Cancel a running job."""
         client = await self._ensure_client()
         resp = await client.delete(
-            f"{self.api_url}/api/v1/compute/{self.cluster}/jobs/{job_id}",
+            f"{self.api_url}/api/v1/compute/{self.cluster}/jobs/{job_id}"
         )
         resp.raise_for_status()
 
@@ -274,45 +281,80 @@ class OrionBackend(ComputeBackend):
     async def submit(
         self,
         model_name: str,
-        images: np.ndarray,
+        image_size: tuple[int, int],
         latent_dim: int = 512,
+        image_data: np.ndarray | None = None,
+        image_path: str | None = None,
+        tiled_uris: list[str] | None = None,
+        output_mode: str = "none",
+        tiled_result_path: str = "",
         **kwargs: Any,
     ) -> str:
-        # job_dir = working_dir/job_<slurm_id> — we know working_dir now,
-        # and reconstruct the exact path after Slurm assigns the job ID.
+        """Submit an inference job. Exactly one image source must be provided:
+
+        - image_data: numpy array — encoded client-side and uploaded.
+        - image_path: absolute path to a .npy file already on Orion.
+        - tiled_uris: list of Tiled node paths — fetched on the node using
+          EMBLASE_TILED_URI / EMBLASE_TILED_API_KEY from the environment.
+
+        output_mode controls how results are returned:
+        - "none"  — output.npy saved on the node only.
+        - "tiled" — write output array into Tiled at EMBLASE_TILED_URI/tiled_result_path.
+        """
+        sources = [image_data is not None, bool(image_path), bool(tiled_uris)]
+        if sum(sources) != 1:
+            raise ValueError(
+                "Provide exactly one of: image_data, image_path, tiled_uris"
+            )
+
         py_script = _render_inference_script(
             model_name=model_name,
             latent_dim=latent_dim,
-            image_size=images.shape[-2:],
+            image_size=image_size,
             models_dir=self.models_dir,
+            output_mode=output_mode,
+            tiled_result_path=tiled_result_path,
         )
 
-        buf = io.BytesIO()
-        np.save(buf, images)
-        images_b64 = base64.b64encode(buf.getvalue()).decode()
+        if image_data is not None:
+            buf = io.BytesIO()
+            np.save(buf, image_data)
+            script_kwargs: dict[str, Any] = {
+                "images_b64": base64.b64encode(buf.getvalue()).decode()
+            }
+        elif image_path:
+            script_kwargs = {"image_path": image_path}
+        else:
+            script_kwargs = {"tiled_uris": tiled_uris}
 
         script = _build_sbatch_script(
             working_dir=self.working_dir,
             python_script=py_script,
-            images_b64=images_b64,
             project_dir=self.project_dir,
             job_name=f"emblase-{model_name}",
+            **script_kwargs,
         )
+
+        environment = [f"PATH={self.path}", f"HOME={self.home}", "SLURM_EXPORT_ENV=ALL"]
+        if output_mode == "tiled" or tiled_uris:
+            if settings.tiled_uri:
+                environment.append(f"EMBLASE_TILED_URI={settings.tiled_uri}")
+            if settings.tiled_api_key:
+                environment.append(f"EMBLASE_TILED_API_KEY={settings.tiled_api_key}")
 
         job_id = await self.client.submit_job(
             script=script,
             working_dir=self.working_dir,
             overrides={"tres_per_job": "gres/gpu:1", "account": self.account},
-            environment=[
-                f"PATH={self.path}",
-                f"HOME={self.home}",
-                "SLURM_EXPORT_ENV=ALL",
-            ],
+            environment=environment,
         )
 
-        # Now we know the Slurm job ID — construct the actual job dir
         job_dir = f"{self.working_dir}/job_{job_id}"
-        self._jobs[job_id] = {"job_dir": job_dir, "model_name": model_name}
+        self._jobs[job_id] = {
+            "job_dir": job_dir,
+            "model_name": model_name,
+            "output_mode": output_mode,
+        }
         return str(job_id)
 
     async def status(self, job_id: str) -> JobStatus:
@@ -321,21 +363,64 @@ class OrionBackend(ComputeBackend):
 
     async def result(self, job_id: str) -> JobResult:
         st = await self.status(job_id)
-        if st not in (JobStatus.completed, JobStatus.failed):
-            return JobResult(job_id=job_id, status=st)
-
         meta = self._jobs.get(int(job_id))
         if not meta:
             return JobResult(
                 job_id=job_id, status=JobStatus.failed, error="Job metadata lost"
             )
 
-        # TODO: remote filesystem access — for now assumes shared mount
+        if st not in (JobStatus.completed, JobStatus.failed):
+            return JobResult(job_id=job_id, status=st)
+
+        output_mode = meta.get("output_mode", "none")
+        if output_mode == "tiled":
+            # Results were written to Tiled on the node — nothing to return here.
+            return JobResult(job_id=job_id, status=st)
+
+        # "none" mode — try shared filesystem.
+        output_path = Path(meta["job_dir"]).expanduser() / "output.npy"
+        if output_path.exists():
+            output = np.load(str(output_path))
+            return JobResult(
+                job_id=job_id, status=JobStatus.completed, output_data=output
+            )
+
+        return JobResult(
+            job_id=job_id,
+            status=st,
+            error=f"Output not found at {output_path}"
+            if st == JobStatus.completed
+            else None,
+        )
+
+        # Return callback-delivered results immediately (job may still show RUNNING
+        # briefly after the callback fires — the stored result is authoritative).
+        if meta["output_data"] is not None:
+            return JobResult(
+                job_id=job_id,
+                status=JobStatus.completed,
+                output_data=meta["output_data"],
+            )
+        if meta["error"]:
+            return JobResult(
+                job_id=job_id, status=JobStatus.failed, error=meta["error"]
+            )
+
+        if st not in (JobStatus.completed, JobStatus.failed):
+            return JobResult(job_id=job_id, status=st)
+
+        output_mode = meta.get("output_mode", "none")
+        if output_mode != "none":
+            # Still waiting for the callback / Tiled write; job finished but
+            # results haven't arrived yet.
+            return JobResult(job_id=job_id, status=JobStatus.running)
+
+        # "none" mode — try shared filesystem.
         output_path = Path(meta["job_dir"]).expanduser() / "output.npy"
         if output_path.exists():
             latent = np.load(str(output_path))
             return JobResult(
-                job_id=job_id, status=JobStatus.completed, latent_vectors=latent
+                job_id=job_id, status=JobStatus.completed, output_data=latent
             )
 
         return JobResult(
@@ -353,10 +438,10 @@ class OrionBackend(ComputeBackend):
         timeout: float = 300.0,
     ) -> JobStatus:
         """Poll until the job reaches a terminal state. Returns final JobStatus."""
-        async with self.client as client:
-            info = await client.wait_for_job(
-                int(job_id), poll_interval=poll_interval, timeout=timeout
-            )
+        await self.client._ensure_client()
+        info = await self.client.wait_for_job(
+            int(job_id), poll_interval=poll_interval, timeout=timeout
+        )
         return _SLURM_STATE_MAP.get(info.state, JobStatus.failed)
 
     async def cancel(self, job_id: str) -> None:

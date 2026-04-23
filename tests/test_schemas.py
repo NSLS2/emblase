@@ -39,9 +39,9 @@ def test_evaluate_response_roundtrip():
     resp = EvaluateResponse(
         job_id="abc123",
         status=JobStatus.completed,
-        latent_vectors=[[0.1, 0.2, 0.3]],
+        output_data=[[0.1, 0.2, 0.3]],
         error=None,
     )
     data = resp.model_dump()
     assert data["status"] == "completed"
-    assert data["latent_vectors"] == [[0.1, 0.2, 0.3]]
+    assert data["output_data"] == [[0.1, 0.2, 0.3]]

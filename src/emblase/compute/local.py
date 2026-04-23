@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from typing import Any
 
@@ -11,7 +12,7 @@ from .base import ComputeBackend, JobResult, JobStatus
 
 
 class LocalBackend(ComputeBackend):
-    """Runs model inference locally (in the FastAPI process). For dev/testing."""
+    """Runs model inference locally in a thread pool. For dev/testing."""
 
     def __init__(self):
         self._jobs: dict[str, JobResult] = {}
@@ -23,22 +24,28 @@ class LocalBackend(ComputeBackend):
         latent_dim: int = 512,
         **kwargs: Any,
     ) -> str:
-        import torch
-
-        from ..models import encode, load_model
-
         job_id = str(uuid.uuid4())[:8]
         self._jobs[job_id] = JobResult(job_id=job_id, status=JobStatus.running)
-        try:
-            model = load_model(
-                model_name, latent_dim=latent_dim, image_size=images.shape[-2:]
-            )
+
+        def _run() -> JobResult:
+            import torch
+
+            from ..models import encode, load_model
+
             if images.ndim == 3:
-                images = images[:, np.newaxis, :, :]
-            latent = encode(model, torch.from_numpy(images).float(), model_name)
-            self._jobs[job_id] = JobResult(
-                job_id=job_id, status=JobStatus.completed, latent_vectors=latent
+                imgs = images[:, np.newaxis, :, :]
+            else:
+                imgs = images
+            model = load_model(
+                model_name, latent_dim=latent_dim, image_size=imgs.shape[-2:]
             )
+            latent = encode(model, torch.from_numpy(imgs).float(), model_name)
+            return JobResult(
+                job_id=job_id, status=JobStatus.completed, output_data=latent
+            )
+
+        try:
+            self._jobs[job_id] = await asyncio.to_thread(_run)
         except Exception as e:
             self._jobs[job_id] = JobResult(
                 job_id=job_id, status=JobStatus.failed, error=str(e)
@@ -54,5 +61,6 @@ class LocalBackend(ComputeBackend):
 
     async def cancel(self, job_id: str) -> None:
         if job_id in self._jobs:
-            self._jobs[job_id].status = JobStatus.failed
-            self._jobs[job_id].error = "Cancelled"
+            self._jobs[job_id] = JobResult(
+                job_id=job_id, status=JobStatus.failed, error="Cancelled"
+            )

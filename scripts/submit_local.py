@@ -16,8 +16,8 @@ async def main():
 
     result = await backend.result(job_id)
     print(f"Job {job_id}: status={result.status}")
-    if result.latent_vectors is not None:
-        print(f"  Latent vectors shape: {result.latent_vectors.shape}")
+    if result.output_data is not None:
+        print(f"  Latent vectors shape: {result.output_data.shape}")
     if result.error:
         print(f"  Error: {result.error}")
 

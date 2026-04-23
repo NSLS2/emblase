@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -12,7 +13,6 @@ from .config import settings
 
 
 def _add_models_to_path() -> None:
-    """Ensure the models directory is on sys.path so we can import from it."""
     p = str(settings.models_dir)
     if p not in sys.path:
         sys.path.insert(0, p)
@@ -21,6 +21,9 @@ def _add_models_to_path() -> None:
 def _load_weights(model: torch.nn.Module, weights_path: Path) -> None:
     """Load weights from a .npz file into a model in-place (strict=False)."""
     if not weights_path.exists():
+        warnings.warn(
+            f"Weights not found at {weights_path} — using random initialisation"
+        )
         return
     data = np.load(str(weights_path), allow_pickle=True)
     state_dict = {k: torch.from_numpy(data[k]) for k in data.files}
@@ -32,9 +35,8 @@ def load_vae(
     image_size: tuple[int, int] = (512, 512),
     weights_path: Path | None = None,
 ) -> torch.nn.Module:
-    """Load the ConvVAE model, optionally with pre-trained weights."""
     _add_models_to_path()
-    from vae.vae import ConvVAE
+    from vae.vae import ConvVAE  # noqa: PLC0415
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = ConvVAE(latent_dim=latent_dim, image_size=image_size).to(device)
@@ -48,9 +50,8 @@ def load_vit(
     latent_dim: int = 512,
     weights_path: Path | None = None,
 ) -> torch.nn.Module:
-    """Load the ViT Autoencoder, optionally with pre-trained weights."""
     _add_models_to_path()
-    from vit.vit import Autoencoder
+    from vit.vit import Autoencoder  # noqa: PLC0415
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = Autoencoder(latent_dim=latent_dim).to(device)
@@ -61,10 +62,7 @@ def load_vit(
 
 
 def load_model(model_name: str, **kwargs) -> torch.nn.Module:
-    """Load a model by name ('vae' or 'vit').
-
-    ``image_size`` is silently dropped for ViT, which doesn't use it.
-    """
+    """Load a model by name ('vae' or 'vit'). image_size is ignored for ViT."""
     if model_name == "vae":
         return load_vae(**kwargs)
     if model_name == "vit":
@@ -74,22 +72,14 @@ def load_model(model_name: str, **kwargs) -> torch.nn.Module:
 
 
 def encode(model: torch.nn.Module, images: torch.Tensor, model_name: str) -> np.ndarray:
-    """Run the encoder forward pass and return latent vectors as a numpy array.
-
-    Args:
-        model: Loaded model (VAE or ViT autoencoder).
-        images: Float tensor of shape (B, 1, H, W).
-        model_name: ``"vae"`` or ``"vit"`` — selects the encode call convention.
-
-    Returns:
-        Latent vectors of shape (B, latent_dim).
-    """
+    """Run the encoder and return latent vectors as (B, latent_dim) numpy array."""
     device = next(model.parameters()).device
+    images = images.to(device)
     with torch.no_grad():
         if model_name == "vae":
-            mu, _ = model.encode(images.to(device))
+            mu, _ = model.encode(images)
             return mu.cpu().numpy()
         if model_name == "vit":
-            latent, _ = model.encoder(images.to(device))
+            latent, _ = model.encoder(images)
             return latent.cpu().numpy()
     raise ValueError(f"Unknown model_name: {model_name!r}")

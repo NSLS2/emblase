@@ -33,56 +33,70 @@ echo '=== done ==='
 """
 
 
-async def _run_script(script: str, working_dir: str, gpu: bool, wait: bool):
-    overrides = {"account": "staff"}
-    if gpu:
-        overrides["tres_per_job"] = "gres/gpu:1"
-
-    async with OrionClient() as client:
-        print(f"Submitting job to {client.api_url} ({client.cluster})...")
-        job_id = await client.submit_job(
-            script=script,
-            working_dir=working_dir,
-            overrides=overrides,
-        )
-        print(f"Job submitted: {job_id}")
-
-        if wait:
-            info = await client.wait_for_job(job_id)
-            print(f"State: {info.state}  Node: {info.node}")
-            print(f"Stdout: {info.stdout}")
-        else:
-            print("(not waiting — use 'status <id>' to check)")
-
-
-async def _infer(
-    model: str, n_images: int, image_size: int, latent_dim: int, wait: bool
-):
-    images = np.random.rand(n_images, image_size, image_size).astype(np.float32)
-    print(f"Dummy images: {images.shape}  dtype={images.dtype}")
-
+async def _infer(args):
     backend = OrionBackend()
     print(f"Working dir : {backend.working_dir}")
     print(f"Models dir  : {backend.models_dir}")
 
-    print(f"\nSubmitting {model!r} inference job to Orion...")
-    job_id = await backend.submit(
-        model_name=model, images=images, latent_dim=latent_dim
+    submit_kwargs = dict(
+        model_name=args.model,
+        image_size=(args.image_size, args.image_size),
+        latent_dim=args.latent_dim,
+        output_mode=args.output_mode,
     )
+    if args.tiled_result_path:
+        submit_kwargs["tiled_result_path"] = args.tiled_result_path
+
+    if args.images_npy:
+        images = np.load(args.images_npy)
+        print(f"Loaded from {args.images_npy}: {images.shape}  dtype={images.dtype}")
+        submit_kwargs["image_data"] = images
+    elif args.orion_path:
+        submit_kwargs["image_path"] = args.orion_path
+    elif args.tiled_uris:
+        submit_kwargs["tiled_uris"] = args.tiled_uris
+    else:
+        images = np.random.rand(args.n_images, args.image_size, args.image_size).astype(
+            np.float32
+        )
+        print(f"Dummy images: {images.shape}  dtype={images.dtype}")
+        submit_kwargs["image_data"] = images
+
+    print(f"\nSubmitting {args.model!r} inference job to Orion...")
+    job_id = await backend.submit(**submit_kwargs)
     print(f"Job submitted: {job_id}")
 
-    if not wait:
+    if args.no_wait:
         print("(not waiting — use 'status <id>' to check)")
         return
 
     print("Waiting for job to complete...")
     final_status = await backend.wait(job_id)
     print(f"\nJob {job_id} finished: {final_status.value}")
-
     if final_status.value != "completed":
         print(
-            "Job did not complete successfully — check the stdout on the Orion filesystem."
+            "Job did not complete successfully — check the log on the Orion filesystem."
         )
+    elif args.output_mode == "none":
+        print(f"Output: {backend.working_dir}/job_{job_id}/output.npy")
+
+
+async def _run_script(script: str, working_dir: str, gpu: bool, wait: bool):
+    overrides = {"account": "staff"}
+    if gpu:
+        overrides["tres_per_job"] = "gres/gpu:1"
+    async with OrionClient() as client:
+        print(f"Submitting job to {client.api_url} ({client.cluster})...")
+        job_id = await client.submit_job(
+            script=script, working_dir=working_dir, overrides=overrides
+        )
+        print(f"Job submitted: {job_id}")
+        if wait:
+            info = await client.wait_for_job(job_id)
+            print(f"State: {info.state}  Node: {info.node}")
+            print(f"Stdout: {info.stdout}")
+        else:
+            print("(not waiting — use 'status <id>' to check)")
 
 
 def main():
@@ -97,22 +111,51 @@ def main():
         "script_file",
         nargs="?",
         default="test",
-        help="Path to a bash script to submit, or 'test' for the built-in connectivity check",
+        help="Path to a bash script, or 'test' for the built-in connectivity check",
     )
-    run_p.add_argument("--workdir", default="/tmp", help="Remote working directory")
-    run_p.add_argument("--gpu", action="store_true", help="Request a GPU node")
-    run_p.add_argument(
-        "--no-wait", action="store_true", help="Don't wait for completion"
-    )
+    run_p.add_argument("--workdir", default="/tmp")
+    run_p.add_argument("--gpu", action="store_true")
+    run_p.add_argument("--no-wait", action="store_true")
 
     # -- infer subcommand --
-    infer_p = sub.add_parser("infer", help="Submit an inference job with dummy images")
+    infer_p = sub.add_parser("infer", help="Submit an inference job")
     infer_p.add_argument("--model", choices=["vae", "vit"], default="vae")
-    infer_p.add_argument("--n-images", type=int, default=2)
     infer_p.add_argument("--image-size", type=int, default=512)
     infer_p.add_argument("--latent-dim", type=int, default=512)
+    infer_p.add_argument("--no-wait", action="store_true")
     infer_p.add_argument(
-        "--no-wait", action="store_true", help="Don't wait for completion"
+        "--output-mode",
+        choices=["none", "tiled"],
+        default="none",
+        help=(
+            "How results are delivered: "
+            "'none' — save output.npy on the node only; "
+            "'tiled' — write output data into EMBLASE_TILED_URI/tiled-result-path"
+        ),
+    )
+    infer_p.add_argument(
+        "--tiled-result-path",
+        metavar="PATH",
+        default="",
+        help="Path within the Tiled server to write results (only used with --output-mode=tiled)",
+    )
+    # image sources (mutually exclusive; if none given, dummy data is used)
+    src = infer_p.add_mutually_exclusive_group()
+    src.add_argument("--images-npy", metavar="PATH", help="Local .npy file to upload")
+    src.add_argument(
+        "--orion-path", metavar="PATH", help="Absolute path to .npy already on Orion"
+    )
+    src.add_argument(
+        "--tiled-uris",
+        nargs="+",
+        metavar="PATH",
+        help="One or more Tiled node paths; fetched on the node using EMBLASE_TILED_URI from env",
+    )
+    infer_p.add_argument(
+        "--n-images",
+        type=int,
+        default=2,
+        help="Number of dummy images (ignored if source given)",
     )
 
     # -- status subcommand --
@@ -138,15 +181,7 @@ def main():
         )
 
     elif args.command == "infer":
-        asyncio.run(
-            _infer(
-                model=args.model,
-                n_images=args.n_images,
-                image_size=args.image_size,
-                latent_dim=args.latent_dim,
-                wait=not args.no_wait,
-            )
-        )
+        asyncio.run(_infer(args))
 
     elif args.command == "status":
 

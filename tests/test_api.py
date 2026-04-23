@@ -13,7 +13,14 @@ def app_with_mock_backend(monkeypatch):
     import emblase.app as app_module
 
     class FakeBackend:
-        async def submit(self, model_name, images, latent_dim=512, **kw):
+        async def submit(
+            self,
+            model_name,
+            image_data=None,
+            image_size=(512, 512),
+            latent_dim=512,
+            **kw,
+        ):
             return "job-001"
 
         async def result(self, job_id):
@@ -21,7 +28,7 @@ def app_with_mock_backend(monkeypatch):
                 return JobResult(
                     job_id="job-001",
                     status=JobStatus.completed,
-                    latent_vectors=np.array([[0.1, 0.2, 0.3]]),
+                    output_data=np.array([[0.1, 0.2, 0.3]]),
                 )
             raise KeyError(job_id)
 
@@ -50,7 +57,7 @@ def test_evaluate_dummy_images(app_with_mock_backend):
     data = resp.json()
     assert data["job_id"] == "job-001"
     assert data["status"] == "completed"
-    assert data["latent_vectors"] == [[0.1, 0.2, 0.3]]
+    assert data["output_data"] == [[0.1, 0.2, 0.3]]
 
 
 def test_evaluate_no_input_returns_400(app_with_mock_backend):
