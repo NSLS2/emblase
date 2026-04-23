@@ -17,25 +17,22 @@ DUMMY_IMAGES = np.zeros((2, 512, 512), dtype=np.float32)
 
 def test_render_inference_script_substitutes_all_placeholders():
     script = _render_inference_script(
-        job_dir="/jobs/test",
         model_name="vae",
         latent_dim=512,
         image_size=(512, 512),
         models_dir="/models",
     )
-    assert "/jobs/test" in script
     assert "/models" in script
-    # Template placeholders for literal values must be substituted
     assert 'model_name = "vae"' in script
     assert "latent_dim = 512" in script
     assert "image_size = (512, 512)" in script
     assert 'models_dir = "/models"' in script
-    assert 'job_dir = "/jobs/test"' in script
+    # job_dir is now read from JOB_DIR env var at runtime, not substituted
+    assert 'os.environ["JOB_DIR"]' in script
 
 
 def test_render_inference_script_vit():
     script = _render_inference_script(
-        job_dir="/jobs/x",
         model_name="vit",
         latent_dim=256,
         image_size=(224, 224),
@@ -47,19 +44,22 @@ def test_render_inference_script_vit():
 
 def test_build_sbatch_script_structure():
     script = _build_sbatch_script(
-        job_dir="/jobs/test",
+        working_dir="/jobs",
         python_script="print('hello')",
         images_b64="AABBCC==",
+        project_dir="/code/emblase",
         job_name="emblase-vae",
         time_limit="0-00:10:00",
     )
     assert script.startswith("#!/bin/bash")
     assert "#SBATCH --job-name=emblase-vae" in script
     assert "#SBATCH --time=0-00:10:00" in script
-    assert "mkdir -p /jobs/test" in script
+    assert "#SBATCH --output=/jobs/slurm-%j.out" in script
+    assert "job_$" in script  # $SLURM_JOB_ID used for dir name
     assert "AABBCC==" in script
     assert "EMBLASE_INFERENCE_EOF" in script
     assert "print('hello')" in script
+    assert "pixi run python" in script
 
 
 def test_images_b64_roundtrip():

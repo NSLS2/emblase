@@ -209,7 +209,7 @@ packages:
 - pypi: ./
   name: emblase
   version: 0.1.0
-  sha256: f8ffe878d73ccdf07bf045a56f544cff0f0083c5a65de0b36b7074fb5735b66c
+  sha256: 9a95cf870c785f3e528c0462cd61d1aee9ababb190f09658caf7cf0b872b78f2
   requires_dist:
   - fastapi>=0.115
   - uvicorn[standard]>=0.30
@@ -226,7 +226,7 @@ packages:
   - pytest>=8.0 ; extra == 'dev'
   - pytest-asyncio>=0.24 ; extra == 'dev'
   - httpx>=0.27 ; extra == 'dev'
-  requires_python: '>=3.12'
+  requires_python: '>=3.11'
   editable: true
 - pypi: https://files.pythonhosted.org/packages/26/a3/0bd5f0cdb0bbc92650e8dc457e9250358411ee5d1b65e42b6632387daf81/fastapi-0.136.0-py3-none-any.whl
   name: fastapi

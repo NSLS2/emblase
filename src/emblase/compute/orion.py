@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import base64
 import io
-import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -32,7 +31,6 @@ _SLURM_STATE_MAP = {
 
 
 def _render_inference_script(
-    job_dir: str,
     model_name: str,
     latent_dim: int,
     image_size: tuple[int, int],
@@ -40,7 +38,6 @@ def _render_inference_script(
 ) -> str:
     """Render the inference template with concrete values."""
     return _TEMPLATE.format(
-        job_dir=job_dir,
         model_name=model_name,
         latent_dim=latent_dim,
         image_size=image_size,
@@ -49,130 +46,55 @@ def _render_inference_script(
 
 
 def _build_sbatch_script(
-    job_dir: str,
+    working_dir: str,
     python_script: str,
     images_b64: str,
+    project_dir: str,
     job_name: str = "emblase",
     time_limit: str = "0-00:10:00",
 ) -> str:
-    """Build the sbatch script that decodes input data and runs inference."""
+    """Build the sbatch script that decodes input data and runs inference.
+
+    The job directory is named job_$SLURM_JOB_ID so it matches the .out file.
+    Images and the inference script are embedded as bash heredocs (not -c args)
+    to avoid the OS 'Argument list too long' limit.
+    pixi is used to run Python so that torch and other dependencies are available.
+    """
     return f"""\
 #!/bin/bash
 #SBATCH --job-name={job_name}
 #SBATCH --time={time_limit}
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
+#SBATCH --output={working_dir}/slurm-%j.out
 
 set -euo pipefail
-mkdir -p {job_dir}
-cd {job_dir}
+JOB_DIR={working_dir}/job_${{SLURM_JOB_ID}}
+mkdir -p "$JOB_DIR"
+cd "$JOB_DIR"
 
-# Decode input images
-python3 -c "
-import base64, io, numpy as np
-data = base64.b64decode('{images_b64}')
+# Write base64-encoded input to a file, then decode it
+cat > _input_b64.txt << 'EMBLASE_B64_EOF'
+{images_b64}
+EMBLASE_B64_EOF
+
+cd {project_dir} && pixi run python << 'EMBLASE_DECODE_EOF'
+import base64, io, numpy as np, os
+job_dir = os.environ["JOB_DIR"]
+with open(f"{{job_dir}}/_input_b64.txt") as f:
+    data = base64.b64decode(f.read().strip())
 arr = np.load(io.BytesIO(data))
-np.save('input.npy', arr)
-print(f'Input saved: {{arr.shape}}')
-"
+np.save(f"{{job_dir}}/input.npy", arr)
+print(f"Input saved: {{arr.shape}}")
+EMBLASE_DECODE_EOF
+
+rm -f "$JOB_DIR/_input_b64.txt"
 
 # Run inference
-python3 << 'EMBLASE_INFERENCE_EOF'
+cd {project_dir} && pixi run python << 'EMBLASE_INFERENCE_EOF'
 {python_script}
 EMBLASE_INFERENCE_EOF
 """
-
-
-class OrionBackend(ComputeBackend):
-    """Submit inference jobs to Orion (Slurm) via the Orion REST API."""
-
-    def __init__(
-        self,
-        client: OrionClient | None = None,
-        working_dir: str | None = None,
-        models_dir: str | None = None,
-        account: str | None = None,
-    ):
-        self.client = client or OrionClient()
-        self.working_dir = working_dir or settings.orion_working_dir
-        self.models_dir = models_dir or "~/code/emblase/models"
-        self.account = account or settings.orion_account
-        self._jobs: dict[int, dict[str, Any]] = {}
-
-    async def submit(
-        self,
-        model_name: str,
-        images: np.ndarray,
-        latent_dim: int = 512,
-        **kwargs: Any,
-    ) -> str:
-        tag = uuid.uuid4().hex[:8]
-        job_dir = f"{self.working_dir}/job_{tag}"
-
-        # Render the inference script from template
-        py_script = _render_inference_script(
-            job_dir=job_dir,
-            model_name=model_name,
-            latent_dim=latent_dim,
-            image_size=images.shape[-2:],
-            models_dir=self.models_dir,
-        )
-
-        # Encode images as base64 for embedding in the sbatch script
-        buf = io.BytesIO()
-        np.save(buf, images)
-        images_b64 = base64.b64encode(buf.getvalue()).decode()
-
-        script = _build_sbatch_script(
-            job_dir=job_dir,
-            python_script=py_script,
-            images_b64=images_b64,
-            job_name=f"emblase-{model_name}",
-        )
-
-        job_id = await self.client.submit_job(
-            script=script,
-            working_dir=job_dir,
-            overrides={"tres_per_job": "gres/gpu:1", "account": self.account},
-        )
-
-        self._jobs[job_id] = {"job_dir": job_dir, "model_name": model_name, "tag": tag}
-        return str(job_id)
-
-    async def status(self, job_id: str) -> JobStatus:
-        info = await self.client.get_job(int(job_id))
-        return _SLURM_STATE_MAP.get(info.state, JobStatus.pending)
-
-    async def result(self, job_id: str) -> JobResult:
-        st = await self.status(job_id)
-        if st not in (JobStatus.completed, JobStatus.failed):
-            return JobResult(job_id=job_id, status=st)
-
-        meta = self._jobs.get(int(job_id))
-        if not meta:
-            return JobResult(
-                job_id=job_id, status=JobStatus.failed, error="Job metadata lost"
-            )
-
-        # TODO: remote filesystem access — for now assumes shared mount
-        output_path = Path(meta["job_dir"]).expanduser() / "output.npy"
-        if output_path.exists():
-            latent = np.load(str(output_path))
-            return JobResult(
-                job_id=job_id, status=JobStatus.completed, latent_vectors=latent
-            )
-
-        return JobResult(
-            job_id=job_id,
-            status=st,
-            error=f"Output not found at {output_path}"
-            if st == JobStatus.completed
-            else None,
-        )
-
-    async def cancel(self, job_id: str) -> None:
-        await self.client.cancel_job(int(job_id))
-
 
 @dataclass
 class OrionJob:
@@ -317,3 +239,108 @@ class OrionClient:
         raise TimeoutError(
             f"Job {job_id} did not complete within {timeout}s (last state: {info.state})"
         )
+
+
+class OrionBackend(ComputeBackend):
+    """Submit inference jobs to Orion (Slurm) via the Orion REST API."""
+
+    def __init__(
+        self,
+        client: OrionClient | None = None,
+        working_dir: str | None = None,
+        models_dir: str | None = None,
+        project_dir: str | None = None,
+        account: str | None = None,
+    ):
+        self.client = client or OrionClient()
+        self.working_dir = working_dir or settings.orion_working_dir
+        self.models_dir = models_dir or settings.orion_models_dir
+        self.project_dir = project_dir or settings.orion_project_dir
+        self.account = account or settings.orion_account
+        self._jobs: dict[int, dict[str, Any]] = {}
+
+    async def submit(
+        self,
+        model_name: str,
+        images: np.ndarray,
+        latent_dim: int = 512,
+        **kwargs: Any,
+    ) -> str:
+        # job_dir = working_dir/job_<slurm_id> — we know working_dir now,
+        # and reconstruct the exact path after Slurm assigns the job ID.
+        py_script = _render_inference_script(
+            model_name=model_name,
+            latent_dim=latent_dim,
+            image_size=images.shape[-2:],
+            models_dir=self.models_dir,
+        )
+
+        buf = io.BytesIO()
+        np.save(buf, images)
+        images_b64 = base64.b64encode(buf.getvalue()).decode()
+
+        script = _build_sbatch_script(
+            working_dir=self.working_dir,
+            python_script=py_script,
+            images_b64=images_b64,
+            project_dir=self.project_dir,
+            job_name=f"emblase-{model_name}",
+        )
+
+        job_id = await self.client.submit_job(
+            script=script,
+            working_dir=self.working_dir,
+            overrides={"tres_per_job": "gres/gpu:1", "account": self.account},
+        )
+
+        # Now we know the Slurm job ID — construct the actual job dir
+        job_dir = f"{self.working_dir}/job_{job_id}"
+        self._jobs[job_id] = {"job_dir": job_dir, "model_name": model_name}
+        return str(job_id)
+
+    async def status(self, job_id: str) -> JobStatus:
+        info = await self.client.get_job(int(job_id))
+        return _SLURM_STATE_MAP.get(info.state, JobStatus.pending)
+
+    async def result(self, job_id: str) -> JobResult:
+        st = await self.status(job_id)
+        if st not in (JobStatus.completed, JobStatus.failed):
+            return JobResult(job_id=job_id, status=st)
+
+        meta = self._jobs.get(int(job_id))
+        if not meta:
+            return JobResult(
+                job_id=job_id, status=JobStatus.failed, error="Job metadata lost"
+            )
+
+        # TODO: remote filesystem access — for now assumes shared mount
+        output_path = Path(meta["job_dir"]).expanduser() / "output.npy"
+        if output_path.exists():
+            latent = np.load(str(output_path))
+            return JobResult(
+                job_id=job_id, status=JobStatus.completed, latent_vectors=latent
+            )
+
+        return JobResult(
+            job_id=job_id,
+            status=st,
+            error=f"Output not found at {output_path}"
+            if st == JobStatus.completed
+            else None,
+        )
+
+    async def wait(
+        self,
+        job_id: str,
+        poll_interval: float = 3.0,
+        timeout: float = 300.0,
+    ) -> JobStatus:
+        """Poll until the job reaches a terminal state. Returns final JobStatus."""
+        async with self.client as client:
+            info = await client.wait_for_job(
+                int(job_id), poll_interval=poll_interval, timeout=timeout
+            )
+        return _SLURM_STATE_MAP.get(info.state, JobStatus.failed)
+
+    async def cancel(self, job_id: str) -> None:
+        await self.client.cancel_job(int(job_id))

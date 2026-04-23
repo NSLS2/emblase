@@ -1,11 +1,13 @@
 """Inference script template — runs on the compute node.
 
-Placeholders (filled by OrionBackend):
+Placeholders (filled by OrionBackend._render_inference_script):
     {{models_dir}}  — path to models directory on the compute node
-    {{job_dir}}     — path to job working directory (contains input.npy)
     {{model_name}}  — "vae" or "vit"
     {{latent_dim}}  — integer latent dimension
     {{image_size}}  — tuple like (512, 512)
+
+job_dir is read from the JOB_DIR environment variable (set by the sbatch script
+to working_dir/job_$SLURM_JOB_ID), so the folder name always matches slurm-<id>.out.
 """
 
 import os
@@ -15,7 +17,7 @@ import numpy as np
 import torch
 
 models_dir = "{models_dir}"
-job_dir = "{job_dir}"
+job_dir = os.environ["JOB_DIR"]
 model_name = "{model_name}"
 latent_dim = {latent_dim}
 image_size = {image_size}

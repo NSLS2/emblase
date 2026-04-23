@@ -1,16 +1,17 @@
-"""Submit arbitrary or test jobs to Orion using the shared OrionClient."""
+"""Manage Orion jobs: connectivity test, inference submission, status, cancel."""
 
 import argparse
 import asyncio
 import sys
 from pathlib import Path
 
+import numpy as np
 from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).parent.parent / ".env")
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from emblase.compute.orion import OrionClient  # noqa: E402
+from emblase.compute.orion import OrionBackend, OrionClient  # noqa: E402
 
 CONNECTIVITY_SCRIPT = """\
 #!/bin/bash
@@ -32,12 +33,7 @@ echo '=== done ==='
 """
 
 
-async def run(
-    script: str,
-    working_dir: str = "/tmp",
-    gpu: bool = False,
-    wait: bool = True,
-):
+async def _run_script(script: str, working_dir: str, gpu: bool, wait: bool):
     overrides = {"account": "staff"}
     if gpu:
         overrides["tres_per_job"] = "gres/gpu:1"
@@ -56,24 +52,66 @@ async def run(
             print(f"State: {info.state}  Node: {info.node}")
             print(f"Stdout: {info.stdout}")
         else:
-            print("(not waiting — use get_job to check status)")
+            print("(not waiting — use 'status <id>' to check)")
+
+
+async def _infer(
+    model: str, n_images: int, image_size: int, latent_dim: int, wait: bool
+):
+    images = np.random.rand(n_images, image_size, image_size).astype(np.float32)
+    print(f"Dummy images: {images.shape}  dtype={images.dtype}")
+
+    backend = OrionBackend()
+    print(f"Working dir : {backend.working_dir}")
+    print(f"Models dir  : {backend.models_dir}")
+
+    print(f"\nSubmitting {model!r} inference job to Orion...")
+    job_id = await backend.submit(
+        model_name=model, images=images, latent_dim=latent_dim
+    )
+    print(f"Job submitted: {job_id}")
+
+    if not wait:
+        print("(not waiting — use 'status <id>' to check)")
+        return
+
+    print("Waiting for job to complete...")
+    final_status = await backend.wait(job_id)
+    print(f"\nJob {job_id} finished: {final_status.value}")
+
+    if final_status.value != "completed":
+        print(
+            "Job did not complete successfully — check the stdout on the Orion filesystem."
+        )
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Submit a job to Orion")
+    parser = argparse.ArgumentParser(description="Manage Orion jobs for Emblase")
     sub = parser.add_subparsers(dest="command")
 
-    # -- run subcommand --
-    run_p = sub.add_parser("run", aliases=["test"], help="Submit a custom script")
+    # -- test / run subcommand --
+    run_p = sub.add_parser(
+        "run", aliases=["test"], help="Submit a connectivity test or custom script"
+    )
     run_p.add_argument(
         "script_file",
         nargs="?",
         default="test",
-        help="Path to the bash script to submit",
+        help="Path to a bash script to submit, or 'test' for the built-in connectivity check",
     )
     run_p.add_argument("--workdir", default="/tmp", help="Remote working directory")
     run_p.add_argument("--gpu", action="store_true", help="Request a GPU node")
     run_p.add_argument(
+        "--no-wait", action="store_true", help="Don't wait for completion"
+    )
+
+    # -- infer subcommand --
+    infer_p = sub.add_parser("infer", help="Submit an inference job with dummy images")
+    infer_p.add_argument("--model", choices=["vae", "vit"], default="vae")
+    infer_p.add_argument("--n-images", type=int, default=2)
+    infer_p.add_argument("--image-size", type=int, default=512)
+    infer_p.add_argument("--latent-dim", type=int, default=512)
+    infer_p.add_argument(
         "--no-wait", action="store_true", help="Don't wait for completion"
     )
 
@@ -94,7 +132,20 @@ def main():
             else Path(args.script_file).read_text()
         )
         asyncio.run(
-            run(script, working_dir=args.workdir, gpu=args.gpu, wait=not args.no_wait)
+            _run_script(
+                script, working_dir=args.workdir, gpu=args.gpu, wait=not args.no_wait
+            )
+        )
+
+    elif args.command == "infer":
+        asyncio.run(
+            _infer(
+                model=args.model,
+                n_images=args.n_images,
+                image_size=args.image_size,
+                latent_dim=args.latent_dim,
+                wait=not args.no_wait,
+            )
         )
 
     elif args.command == "status":
