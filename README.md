@@ -1,2 +1,2 @@
-# mlex
-Latent Space Explorer -- Dimensionality reduction service for synchrotron data
+# emblase
+EMBeddings and LAtent Space Explorer - Dimensionality reduction service for synchrotron data
