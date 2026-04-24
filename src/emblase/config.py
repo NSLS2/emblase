@@ -13,6 +13,17 @@ class Settings(BaseSettings):
     tiled_uri: str = ""
     tiled_api_key: str = ""
 
+    # MLflow — set EMBLASE_MLFLOW_TRACKING_URI to point at any compatible server.
+    # For American Science Cloud (ASC): the tracking URI provided by the ASC portal.
+    # For Azure ML: azureml://<region>.api.azureml.ms/mlflow/v1.0/subscriptions/...
+    # For a local server: http://localhost:5000
+    mlflow_tracking_uri: str = ""
+    # API key for servers that require X-Api-Key header (e.g. AmSC MLflow).
+    # Leave empty for Azure ML (uses Azure CLI credential instead).
+    mlflow_api_key: str = ""
+    # MLflow experiment name used when logging runs during push
+    mlflow_experiment: str = "emblase-models"
+
     # Orion compute
     orion_api_url: str = "https://orion-api-staging.nsls2.bnl.gov"
     orion_api_key: str = ""

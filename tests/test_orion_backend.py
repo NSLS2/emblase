@@ -163,7 +163,7 @@ async def test_orion_backend_submit_image_path():
 
 
 @pytest.mark.asyncio
-async def test_orion_backend_tiled_output_injects_env():
+async def test_orion_backend_tiled_output_injects_env(monkeypatch):
     """output_mode='tiled' should add EMBLASE_TILED_URI to the job environment."""
     submitted = {}
 
@@ -174,33 +174,21 @@ async def test_orion_backend_tiled_output_injects_env():
             submitted["environment"] = environment
             return 8
 
+    import emblase.compute.orion as orion_module
+
+    monkeypatch.setattr(orion_module.settings, "tiled_uri", "http://tiled")
+    monkeypatch.setattr(orion_module.settings, "tiled_api_key", "key123")
+
     backend = OrionBackend(
         client=FakeClient(), working_dir="/jobs", models_dir="/models", account="staff"
     )
-
-    import emblase.compute.orion as orion_module
-    import emblase.config as config_module
-
-    monkeypatch_settings = type(config_module.settings)(
-        **{
-            **config_module.settings.model_dump(),
-            "tiled_uri": "http://tiled",
-            "tiled_api_key": "key123",
-        }
+    await backend.submit(
+        model_name="vae",
+        image_data=DUMMY_IMAGES,
+        image_size=(512, 512),
+        output_mode="tiled",
+        tiled_result_path="results/scan1",
     )
-
-    original = orion_module.settings
-    orion_module.settings = monkeypatch_settings
-    try:
-        await backend.submit(
-            model_name="vae",
-            image_data=DUMMY_IMAGES,
-            image_size=(512, 512),
-            output_mode="tiled",
-            tiled_result_path="results/scan1",
-        )
-    finally:
-        orion_module.settings = original
 
     env = submitted["environment"]
     assert any("EMBLASE_TILED_URI=http://tiled" in e for e in env)

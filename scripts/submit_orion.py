@@ -6,9 +6,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
-from dotenv import load_dotenv
 
-load_dotenv(Path(__file__).parent.parent / ".env")
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from emblase.compute.orion import OrionBackend, OrionClient  # noqa: E402
@@ -72,8 +70,10 @@ async def _infer(args):
 
     print("Waiting for job to complete...")
     final_status = await backend.wait(job_id)
+    from emblase.compute.base import JobStatus
+
     print(f"\nJob {job_id} finished: {final_status.value}")
-    if final_status.value != "completed":
+    if final_status != JobStatus.completed:
         print(
             "Job did not complete successfully — check the log on the Orion filesystem."
         )

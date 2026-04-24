@@ -7,9 +7,15 @@ Filled by _render_inference_script():
     {image_size}        — tuple like (512, 512)
     {output_mode}       — "none" | "tiled"
     {tiled_result_path} — path within the Tiled server to write results (tiled mode only)
+    {mlflow_model}      — registered MLflow model name, or "" to use local weights
+    {mlflow_version}    — MLflow model version, or "" for latest
 
 job_dir is read from the JOB_DIR environment variable (set by the sbatch script
 to working_dir/job_$SLURM_JOB_ID), so the folder name always matches slurm-<id>.out.
+
+Model weights source (controlled by mlflow_model):
+  - ""      — load from local models_dir (default, existing behaviour).
+  - "<name>" — pull from the MLflow registry using EMBLASE_MLFLOW_TRACKING_URI.
 
 Output delivery (controlled by output_mode):
   - "none"  — save output.npy on the node only.
@@ -29,18 +35,32 @@ latent_dim = {latent_dim}
 image_size = {image_size}
 output_mode = "{output_mode}"
 tiled_result_path = "{tiled_result_path}"
+mlflow_model = "{mlflow_model}"
+mlflow_version = "{mlflow_version}" or None
 
 # Ensure the models directory is on sys.path so vae/vae.py and vit/vit.py are importable.
 models_dir = "{models_dir}"
 if models_dir not in sys.path:
     sys.path.insert(0, models_dir)
 
-from emblase.models import encode, load_model  # noqa: E402
+from emblase.models import encode, load_model, load_model_from_mlflow  # noqa: E402
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Device: {{device}}")
 
-model = load_model(model_name, latent_dim=latent_dim, image_size=image_size)
+if mlflow_model:
+    print(f"Loading weights from MLflow registry: {{mlflow_model!r}} version={{mlflow_version or 'latest'}}")
+    model = load_model_from_mlflow(
+        model_name=model_name,
+        mlflow_model=mlflow_model,
+        mlflow_version=mlflow_version,
+        mlflow_tracking_uri=os.environ.get("EMBLASE_MLFLOW_TRACKING_URI") or None,
+        mlflow_api_key=os.environ.get("EMBLASE_MLFLOW_API_KEY") or None,
+        latent_dim=latent_dim,
+        image_size=image_size,
+    )
+else:
+    model = load_model(model_name, latent_dim=latent_dim, image_size=image_size)
 
 # --- load input ---
 input_path = os.path.join(job_dir, "input.npy")

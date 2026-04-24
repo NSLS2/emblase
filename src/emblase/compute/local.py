@@ -59,7 +59,8 @@ class LocalBackend(ComputeBackend):
         return self._jobs[job_id]
 
     async def cancel(self, job_id: str) -> None:
-        if job_id in self._jobs:
-            self._jobs[job_id] = JobResult(
-                job_id=job_id, status=JobStatus.failed, error="Cancelled"
-            )
+        if job_id not in self._jobs:
+            raise KeyError(f"Unknown job_id: {job_id!r}")
+        self._jobs[job_id] = JobResult(
+            job_id=job_id, status=JobStatus.failed, error="Cancelled"
+        )

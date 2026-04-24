@@ -58,6 +58,8 @@ async def evaluate(req: EvaluateRequest):
         latent_dim=req.latent_dim,
         output_mode=req.output_mode.value,
         tiled_result_path=req.tiled_result_path or "",
+        mlflow_model=req.mlflow_model or "",
+        mlflow_version=req.mlflow_version or "",
     )
     return _to_response(job_id, await backend.result(job_id))
 

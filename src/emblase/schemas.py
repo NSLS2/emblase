@@ -47,6 +47,11 @@ class EvaluateRequest(BaseModel):
     # Path within the Tiled server where results are written.
     # Only used when output_mode == "tiled".
     tiled_result_path: str | None = None
+    # Registered MLflow model name.  When set, weights are pulled from the
+    # registry on the compute node instead of loaded from local models_dir.
+    mlflow_model: str | None = None
+    # MLflow model version to use.  None → latest.
+    mlflow_version: str | None = None
 
 
 class EvaluateResponse(BaseModel):
