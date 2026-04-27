@@ -184,6 +184,59 @@ async def test_orion_backend_tiled_output_injects_env(monkeypatch):
     assert any("EMBLASE_TILED_API_KEY=key123" in e for e in env)
 
 
+@pytest.mark.asyncio
+async def test_orion_backend_tiled_entries_injects_env(monkeypatch):
+    """tiled_entries alone (output_mode='none') should still inject tiled env vars."""
+    submitted = {}
+
+    class FakeClient:
+        async def submit_job(
+            self, script, working_dir, overrides=None, environment=None
+        ):
+            submitted["environment"] = environment
+            return 9
+
+    import emblase.compute.orion as orion_module
+
+    monkeypatch.setattr(orion_module.settings, "tiled_server_url", "http://tiled")
+    monkeypatch.setattr(orion_module.settings, "tiled_api_key", "key123")
+
+    backend = OrionBackend(
+        client=FakeClient(), working_dir="/jobs", models_dir="/models", account="staff"
+    )
+    await backend.submit(
+        model_name="vae",
+        tiled_entries=["proposal/scan"],
+        output_mode="none",
+    )
+
+    env = submitted["environment"]
+    assert any("EMBLASE_TILED_SERVER_URL=http://tiled" in e for e in env)
+    assert any("EMBLASE_TILED_API_KEY=key123" in e for e in env)
+
+
+@pytest.mark.asyncio
+async def test_orion_backend_tiled_missing_url_raises(monkeypatch):
+    """submit() with tiled_entries but no tiled_server_url configured must raise."""
+
+    class FakeClient:
+        async def submit_job(self, **kwargs):
+            return 10
+
+    import emblase.compute.orion as orion_module
+
+    monkeypatch.setattr(orion_module.settings, "tiled_server_url", "")
+
+    backend = OrionBackend(
+        client=FakeClient(), working_dir="/jobs", models_dir="/models", account="staff"
+    )
+    with pytest.raises(ValueError, match="EMBLASE_TILED_SERVER_URL is not set"):
+        await backend.submit(
+            model_name="vae",
+            tiled_entries=["proposal/scan"],
+        )
+
+
 def test_build_sbatch_script_raises_without_source():
     with pytest.raises(ValueError, match="exactly one"):
         _build_sbatch_script(

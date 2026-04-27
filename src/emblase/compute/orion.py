@@ -325,9 +325,12 @@ class OrionBackend(ComputeBackend):
         )
 
         environment = [f"PATH={self.path}", f"HOME={self.home}", "SLURM_EXPORT_ENV=ALL"]
-        if output_mode == "tiled" or tiled_entries:
-            if settings.tiled_server_url:
-                environment.append(f"EMBLASE_TILED_SERVER_URL={settings.tiled_server_url}")
+        if tiled_entries or output_mode == "tiled":
+            if not settings.tiled_server_url:
+                raise ValueError(
+                    "EMBLASE_TILED_SERVER_URL is not set — required when using tiled_entries or output_mode='tiled'."
+                )
+            environment.append(f"EMBLASE_TILED_SERVER_URL={settings.tiled_server_url}")
             if settings.tiled_api_key:
                 environment.append(f"EMBLASE_TILED_API_KEY={settings.tiled_api_key}")
         if settings.mlflow_tracking_uri:

@@ -95,11 +95,12 @@ if tiled_entries:
     log.info("Reading %d tiled entr%s ...", len(tiled_entries), "y" if len(tiled_entries) == 1 else "ies")
     t0 = time.perf_counter()
     images = read_images(tiled_client, tiled_entries)
+    unique_shapes = sorted(set(img.shape for img in images))
     log.info(
-        "Read %d frame(s) from Tiled in %.1f s  (sizes: %s)",
+        "Read %d frame(s) from Tiled in %.1f s  (shapes: %s)",
         len(images),
         time.perf_counter() - t0,
-        {{img.shape for img in images}},
+        unique_shapes,
     )
 else:
     input_path = os.path.join(job_dir, "input.npy")
