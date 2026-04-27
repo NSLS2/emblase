@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import logging
 import os
 import sys
 from pathlib import Path
@@ -12,6 +13,8 @@ import numpy as np
 import torch
 
 from .config import settings
+
+log = logging.getLogger(__name__)
 
 
 def _add_models_to_path() -> None:
@@ -32,7 +35,9 @@ def load_model(model_name: str, **kwargs) -> torch.nn.Module:
     image_size) are the responsibility of each model's loader.py.
     """
     if (settings.models_dir / model_name).is_dir():
+        log.info("Loading %r from local model directory", model_name)
         return _load_local(model_name, **kwargs)
+    log.info("Loading %r from MLflow registry", model_name)
     return _load_from_mlflow(model_name, **kwargs)
 
 
@@ -45,10 +50,13 @@ def _load_local(model_name: str, **kwargs) -> torch.nn.Module:
             f"No loader.py found in {model_dir}. "
             "Each model directory must contain a loader.py with a load(weights_path) function."
         )
+    log.debug("Importing loader from %s", loader_path)
     spec = importlib.util.spec_from_file_location(f"{model_name}.loader", loader_path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module.load(weights_path=kwargs.get("weights_path"))
+    model = module.load(weights_path=kwargs.get("weights_path"))
+    log.info("Loaded local model %r", model_name)
+    return model
 
 
 def _load_from_mlflow(model_name: str, **kwargs) -> torch.nn.Module:
@@ -73,8 +81,9 @@ def _load_from_mlflow(model_name: str, **kwargs) -> torch.nn.Module:
     weights_dir = Path(cache_root) / model_name / f"v{version}" / "model"
 
     if (weights_dir / "loader.py").exists():
-        print(f"Using cached '{model_name}' v{version} from {weights_dir}")
+        log.info("Cache hit: '%s' v%s at %s", model_name, version, weights_dir)
     else:
+        log.info("Cache miss: downloading '%s' v%s → %s", model_name, version, weights_dir)
         weights_dir.mkdir(parents=True, exist_ok=True)
         mlflow_registry.download_model_weights(
             model_name=model_name,
@@ -101,7 +110,9 @@ def _load_from_mlflow(model_name: str, **kwargs) -> torch.nn.Module:
     spec = importlib.util.spec_from_file_location(f"{model_name}.loader", loader_path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module.load(weights_path=weights_path)
+    model = module.load(weights_path=weights_path)
+    log.info("Loaded MLflow model %r v%s", model_name, version)
+    return model
 
 
 def encode(
@@ -136,10 +147,15 @@ def encode(
     with torch.no_grad():
         if isinstance(images, list):
             # Ragged batch: each (H, W) frame → (1, 1, H, W) tensor
-            for frame in images:
+            log.info("Encoding %d ragged frame(s) one at a time", len(images))
+            for i, frame in enumerate(images):
                 t = torch.from_numpy(np.asarray(frame, dtype=np.float32))[None, None].to(device)
                 results.append(_forward(t))
+                if (i + 1) % 10 == 0 or (i + 1) == len(images):
+                    log.info("  encoded %d / %d", i + 1, len(images))
         else:
+            n_batches = (len(images) + batch_size - 1) // batch_size
+            log.info("Encoding tensor %s in %d batch(es) of %d", tuple(images.shape), n_batches, batch_size)
             for i in range(0, len(images), batch_size):
                 results.append(_forward(images[i : i + batch_size].to(device)))
 
