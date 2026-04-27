@@ -134,8 +134,44 @@ def encode(
     """
     device = next(model.parameters()).device
     results = []
+    input_size: tuple[int, int] | None = getattr(model, "input_size", None)
+    if input_size:
+        log.info("Model expects input size %s — images will be resized if needed", input_size)
+
+    def _resize(t: torch.Tensor) -> torch.Tensor:
+        """Resize-with-aspect-ratio then pad to model.input_size.
+
+        Scale so the longer side fits target_H / target_W (whichever is the
+        binding constraint), then zero-pad the shorter dimension to reach the
+        exact target size.  If the image already matches, return it unchanged.
+        """
+        if input_size is None:
+            return t
+        import torch.nn.functional as F
+        target_H, target_W = input_size
+        _, _, h, w = t.shape
+        if h == target_H and w == target_W:
+            return t
+
+        # Scale so the image fits inside target_H × target_W
+        scale = min(target_H / h, target_W / w)
+        new_h = round(h * scale)
+        new_w = round(w * scale)
+        resized = F.interpolate(t, size=(new_h, new_w), mode="bilinear", align_corners=False)
+
+        # Zero-pad to reach exact target size (pad right / bottom)
+        pad_bottom = target_H - new_h
+        pad_right = target_W - new_w
+        padded = F.pad(resized, (0, pad_right, 0, pad_bottom))
+
+        log.debug(
+            "Resized %s → %s then padded to %s",
+            (h, w), (new_h, new_w), (target_H, target_W),
+        )
+        return padded
 
     def _forward(chunk: torch.Tensor) -> torch.Tensor:
+        chunk = _resize(chunk)
         if hasattr(model, "encode"):
             mu, _ = model.encode(chunk)
             return mu.cpu()
