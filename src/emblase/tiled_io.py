@@ -2,55 +2,73 @@
 
 from __future__ import annotations
 
-import os
 from typing import Sequence
 
 import numpy as np
 
-
-def _client(server_url: str | None = None):
-    from tiled.client import from_uri
-    url = server_url or os.environ["EMBLASE_TILED_SERVER_URL"]
-    key = os.environ.get("EMBLASE_TILED_API_KEY") or None
-    return from_uri(url, api_key=key)
+# Type alias: a tiled entry is either a bare path string or a (path, slice) tuple.
+TiledEntry = str | tuple[str, str]
 
 
-def _resolve(client, path: str):
-    """Walk a slash-separated path from a tiled root client."""
-    node = client
-    for part in path.strip("/").split("/"):
-        node = node[part]
-    return node
+def read_images(
+    client,
+    entries: Sequence[TiledEntry],
+) -> list[np.ndarray]:
+    """Read tiled nodes and return a flat list of 2-D float32 numpy arrays.
 
+    Parameters
+    ----------
+    client:
+        An already-initialised tiled client pointing at the catalog root
+        (e.g. ``tiled.client.from_uri(url, api_key=key)``).
+    entries:
+        Each item is either:
+        - a ``str`` tiled path  →  ``client[path].read()``
+        - a ``(path, slice)`` tuple  →  ``client[path].read(slice)``
 
-def read_images(uris: Sequence[str], server_url: str | None = None) -> list[np.ndarray]:
-    """Read tiled node paths and return a flat list of 2-D float32 numpy arrays.
+        The tiled client resolves slash-separated paths natively (e.g.
+        ``"proposal/scan"`` maps to ``client["proposal/scan"]``).
 
-    Each URI may point to:
-    - A 2-D array  ``(H, W)``     → one frame
+    Each node may contain:
+    - A 2-D array ``(H, W)``     → one frame
     - An N-D array ``(..., H, W)`` → all frames (product of leading dims)
 
-    Image dimensions may vary across URIs.
+    Image dimensions may vary across entries.
     """
-    client = _client(server_url)
     frames: list[np.ndarray] = []
-    for uri in uris:
-        arr = np.asarray(_resolve(client, uri).read(), dtype=np.float32)
+    for entry in entries:
+        if isinstance(entry, str):
+            path, slc = entry, None
+        else:
+            path, slc = entry
+
+        node = client[path]
+        arr = np.asarray(node.read(slc) if slc is not None else node.read(), dtype=np.float32)
+
         if arr.ndim < 2:
-            raise ValueError(f"Array at {uri!r} has fewer than 2 dimensions: {arr.shape}")
+            raise ValueError(
+                f"Array at {path!r} has fewer than 2 dimensions: {arr.shape}"
+            )
         for frame in arr.reshape(-1, arr.shape[-2], arr.shape[-1]):
             frames.append(frame)
     return frames
 
 
 def write_output(
-    container_uri: str,
+    client,
+    path: str,
     array: np.ndarray,
     key: str | None = None,
     metadata: dict | None = None,
-    server_url: str | None = None,
 ) -> None:
-    """Write ``array`` into the tiled container at ``container_uri``."""
-    client = _client(server_url)
-    container = _resolve(client, container_uri)
+    """Write ``array`` into the tiled container at ``path``.
+
+    Parameters
+    ----------
+    client:
+        An already-initialised tiled client pointing at the catalog root.
+    path:
+        Slash-separated path to the writable container node.
+    """
+    container = client[path]
     container.write_array(array, key=key, metadata=metadata or {})

@@ -50,8 +50,16 @@ async def _infer(args):
         submit_kwargs["image_data"] = images
     elif args.orion_path:
         submit_kwargs["image_path"] = args.orion_path
-    elif args.tiled_uris:
-        submit_kwargs["tiled_uris"] = args.tiled_uris
+    elif args.tiled_entries:
+        # Parse each entry: bare "path/to/node" or "path/to/node:slice_expr"
+        parsed = []
+        for e in args.tiled_entries:
+            if ":" in e:
+                path, slc = e.split(":", 1)
+                parsed.append((path, slc))
+            else:
+                parsed.append(e)
+        submit_kwargs["tiled_entries"] = parsed
     else:
         images = np.random.rand(args.n_images, args.image_size, args.image_size).astype(np.float32)
         print(f"Dummy images: {images.shape}  dtype={images.dtype}")
@@ -157,10 +165,14 @@ def main():
         "--orion-path", metavar="PATH", help="Absolute path to .npy already on Orion"
     )
     src.add_argument(
-        "--tiled-uris",
+        "--tiled-entries",
         nargs="+",
-        metavar="PATH",
-        help="One or more Tiled node paths; fetched on the node using EMBLASE_TILED_URI from env",
+        metavar="PATH[:SLICE]",
+        help=(
+            "One or more Tiled entries. Each is a slash-separated path optionally "
+            "followed by a colon and a numpy-style slice, e.g. "
+            "'proposal/scan' or 'proposal/scan:0:10'"
+        ),
     )
     infer_p.add_argument(
         "--n-images",

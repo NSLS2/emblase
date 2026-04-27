@@ -36,7 +36,7 @@ def _render_inference_script(
     models_dir: str,
     batch_size: int = 1,
     output_mode: str = "none",
-    tiled_uris: list[str] | None = None,
+    tiled_entries: list[str | tuple[str, str]] | None = None,
     tiled_result_path: str = "",
     mlflow_version: str = "",
 ) -> str:
@@ -46,7 +46,7 @@ def _render_inference_script(
         models_dir=models_dir,
         batch_size=batch_size,
         output_mode=output_mode,
-        tiled_uris=repr(tiled_uris or []),
+        tiled_entries=repr(tiled_entries or []),
         tiled_result_path=tiled_result_path,
         mlflow_version=mlflow_version,
     )
@@ -271,7 +271,7 @@ class OrionBackend(ComputeBackend):
         batch_size: int = 1,
         image_data: np.ndarray | None = None,
         image_path: str | None = None,
-        tiled_uris: list[str] | None = None,
+        tiled_entries: list[str | tuple[str, str]] | None = None,
         output_mode: str = "none",
         tiled_result_path: str = "",
         mlflow_version: str = "",
@@ -281,18 +281,19 @@ class OrionBackend(ComputeBackend):
 
         - image_data: numpy array — encoded client-side and embedded in the script.
         - image_path: absolute path to a .npy file already on Orion.
-        - tiled_uris: list of Tiled node paths — read on the node via tiled_io.
+        - tiled_entries: list of Tiled path strings or (path, slice) tuples —
+          read on the node via tiled_io.
 
         output_mode:
         - "none"  — output.npy saved on the node only.
-        - "tiled" — read from tiled_uris, write output to tiled_result_path.
+        - "tiled" — read from tiled_entries, write output to tiled_result_path.
         """
         py_script = _render_inference_script(
             model_name=model_name,
             models_dir=self.models_dir,
             batch_size=batch_size,
             output_mode=output_mode,
-            tiled_uris=tiled_uris,
+            tiled_entries=tiled_entries,
             tiled_result_path=tiled_result_path,
             mlflow_version=mlflow_version,
         )
@@ -324,7 +325,7 @@ class OrionBackend(ComputeBackend):
         )
 
         environment = [f"PATH={self.path}", f"HOME={self.home}", "SLURM_EXPORT_ENV=ALL"]
-        if output_mode == "tiled" or tiled_uris:
+        if output_mode == "tiled" or tiled_entries:
             if settings.tiled_server_url:
                 environment.append(f"EMBLASE_TILED_SERVER_URL={settings.tiled_server_url}")
             if settings.tiled_api_key:

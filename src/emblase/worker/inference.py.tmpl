@@ -1,13 +1,13 @@
 """Inference script — runs on the compute node inside `pixi run python`.
 
 Filled by _render_inference_script():
-    {models_dir}        — absolute path to the models directory on the compute node
-    {model_name}        — short name ("vae", "vit") or MLflow registry name
-    {batch_size}        — number of images per encode call (default 1)
-    {output_mode}       — "none" | "tiled"
-    {tiled_uris}        — repr of list[str] of tiled node paths (input, tiled mode)
-    {tiled_result_path} — container path in tiled to write results (tiled mode)
-    {mlflow_version}    — MLflow model version, or "" for latest
+    {models_dir}         — absolute path to the models directory on the compute node
+    {model_name}         — short name ("vae", "vit") or MLflow registry name
+    {batch_size}         — number of images per encode call (default 1)
+    {output_mode}        — "none" | "tiled"
+    {tiled_entries}      — repr of list[str | tuple[str,str]] of tiled (path[, slice]) entries
+    {tiled_result_path}  — container path in tiled to write results (tiled mode)
+    {mlflow_version}     — MLflow model version, or "" for latest
 
 job_dir is read from the JOB_DIR environment variable (set by the sbatch script
 to working_dir/job_$SLURM_JOB_ID), so the folder name always matches slurm-<id>.out.
@@ -27,7 +27,7 @@ job_dir = os.environ["JOB_DIR"]
 model_name = "{model_name}"
 batch_size = {batch_size}
 output_mode = "{output_mode}"
-tiled_uris = {tiled_uris}
+tiled_entries = {tiled_entries}
 tiled_result_path = "{tiled_result_path}"
 mlflow_version = "{mlflow_version}" or None
 
@@ -50,8 +50,13 @@ model = load_model(
 
 # --- load input ---
 if output_mode == "tiled":
-    from emblase.tiled_io import read_images  # noqa: E402
-    images = read_images(tiled_uris)           # list of (H, W) float32 arrays
+    from tiled.client import from_uri
+    from emblase.tiled_io import read_images, write_output  # noqa: E402
+    tiled_client = from_uri(
+        os.environ["EMBLASE_TILED_SERVER_URL"],
+        api_key=os.environ.get("EMBLASE_TILED_API_KEY") or None,
+    )
+    images = read_images(tiled_client, tiled_entries)  # list of (H, W) float32 arrays
     print(f"Input: {{len(images)}} frames from Tiled")
     output = encode(model, images, batch_size=batch_size)
 else:
@@ -72,6 +77,5 @@ print(f"Output saved: {{output_path}}")
 
 # --- write to Tiled if requested ---
 if output_mode == "tiled":
-    from emblase.tiled_io import write_output  # noqa: E402
-    write_output(tiled_result_path, output)
+    write_output(tiled_client, tiled_result_path, output)
     print(f"Written to Tiled: {{tiled_result_path}}")
