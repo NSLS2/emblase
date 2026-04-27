@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Sequence
 
 import numpy as np
+from tiled.ndslice import NDSlice
 
 # Type alias: a tiled entry is either a bare path string or a (path, slice) tuple.
 TiledEntry = str | tuple[str, str]
@@ -42,8 +43,8 @@ def read_images(
         else:
             path, slc = entry
 
-        node = client[path]
-        arr = np.asarray(node.read(slc) if slc is not None else node.read(), dtype=np.float32)
+        slc = NDSlice.from_numpy_str(slc) if slc is not None else None
+        arr = client[path].read(slc)
 
         if arr.ndim < 2:
             raise ValueError(
