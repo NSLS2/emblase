@@ -1,9 +1,10 @@
-"""Model loading utilities for VAE and ViT autoencoders."""
+"""Model loading utilities."""
 
 from __future__ import annotations
 
+import importlib.util
+import os
 import sys
-import warnings
 from pathlib import Path
 
 import numpy as np
@@ -18,121 +19,106 @@ def _add_models_to_path() -> None:
         sys.path.insert(0, p)
 
 
-def _load_weights(model: torch.nn.Module, weights_path: Path) -> None:
-    """Load weights from a .npz file into a model in-place (strict=False)."""
-    if not weights_path.exists():
-        warnings.warn(
-            f"Weights not found at {weights_path} — using random initialisation"
-        )
-        return
-    data = np.load(str(weights_path), allow_pickle=True)
-    state_dict = {k: torch.from_numpy(data[k]) for k in data.files}
-    model.load_state_dict(state_dict, strict=False)
-
-
-def load_vae(
-    latent_dim: int = 512,
-    image_size: tuple[int, int] = (512, 512),
-    weights_path: Path | None = None,
-) -> torch.nn.Module:
-    _add_models_to_path()
-    from vae.vae import ConvVAE  # noqa: PLC0415
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = ConvVAE(latent_dim=latent_dim, image_size=image_size).to(device)
-    _load_weights(
-        model, weights_path or settings.models_dir / "vae" / "vae_model_512_weights.npz"
-    )
-    return model.eval()
-
-
-def load_vit(
-    latent_dim: int = 512,
-    weights_path: Path | None = None,
-) -> torch.nn.Module:
-    _add_models_to_path()
-    from vit.vit import Autoencoder  # noqa: PLC0415
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = Autoencoder(latent_dim=latent_dim).to(device)
-    _load_weights(
-        model, weights_path or settings.models_dir / "vit" / "vit_model_weights.npz"
-    )
-    return model.eval()
-
-
 def load_model(model_name: str, **kwargs) -> torch.nn.Module:
-    """Load a model by name ('vae' or 'vit'). image_size is ignored for ViT."""
-    if model_name == "vae":
-        return load_vae(**kwargs)
-    if model_name == "vit":
-        kwargs.pop("image_size", None)
-        return load_vit(**kwargs)
-    raise ValueError(f"Unknown model: {model_name!r}. Available: ['vae', 'vit']")
+    """Load a model by name.
 
+    If ``settings.models_dir / model_name`` is a directory containing a
+    ``loader.py``, the model is loaded locally via that loader.  Otherwise
+    weights are pulled from the MLflow registry under ``model_name`` and
+    the same local loader is used.
 
-def load_model_from_mlflow(
-    model_name: str,
-    mlflow_model: str,
-    mlflow_version: str | None = None,
-    mlflow_tracking_uri: str | None = None,
-    mlflow_api_key: str | None = None,
-    dest_dir: Path | None = None,
-    **kwargs,
-) -> torch.nn.Module:
-    """Pull weights from the MLflow registry, then load the model.
-
-    Parameters
-    ----------
-    model_name:
-        Emblase model architecture — ``"vae"`` or ``"vit"``.
-    mlflow_model:
-        Registered model name in the MLflow registry.
-    mlflow_version:
-        Specific version to pull.  ``None`` → latest.
-    mlflow_tracking_uri:
-        Override ``EMBLASE_MLFLOW_TRACKING_URI`` for this call only.
-    mlflow_api_key:
-        Override ``EMBLASE_MLFLOW_API_KEY`` for this call only (AmSC).
-    dest_dir:
-        Where to download the weights.  Defaults to a temp directory.
-    **kwargs:
-        Forwarded to :func:`load_model` (e.g. ``latent_dim``, ``image_size``).
+    Accepted kwargs: ``latent_dim``, ``image_size``, ``weights_path``,
+    ``mlflow_version``, ``mlflow_tracking_uri``, ``mlflow_api_key``, ``dest_dir``.
     """
-    import tempfile
+    if (settings.models_dir / model_name).is_dir():
+        return _load_local(model_name, **kwargs)
+    return _load_from_mlflow(model_name, **kwargs)
 
-    from .mlflow_registry import download_model_weights
 
-    if dest_dir is None:
-        dest_dir = Path(tempfile.mkdtemp(prefix="emblase_mlflow_"))
+def _load_local(model_name: str, **kwargs) -> torch.nn.Module:
+    _add_models_to_path()
+    model_dir = settings.models_dir / model_name
+    loader_path = model_dir / "loader.py"
+    if not loader_path.exists():
+        raise FileNotFoundError(
+            f"No loader.py found in {model_dir}. "
+            "Each model directory must contain a loader.py with a load(**kwargs) function."
+        )
+    spec = importlib.util.spec_from_file_location(f"{model_name}.loader", loader_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.load(**kwargs)
 
-    weights_dir = download_model_weights(
-        model_name=mlflow_model,
-        version=mlflow_version,
-        dest_dir=dest_dir,
-        tracking_uri=mlflow_tracking_uri,
-        api_key=mlflow_api_key,
+
+def _load_from_mlflow(model_name: str, **kwargs) -> torch.nn.Module:
+    from . import mlflow_registry
+
+    tracking_uri = kwargs.get("mlflow_tracking_uri")
+    api_key = kwargs.get("mlflow_api_key")
+
+    version = mlflow_registry.resolve_version(
+        model_name,
+        version=kwargs.get("mlflow_version"),
+        tracking_uri=tracking_uri,
+        api_key=api_key,
     )
 
-    # Find the first .npz file in the downloaded directory
-    npz_files = sorted(weights_dir.rglob("*.npz"))
-    if not npz_files:
-        raise FileNotFoundError(
-            f"No .npz weight files found in {weights_dir}. "
-            "Ensure the model was pushed as a directory of .npz files."
+    # Cache dir: <cache_root>/<model_name>/v<version>/
+    # Stable across jobs on the same node/filesystem.  Falls back to a
+    # system temp dir if no explicit cache_root is provided.
+    cache_root = kwargs.get("cache_dir") or Path(
+        os.environ.get("EMBLASE_MODEL_CACHE_DIR")
+        or Path.home() / ".cache" / "emblase" / "models"
+    )
+    # weights_dir is always <cache_root>/<model_name>/v<version>/model/
+    # matching the artifact subpath MLflow uses on download.
+    weights_dir = Path(cache_root) / model_name / f"v{version}" / "model"
+
+    if (weights_dir / "loader.py").exists():
+        print(f"Using cached '{model_name}' v{version} from {weights_dir}")
+    else:
+        weights_dir.mkdir(parents=True, exist_ok=True)
+        mlflow_registry.download_model_weights(
+            model_name=model_name,
+            version=version,
+            dest_dir=weights_dir.parent,  # download into v<version>/, MLflow appends "model/"
+            tracking_uri=tracking_uri,
+            api_key=api_key,
         )
-    kwargs["weights_path"] = npz_files[0]
-    return load_model(model_name, **kwargs)
+
+    loader_path = weights_dir / "loader.py"
+    if not loader_path.exists():
+        raise FileNotFoundError(
+            f"No loader.py found in {weights_dir}. "
+            "Ensure the model directory was pushed with a loader.py."
+        )
+    npz_files = sorted(weights_dir.rglob("*.npz"))
+    weights_path = npz_files[0] if npz_files else None
+
+    # Add the downloaded dir to sys.path so loader.py can import its siblings.
+    p = str(weights_dir)
+    if p not in sys.path:
+        sys.path.insert(0, p)
+
+    spec = importlib.util.spec_from_file_location(f"{model_name}.loader", loader_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.load(
+        weights_path=weights_path,
+        latent_dim=kwargs.get("latent_dim", 512),
+        image_size=kwargs.get("image_size", (512, 512)),
+    )
 
 
-def encode(model: torch.nn.Module, images: torch.Tensor, model_name: str) -> np.ndarray:
-    """Run the encoder and return output as (B, latent_dim) numpy array."""
+def encode(model: torch.nn.Module, images: torch.Tensor) -> np.ndarray:
+    """Run the encoder and return output as a (B, latent_dim) numpy array."""
     device = next(model.parameters()).device
+    images = images.to(device)
     with torch.no_grad():
-        if model_name == "vae":
-            mu, _ = model.encode(images.to(device))
+        if hasattr(model, "encode"):
+            mu, _ = model.encode(images)
             return mu.cpu().numpy()
-        if model_name == "vit":
-            latent, _ = model.encoder(images.to(device))
+        if hasattr(model, "encoder"):
+            latent, _ = model.encoder(images)
             return latent.cpu().numpy()
-    raise ValueError(f"Unknown model_name: {model_name!r}")
+    raise ValueError(f"Model {type(model).__name__!r} has neither .encode() nor .encoder()")

@@ -326,46 +326,75 @@ def test_download_model_weights_delegates_to_pull(tmp_path, monkeypatch):
     assert result == expected
 
 
-# ── load_model_from_mlflow ────────────────────────────────────────────────────
+# ── load_model (MLflow path) ──────────────────────────────────────────────────
 
 
 def test_load_model_from_mlflow(tmp_path):
-    weights_dir = tmp_path / "model"
-    weights_dir.mkdir()
+    # Simulate a cache miss: weights_dir doesn't exist, download_model_weights
+    # creates it and populates loader.py + npz.
+    weights_dir = tmp_path / "bnl-nsls2-smi-vae" / "v3" / "model"
+    loader_src = (
+        "def load(weights_path=None, **kwargs):\n"
+        "    import sys; sys._test_loader_called = weights_path\n"
+        "    from unittest.mock import MagicMock\n"
+        "    return MagicMock()\n"
+    )
+
+    def fake_download(**_kwargs):
+        weights_dir.mkdir(parents=True, exist_ok=True)
+        (weights_dir / "model.npz").write_bytes(b"fake")
+        (weights_dir / "loader.py").write_text(loader_src)
+        return weights_dir
+
+    import sys as _sys
+    with (
+        patch("emblase.mlflow_registry.resolve_version", return_value="3"),
+        patch("emblase.mlflow_registry.download_model_weights", side_effect=fake_download),
+    ):
+        import emblase.models as models_mod
+        models_mod._load_from_mlflow("bnl-nsls2-smi-vae", cache_dir=tmp_path)
+
+    assert _sys._test_loader_called == weights_dir / "model.npz"
+
+
+def test_load_model_from_mlflow_uses_cache(tmp_path):
+    # Simulate a cache hit: loader.py already present, download must NOT be called.
+    weights_dir = tmp_path / "bnl-nsls2-smi-vae" / "v3" / "model"
+    weights_dir.mkdir(parents=True)
     fake_npz = weights_dir / "model.npz"
     fake_npz.write_bytes(b"fake")
+    loader_src = (
+        "def load(weights_path=None, **kwargs):\n"
+        "    import sys; sys._test_loader_cached = weights_path\n"
+        "    from unittest.mock import MagicMock\n"
+        "    return MagicMock()\n"
+    )
+    (weights_dir / "loader.py").write_text(loader_src)
+
+    import sys as _sys
+    with (
+        patch("emblase.mlflow_registry.resolve_version", return_value="3"),
+        patch("emblase.mlflow_registry.download_model_weights") as mock_dl,
+    ):
+        import emblase.models as models_mod
+        models_mod._load_from_mlflow(
+            "bnl-nsls2-smi-vae",
+            cache_dir=tmp_path,
+        )
+        mock_dl.assert_not_called()
+
+    assert _sys._test_loader_cached == fake_npz
+
+
+def test_load_model_from_mlflow_no_loader_raises(tmp_path):
+    weights_dir = tmp_path / "bnl-nsls2-smi-vae" / "v1" / "model"
+    weights_dir.mkdir(parents=True)
+    (weights_dir / "model.npz").write_bytes(b"fake")
 
     with (
-        patch("emblase.mlflow_registry.pull", return_value=weights_dir),
-        patch("emblase.models.load_model") as mock_load,
+        patch("emblase.mlflow_registry.resolve_version", return_value="1"),
+        patch("emblase.mlflow_registry.download_model_weights", return_value=weights_dir),
+        pytest.raises(FileNotFoundError, match="No loader.py found"),
     ):
-        mock_load.return_value = MagicMock()
-        from emblase.models import load_model_from_mlflow
-
-        load_model_from_mlflow(
-            model_name="vae",
-            mlflow_model="vae-512",
-            mlflow_version="1",
-            dest_dir=tmp_path,
-        )
-
-    mock_load.assert_called_once()
-    assert mock_load.call_args[0][0] == "vae"
-    assert mock_load.call_args[1]["weights_path"] == fake_npz
-
-
-def test_load_model_from_mlflow_no_npz_raises(tmp_path):
-    empty_dir = tmp_path / "empty"
-    empty_dir.mkdir()
-
-    with (
-        patch("emblase.mlflow_registry.pull", return_value=empty_dir),
-        pytest.raises(FileNotFoundError, match="No .npz weight files"),
-    ):
-        from emblase.models import load_model_from_mlflow
-
-        load_model_from_mlflow(
-            model_name="vae",
-            mlflow_model="vae-512",
-            dest_dir=tmp_path,
-        )
+        import emblase.models as models_mod
+        models_mod._load_from_mlflow("bnl-nsls2-smi-vae", cache_dir=tmp_path)

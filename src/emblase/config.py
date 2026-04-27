@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     mlflow_api_key: str = ""
     # MLflow experiment name used when logging runs during push
     mlflow_experiment: str = "emblase-models"
+    # Local directory where MLflow model artifacts are cached, keyed by name+version.
+    # On Orion this should be a persistent path (e.g. /nsls2/users/ymatviych/.cache/emblase/models).
+    # Falls back to ~/.cache/emblase/models if unset.
+    model_cache_dir: str = ""
 
     # Orion compute
     orion_api_url: str = "https://orion-api-staging.nsls2.bnl.gov"

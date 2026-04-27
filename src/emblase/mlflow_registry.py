@@ -284,6 +284,27 @@ def push(
 # ── pull ──────────────────────────────────────────────────────────────────────
 
 
+def resolve_version(
+    model_name: str,
+    version: str | int | None = None,
+    tracking_uri: str | None = None,
+    api_key: str | None = None,
+) -> str:
+    """Return the concrete version string for ``model_name``.
+
+    If ``version`` is already specified it is returned as-is (stringified).
+    Otherwise the highest registered version number is returned.  This is a
+    cheap metadata-only call — no artifacts are downloaded.
+    """
+    if version is not None:
+        return str(version)
+    client = _get_client(tracking_uri, api_key)
+    versions = client.search_model_versions(f"name='{model_name}'")
+    if not versions:
+        raise ValueError(f"No versions found for model '{model_name}'")
+    return str(max(int(v.version) for v in versions))
+
+
 def pull(
     model_name: str,
     version: str | int | None = None,

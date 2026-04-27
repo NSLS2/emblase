@@ -38,7 +38,7 @@ class LocalBackend(ComputeBackend):
             imgs = image_data[:, np.newaxis] if image_data.ndim == 3 else image_data
             size = image_size or imgs.shape[-2:]
             model = load_model(model_name, latent_dim=latent_dim, image_size=size)
-            output = encode(model, torch.from_numpy(imgs).float(), model_name)
+            output = encode(model, torch.from_numpy(imgs).float())
             return JobResult(
                 job_id=job_id, status=JobStatus.completed, output_data=output
             )

@@ -38,7 +38,6 @@ def _render_inference_script(
     models_dir: str,
     output_mode: str = "none",
     tiled_result_path: str = "",
-    mlflow_model: str = "",
     mlflow_version: str = "",
 ) -> str:
     """Render the inference template with concrete values."""
@@ -49,7 +48,6 @@ def _render_inference_script(
         models_dir=models_dir,
         output_mode=output_mode,
         tiled_result_path=tiled_result_path,
-        mlflow_model=mlflow_model,
         mlflow_version=mlflow_version,
     )
 
@@ -291,7 +289,6 @@ class OrionBackend(ComputeBackend):
         tiled_uris: list[str] | None = None,
         output_mode: str = "none",
         tiled_result_path: str = "",
-        mlflow_model: str = "",
         mlflow_version: str = "",
         **kwargs: Any,
     ) -> str:
@@ -306,8 +303,10 @@ class OrionBackend(ComputeBackend):
         - "none"  — output.npy saved on the node only.
         - "tiled" — write output array into Tiled at EMBLASE_TILED_URI/tiled_result_path.
 
-        mlflow_model: if set, weights are pulled from the MLflow registry on the
-        node instead of loaded from the local models_dir.
+        model_name may be a short architecture name ("vae", "vit") or a full
+        MLflow registry name (e.g. "bnl-nsls2-smi-vae"). The node resolves it:
+        known names load from local models_dir; unknown names are pulled from
+        the MLflow registry (EMBLASE_MLFLOW_TRACKING_URI).
         """
         py_script = _render_inference_script(
             model_name=model_name,
@@ -316,7 +315,6 @@ class OrionBackend(ComputeBackend):
             models_dir=self.models_dir,
             output_mode=output_mode,
             tiled_result_path=tiled_result_path,
-            mlflow_model=mlflow_model,
             mlflow_version=mlflow_version,
         )
 
@@ -345,12 +343,12 @@ class OrionBackend(ComputeBackend):
                 environment.append(f"EMBLASE_TILED_URI={settings.tiled_uri}")
             if settings.tiled_api_key:
                 environment.append(f"EMBLASE_TILED_API_KEY={settings.tiled_api_key}")
-        if mlflow_model and settings.mlflow_tracking_uri:
-            environment.append(
-                f"EMBLASE_MLFLOW_TRACKING_URI={settings.mlflow_tracking_uri}"
-            )
+        if settings.mlflow_tracking_uri:
+            environment.append(f"EMBLASE_MLFLOW_TRACKING_URI={settings.mlflow_tracking_uri}")
             if settings.mlflow_api_key:
                 environment.append(f"EMBLASE_MLFLOW_API_KEY={settings.mlflow_api_key}")
+            if settings.model_cache_dir:
+                environment.append(f"EMBLASE_MODEL_CACHE_DIR={settings.model_cache_dir}")
 
         job_id = await self.client.submit_job(
             script=script,

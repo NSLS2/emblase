@@ -119,7 +119,16 @@ def main():
 
     # -- infer subcommand --
     infer_p = sub.add_parser("infer", help="Submit an inference job")
-    infer_p.add_argument("--model", choices=["vae", "vit"], default="vae")
+    infer_p.add_argument(
+        "--model",
+        default="vae",
+        help=(
+            "Model name. Use a short architecture name ('vae', 'vit') to load "
+            "from local weights, or an MLflow registry name (e.g. 'bnl-nsls2-smi-vae') "
+            "to pull weights from the registry. Falls back to local weights if MLflow "
+            "is unavailable."
+        ),
+    )
     infer_p.add_argument("--image-size", type=int, default=512)
     infer_p.add_argument("--latent-dim", type=int, default=512)
     infer_p.add_argument("--no-wait", action="store_true")

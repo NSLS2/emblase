@@ -20,7 +20,7 @@ def backend_with_mock_models(monkeypatch):
     def fake_load_model(model_name, **kwargs):
         return FakeModel()
 
-    def fake_encode(model, tensor, model_name):
+    def fake_encode(model, tensor):
         # Return a fixed latent array matching batch size
         return DUMMY_LATENT[: tensor.shape[0]]
 
