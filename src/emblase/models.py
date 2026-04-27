@@ -123,7 +123,8 @@ def encode(
     device = next(model.parameters()).device
     results = []
     with torch.no_grad():
-        for i in tqdm(range(0, len(images), batch_size), desc="Encoding", unit="batch"):
+        print(f"Encoding {len(images)} images with batch size {batch_size}...")
+        for i in range(0, len(images), batch_size):
             chunk = images[i : i + batch_size].to(device)  # noqa: E203
             if hasattr(model, "encode"):
                 mu, _ = model.encode(chunk)
@@ -135,4 +136,6 @@ def encode(
                 raise ValueError(
                     f"Model {type(model).__name__!r} has neither .encode() nor .encoder()"
                 )
+            print(f"Encoded {min(i + batch_size, len(images))}/{len(images)} images")
+    print("Encoding complete.")
     return torch.cat(results).numpy()
