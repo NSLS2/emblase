@@ -36,6 +36,7 @@ def _render_inference_script(
     latent_dim: int,
     image_size: tuple[int, int],
     models_dir: str,
+    batch_size: int = 1,
     output_mode: str = "none",
     tiled_result_path: str = "",
     mlflow_version: str = "",
@@ -46,6 +47,7 @@ def _render_inference_script(
         latent_dim=latent_dim,
         image_size=image_size,
         models_dir=models_dir,
+        batch_size=batch_size,
         output_mode=output_mode,
         tiled_result_path=tiled_result_path,
         mlflow_version=mlflow_version,
@@ -284,6 +286,7 @@ class OrionBackend(ComputeBackend):
         model_name: str,
         image_size: tuple[int, int],
         latent_dim: int = 512,
+        batch_size: int = 1,
         image_data: np.ndarray | None = None,
         image_path: str | None = None,
         tiled_uris: list[str] | None = None,
@@ -313,6 +316,7 @@ class OrionBackend(ComputeBackend):
             latent_dim=latent_dim,
             image_size=image_size,
             models_dir=self.models_dir,
+            batch_size=batch_size,
             output_mode=output_mode,
             tiled_result_path=tiled_result_path,
             mlflow_version=mlflow_version,
@@ -321,9 +325,16 @@ class OrionBackend(ComputeBackend):
         if image_data is not None:
             buf = io.BytesIO()
             np.save(buf, image_data)
-            script_kwargs: dict[str, Any] = {
-                "images_b64": base64.b64encode(buf.getvalue()).decode()
-            }
+            raw = buf.getvalue()
+            b64 = base64.b64encode(raw).decode()
+            _MAX_EMBED_BYTES = 10 * 1024 * 1024  # 10 MB — Orion API request size limit
+            if len(b64) > _MAX_EMBED_BYTES:
+                raise ValueError(
+                    f"Image payload too large to embed ({len(raw) / 1024 / 1024:.1f} MB raw, "
+                    f"{len(b64) / 1024 / 1024:.1f} MB base64). "
+                    "Copy the .npy file to Orion and use --orion-path instead."
+                )
+            script_kwargs: dict[str, Any] = {"images_b64": b64}
         elif image_path:
             script_kwargs = {"image_path": image_path}
         else:

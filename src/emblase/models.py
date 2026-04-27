@@ -110,15 +110,24 @@ def _load_from_mlflow(model_name: str, **kwargs) -> torch.nn.Module:
     )
 
 
-def encode(model: torch.nn.Module, images: torch.Tensor) -> np.ndarray:
-    """Run the encoder and return output as a (B, latent_dim) numpy array."""
+def encode(model: torch.nn.Module, images: torch.Tensor, batch_size: int = 1) -> np.ndarray:
+    """Run the encoder and return output as a (B, latent_dim) numpy array.
+
+    Processes images in chunks of ``batch_size`` to avoid GPU OOM on large
+    inputs.  Default is 1 (one image at a time), which is safe for any image
+    size but can be increased for small images to improve throughput.
+    """
     device = next(model.parameters()).device
-    images = images.to(device)
+    results = []
     with torch.no_grad():
-        if hasattr(model, "encode"):
-            mu, _ = model.encode(images)
-            return mu.cpu().numpy()
-        if hasattr(model, "encoder"):
-            latent, _ = model.encoder(images)
-            return latent.cpu().numpy()
-    raise ValueError(f"Model {type(model).__name__!r} has neither .encode() nor .encoder()")
+        for i in range(0, len(images), batch_size):
+            chunk = images[i : i + batch_size].to(device)
+            if hasattr(model, "encode"):
+                mu, _ = model.encode(chunk)
+                results.append(mu.cpu())
+            elif hasattr(model, "encoder"):
+                latent, _ = model.encoder(chunk)
+                results.append(latent.cpu())
+            else:
+                raise ValueError(f"Model {type(model).__name__!r} has neither .encode() nor .encoder()")
+    return torch.cat(results).numpy()

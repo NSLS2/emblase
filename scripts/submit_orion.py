@@ -40,6 +40,7 @@ async def _infer(args):
         model_name=args.model,
         image_size=(args.image_size, args.image_size),
         latent_dim=args.latent_dim,
+        batch_size=args.batch_size,
         output_mode=args.output_mode,
     )
     if args.tiled_result_path:
@@ -131,6 +132,12 @@ def main():
     )
     infer_p.add_argument("--image-size", type=int, default=512)
     infer_p.add_argument("--latent-dim", type=int, default=512)
+    infer_p.add_argument(
+        "--batch-size",
+        type=int,
+        default=1,
+        help="Images per encode call on the node. Default 1 is safe for large images; increase for throughput.",
+    )
     infer_p.add_argument("--no-wait", action="store_true")
     infer_p.add_argument(
         "--output-mode",
