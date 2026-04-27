@@ -71,4 +71,4 @@ def write_output(
         Slash-separated path to the writable container node.
     """
     container = client[path]
-    container.write_array(array, key=key, metadata=metadata or {})
+    container.write_array(array, key=key, metadata=metadata or {}, access_tags=['smi_sandbox'])
