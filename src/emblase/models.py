@@ -9,7 +9,6 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from tqdm import tqdm
 
 from .config import settings
 
@@ -136,6 +135,7 @@ def encode(
                 raise ValueError(
                     f"Model {type(model).__name__!r} has neither .encode() nor .encoder()"
                 )
-            print(f"Encoded {min(i + batch_size, len(images))}/{len(images)} images")
+            if (i // batch_size) % 10 == 0 or i + batch_size >= len(images):
+                print(f"Encoded {min(i + batch_size, len(images))}/{len(images)} images")
     print("Encoding complete.")
     return torch.cat(results).numpy()

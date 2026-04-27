@@ -33,8 +33,6 @@ _SLURM_STATE_MAP = {
 
 def _render_inference_script(
     model_name: str,
-    latent_dim: int,
-    image_size: tuple[int, int],
     models_dir: str,
     batch_size: int = 1,
     output_mode: str = "none",
@@ -44,8 +42,6 @@ def _render_inference_script(
     """Render the inference template with concrete values."""
     return _TEMPLATE.format(
         model_name=model_name,
-        latent_dim=latent_dim,
-        image_size=image_size,
         models_dir=models_dir,
         batch_size=batch_size,
         output_mode=output_mode,
@@ -285,7 +281,6 @@ class OrionBackend(ComputeBackend):
         self,
         model_name: str,
         image_size: tuple[int, int],
-        latent_dim: int = 512,
         batch_size: int = 1,
         image_data: np.ndarray | None = None,
         image_path: str | None = None,
@@ -313,8 +308,6 @@ class OrionBackend(ComputeBackend):
         """
         py_script = _render_inference_script(
             model_name=model_name,
-            latent_dim=latent_dim,
-            image_size=image_size,
             models_dir=self.models_dir,
             batch_size=batch_size,
             output_mode=output_mode,

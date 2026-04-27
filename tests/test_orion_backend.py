@@ -18,16 +18,12 @@ DUMMY_IMAGES = np.zeros((2, 512, 512), dtype=np.float32)
 def test_render_inference_script_substitutes_all_placeholders():
     script = _render_inference_script(
         model_name="vae",
-        latent_dim=512,
-        image_size=(512, 512),
         models_dir="/models",
         output_mode="none",
         tiled_result_path="",
     )
     assert "/models" in script
     assert 'model_name = "vae"' in script
-    assert "latent_dim = 512" in script
-    assert "image_size = (512, 512)" in script
     assert 'models_dir = "/models"' in script
     assert 'output_mode = "none"' in script
     assert 'os.environ["JOB_DIR"]' in script
@@ -36,14 +32,11 @@ def test_render_inference_script_substitutes_all_placeholders():
 def test_render_inference_script_vit():
     script = _render_inference_script(
         model_name="vit",
-        latent_dim=256,
-        image_size=(224, 224),
         models_dir="/models",
         output_mode="tiled",
         tiled_result_path="results/job1",
     )
     assert "vit" in script
-    assert "256" in script
     assert "results/job1" in script
 
 
