@@ -36,6 +36,7 @@ def _render_inference_script(
     models_dir: str,
     batch_size: int = 1,
     output_mode: str = "none",
+    tiled_uris: list[str] | None = None,
     tiled_result_path: str = "",
     mlflow_version: str = "",
 ) -> str:
@@ -45,6 +46,7 @@ def _render_inference_script(
         models_dir=models_dir,
         batch_size=batch_size,
         output_mode=output_mode,
+        tiled_uris=repr(tiled_uris or []),
         tiled_result_path=tiled_result_path,
         mlflow_version=mlflow_version,
     )
@@ -58,18 +60,18 @@ def _build_sbatch_script(
     time_limit: str = "0-00:10:00",
     images_b64: str | None = None,
     image_path: str | None = None,
-    tiled_uris: list[str] | None = None,
+    tiled_mode: bool = False,
 ) -> str:
-    """Build the sbatch script. Exactly one image source must be provided:
+    """Build the sbatch script. Exactly one image source must be indicated:
 
     - images_b64: encoded client-side, embedded as heredoc, decoded on the node.
     - image_path: .npy already on Orion; symlinked into the job dir.
-    - tiled_uris: list of Tiled node paths; fetched on the node using
-      EMBLASE_TILED_URI / EMBLASE_TILED_API_KEY from the environment.
+    - tiled_mode: input is read directly by the inference script via tiled_io;
+      no pre-fetch step needed in the sbatch preamble.
     """
-    sources = [bool(images_b64), bool(image_path), bool(tiled_uris)]
+    sources = [bool(images_b64), bool(image_path), tiled_mode]
     if sum(sources) != 1:
-        raise ValueError("Provide exactly one of images_b64, image_path, tiled_uris")
+        raise ValueError("Provide exactly one of images_b64, image_path, tiled_mode=True")
 
     if images_b64:
         input_section = f"""\
@@ -92,21 +94,7 @@ rm -f "$JOB_DIR/_input_b64.txt"
     elif image_path:
         input_section = f'ln -sf {image_path} "$JOB_DIR/input.npy"\n'
     else:
-        paths_repr = repr(tiled_uris)
-        input_section = f"""\
-cd {project_dir} && pixi run python << 'EMBLASE_TILED_EOF'
-import numpy as np, os
-from tiled.client import from_uri
-job_dir = os.environ["JOB_DIR"]
-base_uri = os.environ["EMBLASE_TILED_URI"]
-api_key = os.environ.get("EMBLASE_TILED_API_KEY") or None
-paths = {paths_repr}
-client = from_uri(base_uri, api_key=api_key)
-images = np.stack([np.asarray(client[p].read()) for p in paths])
-np.save(f"{{job_dir}}/input.npy", images)
-print(f"Fetched from Tiled: {{images.shape}}  dtype={{images.dtype}}")
-EMBLASE_TILED_EOF
-"""
+        input_section = ""  # tiled_mode: inference script reads directly from Tiled
 
     return f"""\
 #!/bin/bash
@@ -280,7 +268,6 @@ class OrionBackend(ComputeBackend):
     async def submit(
         self,
         model_name: str,
-        image_size: tuple[int, int],
         batch_size: int = 1,
         image_data: np.ndarray | None = None,
         image_path: str | None = None,
@@ -292,25 +279,20 @@ class OrionBackend(ComputeBackend):
     ) -> str:
         """Submit an inference job. Exactly one image source must be provided:
 
-        - image_data: numpy array — encoded client-side and uploaded.
+        - image_data: numpy array — encoded client-side and embedded in the script.
         - image_path: absolute path to a .npy file already on Orion.
-        - tiled_uris: list of Tiled node paths — fetched on the node using
-          EMBLASE_TILED_URI / EMBLASE_TILED_API_KEY from the environment.
+        - tiled_uris: list of Tiled node paths — read on the node via tiled_io.
 
-        output_mode controls how results are delivered:
+        output_mode:
         - "none"  — output.npy saved on the node only.
-        - "tiled" — write output array into Tiled at EMBLASE_TILED_URI/tiled_result_path.
-
-        model_name may be a short architecture name ("vae", "vit") or a full
-        MLflow registry name (e.g. "bnl-nsls2-smi-vae"). The node resolves it:
-        known names load from local models_dir; unknown names are pulled from
-        the MLflow registry (EMBLASE_MLFLOW_TRACKING_URI).
+        - "tiled" — read from tiled_uris, write output to tiled_result_path.
         """
         py_script = _render_inference_script(
             model_name=model_name,
             models_dir=self.models_dir,
             batch_size=batch_size,
             output_mode=output_mode,
+            tiled_uris=tiled_uris,
             tiled_result_path=tiled_result_path,
             mlflow_version=mlflow_version,
         )
@@ -331,7 +313,7 @@ class OrionBackend(ComputeBackend):
         elif image_path:
             script_kwargs = {"image_path": image_path}
         else:
-            script_kwargs = {"tiled_uris": tiled_uris}
+            script_kwargs = {"tiled_mode": True}
 
         script = _build_sbatch_script(
             working_dir=self.working_dir,
@@ -343,20 +325,16 @@ class OrionBackend(ComputeBackend):
 
         environment = [f"PATH={self.path}", f"HOME={self.home}", "SLURM_EXPORT_ENV=ALL"]
         if output_mode == "tiled" or tiled_uris:
-            if settings.tiled_uri:
-                environment.append(f"EMBLASE_TILED_URI={settings.tiled_uri}")
+            if settings.tiled_server_url:
+                environment.append(f"EMBLASE_TILED_SERVER_URL={settings.tiled_server_url}")
             if settings.tiled_api_key:
                 environment.append(f"EMBLASE_TILED_API_KEY={settings.tiled_api_key}")
         if settings.mlflow_tracking_uri:
-            environment.append(
-                f"EMBLASE_MLFLOW_TRACKING_URI={settings.mlflow_tracking_uri}"
-            )
+            environment.append(f"EMBLASE_MLFLOW_TRACKING_URI={settings.mlflow_tracking_uri}")
             if settings.mlflow_api_key:
                 environment.append(f"EMBLASE_MLFLOW_API_KEY={settings.mlflow_api_key}")
             if settings.model_cache_dir:
-                environment.append(
-                    f"EMBLASE_MODEL_CACHE_DIR={settings.model_cache_dir}"
-                )
+                environment.append(f"EMBLASE_MODEL_CACHE_DIR={settings.model_cache_dir}")
 
         job_id = await self.client.submit_job(
             script=script,

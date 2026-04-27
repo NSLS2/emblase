@@ -73,18 +73,18 @@ def test_build_sbatch_script_from_path():
 
 
 def test_build_sbatch_script_from_tiled():
+    # tiled_uris are now baked into the rendered inference script, not the sbatch preamble.
+    # _build_sbatch_script with tiled_mode=True produces no input pre-fetch section.
     script = _build_sbatch_script(
         working_dir="/jobs",
         python_script="print('hello')",
-        tiled_uris=["path/to/scan1", "path/to/scan2"],
+        tiled_mode=True,
         project_dir="/code/emblase",
         job_name="emblase-vae",
     )
-    assert "path/to/scan1" in script
-    assert "path/to/scan2" in script
-    assert "EMBLASE_TILED_URI" in script
     assert "EMBLASE_B64_EOF" not in script
     assert "ln -sf" not in script
+    assert "print('hello')" in script
 
 
 def test_images_b64_roundtrip():
@@ -121,8 +121,6 @@ async def test_orion_backend_submit_calls_client(monkeypatch):
     job_id = await backend.submit(
         model_name="vae",
         image_data=DUMMY_IMAGES,
-        image_size=(512, 512),
-        latent_dim=512,
     )
 
     assert job_id == "99"
@@ -150,7 +148,6 @@ async def test_orion_backend_submit_image_path():
     await backend.submit(
         model_name="vae",
         image_path="/data/remote.npy",
-        image_size=(512, 512),
     )
     assert "ln -sf /data/remote.npy" in submitted["script"]
 
@@ -169,7 +166,7 @@ async def test_orion_backend_tiled_output_injects_env(monkeypatch):
 
     import emblase.compute.orion as orion_module
 
-    monkeypatch.setattr(orion_module.settings, "tiled_uri", "http://tiled")
+    monkeypatch.setattr(orion_module.settings, "tiled_server_url", "http://tiled")
     monkeypatch.setattr(orion_module.settings, "tiled_api_key", "key123")
 
     backend = OrionBackend(
@@ -178,13 +175,12 @@ async def test_orion_backend_tiled_output_injects_env(monkeypatch):
     await backend.submit(
         model_name="vae",
         image_data=DUMMY_IMAGES,
-        image_size=(512, 512),
         output_mode="tiled",
         tiled_result_path="results/scan1",
     )
 
     env = submitted["environment"]
-    assert any("EMBLASE_TILED_URI=http://tiled" in e for e in env)
+    assert any("EMBLASE_TILED_SERVER_URL=http://tiled" in e for e in env)
     assert any("EMBLASE_TILED_API_KEY=key123" in e for e in env)
 
 

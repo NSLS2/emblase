@@ -38,7 +38,6 @@ async def _infer(args):
 
     submit_kwargs = dict(
         model_name=args.model,
-        image_size=(args.image_size, args.image_size),
         batch_size=args.batch_size,
         output_mode=args.output_mode,
     )
@@ -54,9 +53,7 @@ async def _infer(args):
     elif args.tiled_uris:
         submit_kwargs["tiled_uris"] = args.tiled_uris
     else:
-        images = np.random.rand(args.n_images, args.image_size, args.image_size).astype(
-            np.float32
-        )
+        images = np.random.rand(args.n_images, args.image_size, args.image_size).astype(np.float32)
         print(f"Dummy images: {images.shape}  dtype={images.dtype}")
         submit_kwargs["image_data"] = images
 

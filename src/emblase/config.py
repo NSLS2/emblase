@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     models_dir: Path = Path(__file__).resolve().parent.parent.parent / "models"
 
     # Tiled
-    tiled_uri: str = ""
+    tiled_server_url: str = ""
     tiled_api_key: str = ""
 
     # MLflow — set EMBLASE_MLFLOW_TRACKING_URI to point at any compatible server.

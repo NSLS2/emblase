@@ -5,16 +5,16 @@ Filled by _render_inference_script():
     {model_name}        — short name ("vae", "vit") or MLflow registry name
     {batch_size}        — number of images per encode call (default 1)
     {output_mode}       — "none" | "tiled"
-    {tiled_result_path} — path within the Tiled server to write results (tiled mode only)
+    {tiled_uris}        — repr of list[str] of tiled node paths (input, tiled mode)
+    {tiled_result_path} — container path in tiled to write results (tiled mode)
     {mlflow_version}    — MLflow model version, or "" for latest
 
 job_dir is read from the JOB_DIR environment variable (set by the sbatch script
 to working_dir/job_$SLURM_JOB_ID), so the folder name always matches slurm-<id>.out.
 
 Output delivery (controlled by output_mode):
-  - "none"  — save output.npy on the node only.
-  - "tiled" — write the output array into a Tiled collection at
-              $EMBLASE_TILED_URI/{tiled_result_path} using $EMBLASE_TILED_API_KEY.
+  - "none"  — save output.npy in job_dir only.
+  - "tiled" — read input from tiled URIs, write output into tiled container.
 """
 
 import os
@@ -27,6 +27,7 @@ job_dir = os.environ["JOB_DIR"]
 model_name = "{model_name}"
 batch_size = {batch_size}
 output_mode = "{output_mode}"
+tiled_uris = {tiled_uris}
 tiled_result_path = "{tiled_result_path}"
 mlflow_version = "{mlflow_version}" or None
 
@@ -48,15 +49,20 @@ model = load_model(
 )
 
 # --- load input ---
-input_path = os.path.join(job_dir, "input.npy")
-images = np.load(input_path)
-if images.ndim == 3:
-    images = images[:, np.newaxis, :, :]
-tensor = torch.from_numpy(images).float()
-print(f"Input: {{tensor.shape}}")
+if output_mode == "tiled":
+    from emblase.tiled_io import read_images  # noqa: E402
+    images = read_images(tiled_uris)           # list of (H, W) float32 arrays
+    print(f"Input: {{len(images)}} frames from Tiled")
+    output = encode(model, images, batch_size=batch_size)
+else:
+    input_path = os.path.join(job_dir, "input.npy")
+    arr = np.load(input_path)
+    if arr.ndim == 3:
+        arr = arr[:, np.newaxis, :, :]
+    tensor = torch.from_numpy(arr).float()
+    print(f"Input: {{tensor.shape}}")
+    output = encode(model, tensor, batch_size=batch_size)
 
-# --- encode ---
-output = encode(model, tensor, batch_size=batch_size)
 print(f"Output: {{output.shape}}")
 
 # --- save output.npy (always) ---
@@ -64,18 +70,8 @@ output_path = os.path.join(job_dir, "output.npy")
 np.save(output_path, output)
 print(f"Output saved: {{output_path}}")
 
-# --- deliver results ---
+# --- write to Tiled if requested ---
 if output_mode == "tiled":
-    from tiled.client import from_uri  # noqa: E402
-
-    tiled_uri = os.environ.get("EMBLASE_TILED_URI", "")
-    api_key = os.environ.get("EMBLASE_TILED_API_KEY") or None
-    if not tiled_uri:
-        print("WARNING: EMBLASE_TILED_URI not set — skipping Tiled write")
-    else:
-        client = from_uri(tiled_uri, api_key=api_key)
-        node = client
-        for part in tiled_result_path.strip("/").split("/"):
-            node = node[part]
-        node.write(output)
-        print(f"Written to Tiled: {{tiled_uri}}/{{tiled_result_path}}")
+    from emblase.tiled_io import write_output  # noqa: E402
+    write_output(tiled_result_path, output)
+    print(f"Written to Tiled: {{tiled_result_path}}")
