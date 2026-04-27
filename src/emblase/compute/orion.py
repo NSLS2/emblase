@@ -355,11 +355,15 @@ class OrionBackend(ComputeBackend):
             if settings.tiled_api_key:
                 environment.append(f"EMBLASE_TILED_API_KEY={settings.tiled_api_key}")
         if settings.mlflow_tracking_uri:
-            environment.append(f"EMBLASE_MLFLOW_TRACKING_URI={settings.mlflow_tracking_uri}")
+            environment.append(
+                f"EMBLASE_MLFLOW_TRACKING_URI={settings.mlflow_tracking_uri}"
+            )
             if settings.mlflow_api_key:
                 environment.append(f"EMBLASE_MLFLOW_API_KEY={settings.mlflow_api_key}")
             if settings.model_cache_dir:
-                environment.append(f"EMBLASE_MODEL_CACHE_DIR={settings.model_cache_dir}")
+                environment.append(
+                    f"EMBLASE_MODEL_CACHE_DIR={settings.model_cache_dir}"
+                )
 
         job_id = await self.client.submit_job(
             script=script,

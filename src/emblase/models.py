@@ -9,6 +9,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from tqdm import tqdm
 
 from .config import settings
 
@@ -110,7 +111,9 @@ def _load_from_mlflow(model_name: str, **kwargs) -> torch.nn.Module:
     )
 
 
-def encode(model: torch.nn.Module, images: torch.Tensor, batch_size: int = 1) -> np.ndarray:
+def encode(
+    model: torch.nn.Module, images: torch.Tensor, batch_size: int = 1
+) -> np.ndarray:
     """Run the encoder and return output as a (B, latent_dim) numpy array.
 
     Processes images in chunks of ``batch_size`` to avoid GPU OOM on large
@@ -120,8 +123,8 @@ def encode(model: torch.nn.Module, images: torch.Tensor, batch_size: int = 1) ->
     device = next(model.parameters()).device
     results = []
     with torch.no_grad():
-        for i in range(0, len(images), batch_size):
-            chunk = images[i : i + batch_size].to(device)
+        for i in tqdm(range(0, len(images), batch_size), desc="Encoding", unit="batch"):
+            chunk = images[i : i + batch_size].to(device)  # noqa: E203
             if hasattr(model, "encode"):
                 mu, _ = model.encode(chunk)
                 results.append(mu.cpu())
@@ -129,5 +132,7 @@ def encode(model: torch.nn.Module, images: torch.Tensor, batch_size: int = 1) ->
                 latent, _ = model.encoder(chunk)
                 results.append(latent.cpu())
             else:
-                raise ValueError(f"Model {type(model).__name__!r} has neither .encode() nor .encoder()")
+                raise ValueError(
+                    f"Model {type(model).__name__!r} has neither .encode() nor .encoder()"
+                )
     return torch.cat(results).numpy()

@@ -347,11 +347,15 @@ def test_load_model_from_mlflow(tmp_path):
         return weights_dir
 
     import sys as _sys
+
     with (
         patch("emblase.mlflow_registry.resolve_version", return_value="3"),
-        patch("emblase.mlflow_registry.download_model_weights", side_effect=fake_download),
+        patch(
+            "emblase.mlflow_registry.download_model_weights", side_effect=fake_download
+        ),
     ):
         import emblase.models as models_mod
+
         models_mod._load_from_mlflow("bnl-nsls2-smi-vae", cache_dir=tmp_path)
 
     assert _sys._test_loader_called == weights_dir / "model.npz"
@@ -372,11 +376,13 @@ def test_load_model_from_mlflow_uses_cache(tmp_path):
     (weights_dir / "loader.py").write_text(loader_src)
 
     import sys as _sys
+
     with (
         patch("emblase.mlflow_registry.resolve_version", return_value="3"),
         patch("emblase.mlflow_registry.download_model_weights") as mock_dl,
     ):
         import emblase.models as models_mod
+
         models_mod._load_from_mlflow(
             "bnl-nsls2-smi-vae",
             cache_dir=tmp_path,
@@ -393,8 +399,11 @@ def test_load_model_from_mlflow_no_loader_raises(tmp_path):
 
     with (
         patch("emblase.mlflow_registry.resolve_version", return_value="1"),
-        patch("emblase.mlflow_registry.download_model_weights", return_value=weights_dir),
+        patch(
+            "emblase.mlflow_registry.download_model_weights", return_value=weights_dir
+        ),
         pytest.raises(FileNotFoundError, match="No loader.py found"),
     ):
         import emblase.models as models_mod
+
         models_mod._load_from_mlflow("bnl-nsls2-smi-vae", cache_dir=tmp_path)
