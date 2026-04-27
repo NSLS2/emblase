@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     models_dir: Path = Path(__file__).resolve().parent.parent.parent / "models"
 
     # Tiled
-    tiled_server_url: str = ""
+    tiled_server_uri: str = ""
     tiled_api_key: str = ""
 
     # MLflow — set EMBLASE_MLFLOW_TRACKING_URI to point at any compatible server.
@@ -42,7 +42,11 @@ class Settings(BaseSettings):
     # Compute backend selection: "local" or "orion"
     compute_backend: str = "local"
 
-    model_config = {"env_file": ".env", "env_prefix": "EMBLASE_", "extra": "ignore"}
+    model_config = {
+        "env_file": Path(__file__).resolve().parent.parent.parent / ".env",
+        "env_prefix": "EMBLASE_",
+        "extra": "ignore",
+    }
 
 
 settings = Settings()

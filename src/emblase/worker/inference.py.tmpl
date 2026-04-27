@@ -86,7 +86,7 @@ if tiled_entries:
     from tiled.client import from_uri
     from emblase.tiled_io import read_images  # noqa: E402
 
-    tiled_server = os.environ["EMBLASE_TILED_SERVER_URL"]
+    tiled_server = os.environ["EMBLASE_TILED_SERVER_URI"]
     log.info("Connecting to Tiled: %s", tiled_server)
     tiled_client = from_uri(
         tiled_server,
@@ -129,7 +129,7 @@ if output_mode == "tiled":
     from emblase.tiled_io import write_output  # noqa: E402
 
     if tiled_client is None:
-        tiled_server = os.environ["EMBLASE_TILED_SERVER_URL"]
+        tiled_server = os.environ["EMBLASE_TILED_SERVER_URI"]
         log.info("Connecting to Tiled for output: %s", tiled_server)
         tiled_client = from_uri(
             tiled_server,

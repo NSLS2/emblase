@@ -154,7 +154,7 @@ async def test_orion_backend_submit_image_path():
 
 @pytest.mark.asyncio
 async def test_orion_backend_tiled_output_injects_env(monkeypatch):
-    """output_mode='tiled' should add EMBLASE_TILED_URI to the job environment."""
+    """output_mode='tiled' should add EMBLASE_TILED_SERVER_URI to the job environment."""
     submitted = {}
 
     class FakeClient:
@@ -166,7 +166,7 @@ async def test_orion_backend_tiled_output_injects_env(monkeypatch):
 
     import emblase.compute.orion as orion_module
 
-    monkeypatch.setattr(orion_module.settings, "tiled_server_url", "http://tiled")
+    monkeypatch.setattr(orion_module.settings, "tiled_server_uri", "http://tiled")
     monkeypatch.setattr(orion_module.settings, "tiled_api_key", "key123")
 
     backend = OrionBackend(
@@ -180,7 +180,7 @@ async def test_orion_backend_tiled_output_injects_env(monkeypatch):
     )
 
     env = submitted["environment"]
-    assert any("EMBLASE_TILED_SERVER_URL=http://tiled" in e for e in env)
+    assert any("EMBLASE_TILED_SERVER_URI=http://tiled" in e for e in env)
     assert any("EMBLASE_TILED_API_KEY=key123" in e for e in env)
 
 
@@ -198,7 +198,7 @@ async def test_orion_backend_tiled_entries_injects_env(monkeypatch):
 
     import emblase.compute.orion as orion_module
 
-    monkeypatch.setattr(orion_module.settings, "tiled_server_url", "http://tiled")
+    monkeypatch.setattr(orion_module.settings, "tiled_server_uri", "http://tiled")
     monkeypatch.setattr(orion_module.settings, "tiled_api_key", "key123")
 
     backend = OrionBackend(
@@ -211,13 +211,13 @@ async def test_orion_backend_tiled_entries_injects_env(monkeypatch):
     )
 
     env = submitted["environment"]
-    assert any("EMBLASE_TILED_SERVER_URL=http://tiled" in e for e in env)
+    assert any("EMBLASE_TILED_SERVER_URI=http://tiled" in e for e in env)
     assert any("EMBLASE_TILED_API_KEY=key123" in e for e in env)
 
 
 @pytest.mark.asyncio
 async def test_orion_backend_tiled_missing_url_raises(monkeypatch):
-    """submit() with tiled_entries but no tiled_server_url configured must raise."""
+    """submit() with tiled_entries but no tiled_server_uri configured must raise."""
 
     class FakeClient:
         async def submit_job(self, **kwargs):
@@ -225,12 +225,12 @@ async def test_orion_backend_tiled_missing_url_raises(monkeypatch):
 
     import emblase.compute.orion as orion_module
 
-    monkeypatch.setattr(orion_module.settings, "tiled_server_url", "")
+    monkeypatch.setattr(orion_module.settings, "tiled_server_uri", "")
 
     backend = OrionBackend(
         client=FakeClient(), working_dir="/jobs", models_dir="/models", account="staff"
     )
-    with pytest.raises(ValueError, match="EMBLASE_TILED_SERVER_URL is not set"):
+    with pytest.raises(ValueError, match="EMBLASE_TILED_SERVER_URI is not set"):
         await backend.submit(
             model_name="vae",
             tiled_entries=["proposal/scan"],
