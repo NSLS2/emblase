@@ -74,13 +74,14 @@ def write_output(
     embeddings: np.ndarray,
     images: Optional[list[np.ndarray]] = None,
     *,
-    tiled_entries: Optional[Sequence[TiledEntry]] = None,
+    source_entries: Optional[Sequence[TiledEntry]] = None,
     thumb_fn: Optional[Callable[[np.ndarray], np.ndarray]] = None,
     thumb_shape: tuple[int, int] = _DEFAULT_THUMB_SHAPE,
     model_name: str = "",
     model_version: str = "",
     embedding_dim: Optional[int] = None,
     metadata: Optional[dict] = None,
+    access_tags: Optional[list[str]] = None,
 ) -> None:
     """Write embeddings into a LatentSpaceEmbedding container at ``path``.
 
@@ -98,7 +99,7 @@ def write_output(
     images:
         List of N 2-D float32 numpy arrays (one per embedding) used to generate
         thumbnails. If ``None``, zero arrays are stored.
-    tiled_entries:
+    source_entries:
         Original tiled entries used as input — stored as provenance in the
         ``_index`` table. Length must equal ``len(embeddings)`` if provided.
     thumb_fn:
@@ -112,6 +113,10 @@ def write_output(
         Inferred from ``embeddings`` if omitted.
     metadata:
         Extra key/value pairs merged into container metadata on creation.
+    access_tags:
+        Tiled access tags applied to every node written (container, arrays,
+        index table).  When ``None`` the server's default policy applies.
+        Typically sourced from ``settings.tiled_access_tags``.
     """
     n = len(embeddings)
     d = embedding_dim or embeddings.shape[1]
@@ -139,6 +144,7 @@ def write_output(
             model_name=model_name,
             model_version=model_version,
             metadata=metadata,
+            access_tags=access_tags,
         )
 
     # Build thumbnails — apply thumb_fn per image (handles ragged shapes).
@@ -150,9 +156,9 @@ def write_output(
         thumbnails = np.zeros((n, *thumb_shape), dtype=np.float32)
 
     # Unpack provenance.
-    if tiled_entries:
-        paths = [e if isinstance(e, str) else e[0] for e in tiled_entries]
-        slices = [None if isinstance(e, str) else e[1] for e in tiled_entries]
+    if source_entries:
+        paths = [e if isinstance(e, str) else e[0] for e in source_entries]
+        slices = [None if isinstance(e, str) else e[1] for e in source_entries]
     else:
         paths = [""] * n
         slices = [None] * n
@@ -164,6 +170,7 @@ def write_output(
         slices=slices,
         model_version=model_version or None,
         timestamps=list(time.time() + np.arange(n) * 1e-6),
+        access_tags=access_tags,
     )
 
 # Maximum character widths for zarr string arrays
@@ -313,10 +320,14 @@ class LatentSpaceEmbedding(CompositeClient):
         """Return the number of embeddings currently stored."""
         return len(self._index_table.read(columns=["timestamp"]))
 
-    def _write_arrays(self, embeddings, thumbnails, projections=None, offset=0):
+    def _write_arrays(self, embeddings, thumbnails, projections=None, offset=0, access_tags=None):
         batch_size = len(embeddings)
         empty_notes = _make_string_array([""] * batch_size, NOTES_MAX_LEN)
         empty_user_labels = _make_string_array([""] * batch_size, USER_LABEL_MAX_LEN)
+
+        # Resolve effective tags: explicit argument takes priority over the
+        # tags already stored in the container's access_blob.
+        tags = access_tags if access_tags is not None else self.access_blob.get("tags", None)
 
         # Arrays: create on first insert, extend on subsequent.
         if "embeddings" not in self:
@@ -325,32 +336,32 @@ class LatentSpaceEmbedding(CompositeClient):
                 key="embeddings",
                 metadata={"description": "Embedding vectors"},
                 dims=["sample", "feature"],
-                access_tags=self.access_blob.get("tags", None),
+                access_tags=tags,
             )
             self.write_array(
                 thumbnails,
                 key="thumbnails",
                 metadata={"description": "Thumbnail images"},
-                access_tags=self.access_blob.get("tags", None),
+                access_tags=tags,
             )
             self.write_array(
                 empty_notes,
                 key="notes",
                 metadata={"description": "Freeform mutable annotations"},
-                access_tags=self.access_blob.get("tags", None),
+                access_tags=tags,
             )
             self.write_array(
                 empty_user_labels,
                 key="user_labels",
                 metadata={"description": "Mutable user-assigned labels"},
-                access_tags=self.access_blob.get("tags", None),
+                access_tags=tags,
             )
             if projections is not None:
                 self.write_array(
                     projections.astype(np.float32),
                     key="projections",
                     metadata={"description": "Visualization projections"},
-                    access_tags=self.access_blob.get("tags", None),
+                    access_tags=tags,
                 )
         else:
             self["embeddings"].patch(
@@ -385,7 +396,7 @@ class LatentSpaceEmbedding(CompositeClient):
                         projections.astype(np.float32),
                         key="projections",
                         metadata={"description": "Visualization projections"},
-                        access_tags=self.access_blob.get("tags", None),
+                        access_tags=tags,
                     )
 
     def append(
@@ -400,6 +411,7 @@ class LatentSpaceEmbedding(CompositeClient):
         mlflow_run_id: Optional[str] = None,
         timestamps: Optional[list[float]] = None,
         projections: Optional[np.ndarray] = None,
+        access_tags: Optional[list[str]] = None,
     ) -> int:
         """Append one or more embeddings with their associated data.
 
@@ -424,6 +436,9 @@ class LatentSpaceEmbedding(CompositeClient):
             Epoch timestamps. Defaults to current time for each.
         projections : np.ndarray, optional
             Shape (B, P) pre-computed projection vectors.
+        access_tags : list[str], optional
+            Tiled access tags applied to newly created child arrays.
+            Falls back to the container's own access_blob tags when ``None``.
 
         Returns
         -------
@@ -456,7 +471,7 @@ class LatentSpaceEmbedding(CompositeClient):
         # Write arrays first, then _index table last.
         # The UI subscribes to both streams; writing the table last ensures
         # projections are committed before the table WS event arrives.
-        self._write_arrays(embeddings, thumbnails, projections, offset=current_n)
+        self._write_arrays(embeddings, thumbnails, projections, offset=current_n, access_tags=access_tags)
 
         table = pa.table(
             {
@@ -496,19 +511,29 @@ class LatentSpaceEmbedding(CompositeClient):
             _make_string_array([label], USER_LABEL_MAX_LEN), offset=(index,)
         )
 
-    def update_projections(self, projections: np.ndarray) -> None:
-        """Replace all projection vectors (e.g. after re-running UMAP/t-SNE)."""
+    def update_projections(self, projections: np.ndarray, access_tags: Optional[list[str]] = None) -> None:
+        """Replace all projection vectors (e.g. after re-running UMAP/t-SNE).
+
+        Parameters
+        ----------
+        projections : np.ndarray
+            Shape (N, P) array of projection vectors.
+        access_tags : list[str], optional
+            Tiled access tags applied when the projections array is created for
+            the first time. Falls back to the container's own access_blob tags.
+        """
         n = self.num_embeddings
         if projections.shape[0] != n:
             raise ValueError(f"Expected {n} projections, got {projections.shape[0]}")
 
+        tags = access_tags if access_tags is not None else self.access_blob.get("tags", None)
         data = projections.astype(np.float32)
         if "projections" not in self:
             self.write_array(
                 data,
                 key="projections",
                 metadata={"description": "Visualization projections"},
-                access_tags=self.access_blob.get("tags", None),
+                access_tags=tags,
             )
         elif self["projections"].shape == data.shape:
             self["projections"].patch(data, offset=(0,))
@@ -518,7 +543,7 @@ class LatentSpaceEmbedding(CompositeClient):
                 data,
                 key="projections",
                 metadata={"description": "Visualization projections"},
-                access_tags=self.access_blob.get("tags", None),
+                access_tags=tags,
             )
 
     def read_embeddings(self, indices=None) -> np.ndarray:

@@ -35,9 +35,8 @@ def _render_inference_script(
     model_name: str,
     models_dir: str,
     batch_size: int = 1,
-    output_mode: str = "none",
-    tiled_entries: list[str | tuple[str, str]] | None = None,
-    tiled_result_path: str = "",
+    inputs: list[str | tuple[str, str]] | None = None,
+    output: str = "",
     mlflow_version: str = "",
 ) -> str:
     """Render the inference template with concrete values."""
@@ -45,9 +44,8 @@ def _render_inference_script(
         model_name=model_name,
         models_dir=models_dir,
         batch_size=batch_size,
-        output_mode=output_mode,
-        tiled_entries=repr(tiled_entries or []),
-        tiled_result_path=tiled_result_path,
+        inputs=repr(inputs or []),
+        output=output,
         mlflow_version=mlflow_version,
     )
 
@@ -58,25 +56,25 @@ def _build_sbatch_script(
     project_dir: str,
     job_name: str = "emblase",
     time_limit: str = "0-00:10:00",
-    images_b64: str | None = None,
-    image_path: str | None = None,
-    tiled_mode: bool = False,
+    payload_b64: str | None = None,
+    npy_path: str | None = None,
+    tiled_input: bool = False,
 ) -> str:
     """Build the sbatch script. Exactly one image source must be indicated:
 
-    - images_b64: encoded client-side, embedded as heredoc, decoded on the node.
-    - image_path: .npy already on Orion; symlinked into the job dir.
-    - tiled_mode: input is read directly by the inference script via tiled_io;
+    - payload_b64: numpy array encoded client-side, embedded as heredoc, decoded on node.
+    - npy_path: .npy already on Orion; symlinked into the job dir.
+    - tiled_input: input is read directly by the inference script from Tiled;
       no pre-fetch step needed in the sbatch preamble.
     """
-    sources = [bool(images_b64), bool(image_path), tiled_mode]
+    sources = [bool(payload_b64), bool(npy_path), tiled_input]
     if sum(sources) != 1:
-        raise ValueError("Provide exactly one of images_b64, image_path, tiled_mode=True")
+        raise ValueError("Provide exactly one of payload_b64, npy_path, tiled_input=True")
 
-    if images_b64:
+    if payload_b64:
         input_section = f"""\
 cat > _input_b64.txt << 'EMBLASE_B64_EOF'
-{images_b64}
+{payload_b64}
 EMBLASE_B64_EOF
 
 cd {project_dir} && pixi run python << 'EMBLASE_DECODE_EOF'
@@ -91,10 +89,10 @@ EMBLASE_DECODE_EOF
 
 rm -f "$JOB_DIR/_input_b64.txt"
 """
-    elif image_path:
-        input_section = f'ln -sf {image_path} "$JOB_DIR/input.npy"\n'
+    elif npy_path:
+        input_section = f'ln -sf {npy_path} "$JOB_DIR/input.npy"\n'
     else:
-        input_section = ""  # tiled_mode: inference script reads directly from Tiled
+        input_section = ""  # tiled_input: inference script reads directly from Tiled
 
     return f"""\
 #!/bin/bash
@@ -269,38 +267,37 @@ class OrionBackend(ComputeBackend):
         self,
         model_name: str,
         batch_size: int = 1,
-        image_data: np.ndarray | None = None,
-        image_path: str | None = None,
-        tiled_entries: list[str | tuple[str, str]] | None = None,
-        output_mode: str = "none",
-        tiled_result_path: str = "",
+        images: np.ndarray | None = None,
+        npy_path: str | None = None,
+        inputs: list[str | tuple[str, str]] | None = None,
+        output: str = "",
         mlflow_version: str = "",
         **kwargs: Any,
     ) -> str:
-        """Submit an inference job. Exactly one image source must be provided:
+        """Submit an inference job.
 
-        - image_data: numpy array — encoded client-side and embedded in the script.
-        - image_path: absolute path to a .npy file already on Orion.
-        - tiled_entries: list of Tiled path strings or (path, slice) tuples —
-          read on the node via tiled_io.
+        Image source — provide exactly one:
+          - ``images``: numpy array uploaded from the client (embedded in the job script).
+          - ``npy_path``: absolute path to a .npy file already on Orion (symlinked).
+          - ``inputs``: list of Tiled paths / ``(path, slice)`` tuples read on the node.
+          - *(none)*: dummy random images are generated on the node.
 
-        output_mode:
-        - "none"  — output.npy saved on the node only.
-        - "tiled" — read from tiled_entries, write output to tiled_result_path.
+        Output:
+          - ``output``: Tiled path to write embeddings into. If omitted, results are
+            saved as ``output.npy`` in the job working directory only.
         """
         py_script = _render_inference_script(
             model_name=model_name,
             models_dir=self.models_dir,
             batch_size=batch_size,
-            output_mode=output_mode,
-            tiled_entries=tiled_entries,
-            tiled_result_path=tiled_result_path,
+            inputs=inputs,
+            output=output,
             mlflow_version=mlflow_version,
         )
 
-        if image_data is not None:
+        if images is not None:
             buf = io.BytesIO()
-            np.save(buf, image_data)
+            np.save(buf, images)
             raw = buf.getvalue()
             b64 = base64.b64encode(raw).decode()
             _MAX_EMBED_BYTES = 10 * 1024 * 1024  # 10 MB — Orion API request size limit
@@ -308,13 +305,13 @@ class OrionBackend(ComputeBackend):
                 raise ValueError(
                     f"Image payload too large to embed ({len(raw) / 1024 / 1024:.1f} MB raw, "
                     f"{len(b64) / 1024 / 1024:.1f} MB base64). "
-                    "Copy the .npy file to Orion and use --orion-path instead."
+                    "Copy the .npy file to Orion and use --npy-path instead."
                 )
-            script_kwargs: dict[str, Any] = {"images_b64": b64}
-        elif image_path:
-            script_kwargs = {"image_path": image_path}
+            script_kwargs: dict[str, Any] = {"payload_b64": b64}
+        elif npy_path:
+            script_kwargs = {"npy_path": npy_path}
         else:
-            script_kwargs = {"tiled_mode": True}
+            script_kwargs = {"tiled_input": True}
 
         script = _build_sbatch_script(
             working_dir=self.working_dir,
@@ -325,14 +322,16 @@ class OrionBackend(ComputeBackend):
         )
 
         environment = [f"PATH={self.path}", f"HOME={self.home}", "SLURM_EXPORT_ENV=ALL"]
-        if tiled_entries or output_mode == "tiled":
+        if inputs or output:
             if not settings.tiled_server_uri:
                 raise ValueError(
-                    "EMBLASE_TILED_SERVER_URI is not set — required when using tiled_entries or output_mode='tiled'."
+                    "EMBLASE_TILED_SERVER_URI is not set — required when using inputs or output."
                 )
             environment.append(f"EMBLASE_TILED_SERVER_URI={settings.tiled_server_uri}")
             if settings.tiled_api_key:
                 environment.append(f"EMBLASE_TILED_API_KEY={settings.tiled_api_key}")
+            if settings.tiled_access_tags:
+                environment.append(f"EMBLASE_TILED_ACCESS_TAGS={settings.tiled_access_tags}")
         if settings.mlflow_tracking_uri:
             environment.append(f"EMBLASE_MLFLOW_TRACKING_URI={settings.mlflow_tracking_uri}")
             if settings.mlflow_api_key:
@@ -347,11 +346,10 @@ class OrionBackend(ComputeBackend):
             environment=environment,
         )
 
-        job_dir = f"{self.working_dir}/job_{job_id}"
         self._jobs[job_id] = {
-            "job_dir": job_dir,
+            "job_dir": f"{self.working_dir}/job_{job_id}",
             "model_name": model_name,
-            "output_mode": output_mode,
+            "output": output,
         }
         return str(job_id)
 
@@ -370,25 +368,23 @@ class OrionBackend(ComputeBackend):
         if st not in (JobStatus.completed, JobStatus.failed):
             return JobResult(job_id=job_id, status=st)
 
-        output_mode = meta.get("output_mode", "none")
-        if output_mode == "tiled":
+        if meta.get("output"):
             # Results were written to Tiled on the node — nothing to return here.
             return JobResult(job_id=job_id, status=st)
 
-        # "none" mode — try shared filesystem.
+        # No Tiled output — try shared filesystem.
         output_path = Path(meta["job_dir"]) / "output.npy"
         if output_path.exists():
-            output = np.load(str(output_path))
             return JobResult(
-                job_id=job_id, status=JobStatus.completed, output_data=output
+                job_id=job_id,
+                status=JobStatus.completed,
+                output_data=np.load(str(output_path)),
             )
 
         return JobResult(
             job_id=job_id,
             status=st,
-            error=f"Output not found at {output_path}"
-            if st == JobStatus.completed
-            else None,
+            error=f"Output not found at {output_path}" if st == JobStatus.completed else None,
         )
 
     async def wait(

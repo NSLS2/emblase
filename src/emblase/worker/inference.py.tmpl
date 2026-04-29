@@ -1,24 +1,23 @@
 """Inference script — runs on the compute node inside `pixi run python`.
 
 Filled by _render_inference_script():
-    {models_dir}         — absolute path to the models directory on the compute node
-    {model_name}         — short name ("vae", "vit") or MLflow registry name
-    {batch_size}         — number of images per encode call (default 1)
-    {output_mode}        — "none" | "tiled"
-    {tiled_entries}      — repr of list[str | tuple[str,str]] of tiled (path[, slice]) entries
-    {tiled_result_path}  — container path in tiled to write results (tiled mode)
-    {mlflow_version}     — MLflow model version, or "" for latest
+    {models_dir}     — absolute path to the models directory on the compute node
+    {model_name}     — short name ("vae", "vit") or MLflow registry name
+    {batch_size}     — number of images per encode call (default 1)
+    {inputs}         — repr of list[str | tuple[str,str]] of Tiled (path[, slice]) entries
+    {output}         — Tiled container path to write embeddings (empty → save output.npy only)
+    {mlflow_version} — MLflow model version, or "" for latest
 
 job_dir is read from the JOB_DIR environment variable (set by the sbatch script
 to working_dir/job_$SLURM_JOB_ID), so the folder name always matches slurm-<id>.out.
 
-Input source (controlled by tiled_entries):
-  - non-empty — read frames from Tiled via tiled_io.read_images.
+Input source (controlled by inputs):
+  - non-empty — read frames from Tiled via read_images.
   - empty      — load input.npy from job_dir (embedded or symlinked by sbatch).
 
-Output delivery (controlled by output_mode):
-  - "none"  — save output.npy in job_dir only.
-  - "tiled" — also write output into the tiled container at tiled_result_path.
+Output delivery (controlled by output):
+  - non-empty  — write embeddings into the Tiled container at output path.
+  - empty      — save output.npy in job_dir only.
 """
 
 import logging
@@ -43,19 +42,22 @@ log = logging.getLogger("emblase.inference")
 job_dir = os.environ["JOB_DIR"]
 model_name = "{model_name}"
 batch_size = {batch_size}
-output_mode = "{output_mode}"
-tiled_entries = {tiled_entries}
-tiled_result_path = "{tiled_result_path}"
+inputs = {inputs}
+output = "{output}"
 mlflow_version = "{mlflow_version}" or None
 
+# access_tags: comma-separated string from env → list[str], or None if unset/empty
+_raw_tags = os.environ.get("EMBLASE_TILED_ACCESS_TAGS", "").strip()
+access_tags: list[str] | None = [t.strip() for t in _raw_tags.split(",") if t.strip()] or None
+
 log.info("=== Emblase inference job ===")
-log.info("job_dir      : %s", job_dir)
-log.info("model        : %s", model_name)
-log.info("mlflow_ver   : %s", mlflow_version or "latest")
-log.info("batch_size   : %d", batch_size)
-log.info("output_mode  : %s", output_mode)
-log.info("tiled_entries: %s", tiled_entries or "(none — loading input.npy)")
-log.info("result_path  : %s", tiled_result_path or "(n/a)")
+log.info("job_dir    : %s", job_dir)
+log.info("model      : %s", model_name)
+log.info("mlflow_ver : %s", mlflow_version or "latest")
+log.info("batch_size : %d", batch_size)
+log.info("inputs     : %s", inputs or "(none — loading input.npy)")
+log.info("output     : %s", output or "(none — saving output.npy)")
+log.info("access_tags: %s", access_tags or "(none — server default)")
 
 # Ensure the models directory is on sys.path so model source files are importable.
 models_dir = "{models_dir}"
@@ -65,9 +67,9 @@ if models_dir not in sys.path:
 from emblase.models import encode, load_model  # noqa: E402
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-log.info("device       : %s", device)
+log.info("device     : %s", device)
 if device.type == "cuda":
-    log.info("GPU          : %s", torch.cuda.get_device_name(device))
+    log.info("GPU        : %s", torch.cuda.get_device_name(device))
 
 # --- load model ---
 log.info("Loading model %r ...", model_name)
@@ -82,7 +84,7 @@ log.info("Model loaded in %.1f s", time.perf_counter() - t0)
 
 # --- load input ---
 tiled_client = None
-if tiled_entries:
+if inputs:
     from tiled.client import from_uri
     from emblase.tiled.client import read_images  # noqa: E402
 
@@ -92,12 +94,12 @@ if tiled_entries:
         tiled_server,
         api_key=os.environ.get("EMBLASE_TILED_API_KEY") or None,
     )
-    log.info("Reading %d tiled entr%s ...", len(tiled_entries), "y" if len(tiled_entries) == 1 else "ies")
+    log.info("Reading %d Tiled entr%s ...", len(inputs), "y" if len(inputs) == 1 else "ies")
     t0 = time.perf_counter()
-    images = read_images(tiled_client, tiled_entries)
+    images = read_images(tiled_client, inputs)
     unique_shapes = sorted(set(img.shape for img in images))
     log.info(
-        "Read %d frame(s) from Tiled in %.1f s  (shapes: %s)",
+        "Read %d frame(s) in %.1f s  (shapes: %s)",
         len(images),
         time.perf_counter() - t0,
         unique_shapes,
@@ -115,16 +117,16 @@ else:
 # --- encode ---
 log.info("Encoding (batch_size=%d) ...", batch_size)
 t0 = time.perf_counter()
-output = encode(model, images, batch_size=batch_size)
-log.info("Encoded in %.1f s  →  output shape: %s", time.perf_counter() - t0, output.shape)
+embeddings = encode(model, images, batch_size=batch_size)
+log.info("Encoded in %.1f s  →  shape: %s", time.perf_counter() - t0, embeddings.shape)
 
 # --- save output.npy (always) ---
 output_path = os.path.join(job_dir, "output.npy")
-np.save(output_path, output)
+np.save(output_path, embeddings)
 log.info("output.npy saved: %s", output_path)
 
-# --- write to Tiled if requested ---
-if output_mode == "tiled":
+# --- write to Tiled if output path given ---
+if output:
     from tiled.client import from_uri
     from emblase.tiled.client import write_output  # noqa: E402
 
@@ -135,15 +137,16 @@ if output_mode == "tiled":
             tiled_server,
             api_key=os.environ.get("EMBLASE_TILED_API_KEY") or None,
         )
-    log.info("Writing output to Tiled: %s  shape=%s", tiled_result_path, output.shape)
+    log.info("Writing embeddings to Tiled: %s  shape=%s", output, embeddings.shape)
     t0 = time.perf_counter()
     write_output(
         tiled_client,
-        tiled_result_path,
         output,
+        embeddings,
         images=images if isinstance(images, list) else None,
-        tiled_entries=tiled_entries or None,
+        source_entries=inputs or None,
         model_name=model_name,
+        access_tags=access_tags,
     )
     log.info("Written to Tiled in %.1f s", time.perf_counter() - t0)
 

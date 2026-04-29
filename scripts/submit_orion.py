@@ -39,31 +39,29 @@ async def _infer(args):
     submit_kwargs = dict(
         model_name=args.model,
         batch_size=args.batch_size,
-        output_mode=args.output_mode,
+        output=args.output or "",
     )
-    if args.tiled_result_path:
-        submit_kwargs["tiled_result_path"] = args.tiled_result_path
 
-    if args.images_npy:
-        images = np.load(args.images_npy)
-        print(f"Loaded from {args.images_npy}: {images.shape}  dtype={images.dtype}")
-        submit_kwargs["image_data"] = images
-    elif args.orion_path:
-        submit_kwargs["image_path"] = args.orion_path
-    elif args.tiled_entries:
+    if args.npy_file:
+        images = np.load(args.npy_file)
+        print(f"Loaded from {args.npy_file}: {images.shape}  dtype={images.dtype}")
+        submit_kwargs["images"] = images
+    elif args.npy_path:
+        submit_kwargs["npy_path"] = args.npy_path
+    elif args.inputs:
         # Parse each entry: bare "path/to/node" or "path/to/node:slice_expr"
         parsed = []
-        for e in args.tiled_entries:
+        for e in args.inputs:
             if ":" in e:
                 path, slc = e.split(":", 1)
                 parsed.append((path, slc))
             else:
                 parsed.append(e)
-        submit_kwargs["tiled_entries"] = parsed
+        submit_kwargs["inputs"] = parsed
     else:
         images = np.random.rand(args.n_images, args.image_size, args.image_size).astype(np.float32)
         print(f"Dummy images: {images.shape}  dtype={images.dtype}")
-        submit_kwargs["image_data"] = images
+        submit_kwargs["images"] = images
 
     print(f"\nSubmitting {args.model!r} inference job to Orion...")
     job_id = await backend.submit(**submit_kwargs)
@@ -79,10 +77,8 @@ async def _infer(args):
 
     print(f"\nJob {job_id} finished: {final_status.value}")
     if final_status != JobStatus.completed:
-        print(
-            "Job did not complete successfully — check the log on the Orion filesystem."
-        )
-    elif args.output_mode == "none":
+        print("Job did not complete successfully — check the log on the Orion filesystem.")
+    elif not args.output:
         print(f"Output: {backend.working_dir}/job_{job_id}/output.npy")
 
 
@@ -129,9 +125,7 @@ def main():
         default="vae",
         help=(
             "Model name. Use a short architecture name ('vae', 'vit') to load "
-            "from local weights, or an MLflow registry name (e.g. 'bnl-nsls2-smi-vae') "
-            "to pull weights from the registry. Falls back to local weights if MLflow "
-            "is unavailable."
+            "from local weights, or an MLflow registry name to pull from the registry."
         ),
     )
     infer_p.add_argument("--image-size", type=int, default=512)
@@ -139,38 +133,38 @@ def main():
         "--batch-size",
         type=int,
         default=1,
-        help="Images per encode call on the node. Default 1 is safe for large images; increase for throughput.",
+        help="Images per encode call on the node. Default 1 is safe for large images.",
     )
     infer_p.add_argument("--no-wait", action="store_true")
     infer_p.add_argument(
-        "--output-mode",
-        choices=["none", "tiled"],
-        default="none",
+        "--output",
+        metavar="TILED_PATH",
+        default="",
         help=(
-            "How results are delivered: "
-            "'none' — save output.npy on the node only; "
-            "'tiled' — write output data into EMBLASE_TILED_URI/tiled-result-path"
+            "Tiled path to write embeddings into (e.g. 'proposal/embeddings/scan1'). "
+            "If omitted, output.npy is saved in the job working directory only."
         ),
     )
-    infer_p.add_argument(
-        "--tiled-result-path",
-        metavar="PATH",
-        default="",
-        help="Path within the Tiled server to write results (only used with --output-mode=tiled)",
-    )
+
     # image sources (mutually exclusive; if none given, dummy data is used)
     src = infer_p.add_mutually_exclusive_group()
-    src.add_argument("--images-npy", metavar="PATH", help="Local .npy file to upload")
     src.add_argument(
-        "--orion-path", metavar="PATH", help="Absolute path to .npy already on Orion"
+        "--npy-file",
+        metavar="PATH",
+        help="Local .npy file to upload and run on Orion",
     )
     src.add_argument(
-        "--tiled-entries",
+        "--npy-path",
+        metavar="PATH",
+        help="Absolute path to a .npy file already on Orion (symlinked into job dir)",
+    )
+    src.add_argument(
+        "--inputs",
         nargs="+",
         metavar="PATH[:SLICE]",
         help=(
-            "One or more Tiled entries. Each is a slash-separated path optionally "
-            "followed by a colon and a numpy-style slice, e.g. "
+            "One or more Tiled entries to read as input. Each is a slash-separated "
+            "path optionally followed by a colon and a numpy-style slice, e.g. "
             "'proposal/scan' or 'proposal/scan:0:10'"
         ),
     )
@@ -178,7 +172,7 @@ def main():
         "--n-images",
         type=int,
         default=2,
-        help="Number of dummy images (ignored if source given)",
+        help="Number of dummy images (ignored if an image source is given)",
     )
 
     # -- status subcommand --

@@ -183,7 +183,7 @@ def test_write_output_passes_provenance(mock_lse_cls, mock_create):
     root.__getitem__ = MagicMock(side_effect=KeyError)
 
     entries = ["scan/001", ("scan/002", "3:5")]
-    write_output(root, "results", embeddings, tiled_entries=entries)
+    write_output(root, "results", embeddings, source_entries=entries)
 
     call = container.append.call_args
     assert call.kwargs["paths"] == ["scan/001", "scan/002"]
@@ -214,3 +214,39 @@ def test_write_output_custom_thumb_fn(mock_lse_cls, mock_create):
     assert len(called_with) == 2  # called once per image
     thumbnails = container.append.call_args.args[1]
     assert thumbnails.shape == (2, 4, 4)
+
+
+@patch("emblase.tiled.client.create_embedding_container")
+@patch("emblase.tiled.client.LatentSpaceEmbedding")
+def test_write_output_passes_access_tags_to_create(mock_lse_cls, mock_create):
+    """access_tags is forwarded to create_embedding_container."""
+    embeddings = np.zeros((2, 4), dtype=np.float32)
+    container = MagicMock()
+    container.metadata = {"embedding_dim": 4, "thumb_shape": [64, 64]}
+    mock_create.return_value = container
+
+    root = MagicMock()
+    root.__getitem__ = MagicMock(side_effect=KeyError)
+
+    write_output(root, "results", embeddings, access_tags=["nsls2", "staff"])
+
+    _, kwargs = mock_create.call_args
+    assert kwargs["access_tags"] == ["nsls2", "staff"]
+
+
+@patch("emblase.tiled.client.create_embedding_container")
+@patch("emblase.tiled.client.LatentSpaceEmbedding")
+def test_write_output_passes_access_tags_to_append(mock_lse_cls, mock_create):
+    """access_tags is forwarded to container.append."""
+    embeddings = np.zeros((2, 4), dtype=np.float32)
+    container = MagicMock()
+    container.metadata = {"embedding_dim": 4, "thumb_shape": [64, 64]}
+    mock_create.return_value = container
+
+    root = MagicMock()
+    root.__getitem__ = MagicMock(side_effect=KeyError)
+
+    write_output(root, "results", embeddings, access_tags=["nsls2"])
+
+    call = container.append.call_args
+    assert call.kwargs["access_tags"] == ["nsls2"]

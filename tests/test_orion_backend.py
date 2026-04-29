@@ -19,22 +19,23 @@ def test_render_inference_script_substitutes_all_placeholders():
     script = _render_inference_script(
         model_name="vae",
         models_dir="/models",
-        output_mode="none",
-        tiled_result_path="",
+        inputs=[],
+        output="",
     )
     assert "/models" in script
     assert 'model_name = "vae"' in script
     assert 'models_dir = "/models"' in script
-    assert 'output_mode = "none"' in script
+    assert 'inputs = []' in script
+    assert 'output = ""' in script
     assert 'os.environ["JOB_DIR"]' in script
 
 
-def test_render_inference_script_vit():
+def test_render_inference_script_with_output():
     script = _render_inference_script(
         model_name="vit",
         models_dir="/models",
-        output_mode="tiled",
-        tiled_result_path="results/job1",
+        inputs=[],
+        output="results/job1",
     )
     assert "vit" in script
     assert "results/job1" in script
@@ -44,7 +45,7 @@ def test_build_sbatch_script_structure():
     script = _build_sbatch_script(
         working_dir="/jobs",
         python_script="print('hello')",
-        images_b64="AABBCC==",
+        payload_b64="AABBCC==",
         project_dir="/code/emblase",
         job_name="emblase-vae",
         time_limit="0-00:10:00",
@@ -60,11 +61,11 @@ def test_build_sbatch_script_structure():
     assert "pixi run python" in script
 
 
-def test_build_sbatch_script_from_path():
+def test_build_sbatch_script_from_npy_path():
     script = _build_sbatch_script(
         working_dir="/jobs",
         python_script="print('hello')",
-        image_path="/data/images.npy",
+        npy_path="/data/images.npy",
         project_dir="/code/emblase",
         job_name="emblase-vae",
     )
@@ -73,12 +74,11 @@ def test_build_sbatch_script_from_path():
 
 
 def test_build_sbatch_script_from_tiled():
-    # tiled_uris are now baked into the rendered inference script, not the sbatch preamble.
-    # _build_sbatch_script with tiled_mode=True produces no input pre-fetch section.
+    # tiled_input=True means no input pre-fetch section in the sbatch preamble.
     script = _build_sbatch_script(
         working_dir="/jobs",
         python_script="print('hello')",
-        tiled_mode=True,
+        tiled_input=True,
         project_dir="/code/emblase",
         job_name="emblase-vae",
     )
@@ -87,7 +87,7 @@ def test_build_sbatch_script_from_tiled():
     assert "print('hello')" in script
 
 
-def test_images_b64_roundtrip():
+def test_payload_b64_roundtrip():
     """Base64-encoded images must survive the encode/decode cycle."""
     buf = io.BytesIO()
     np.save(buf, DUMMY_IMAGES)
@@ -120,7 +120,7 @@ async def test_orion_backend_submit_calls_client(monkeypatch):
     )
     job_id = await backend.submit(
         model_name="vae",
-        image_data=DUMMY_IMAGES,
+        images=DUMMY_IMAGES,
     )
 
     assert job_id == "99"
@@ -131,8 +131,8 @@ async def test_orion_backend_submit_calls_client(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_orion_backend_submit_image_path():
-    """image_path source should produce a symlink line in the script."""
+async def test_orion_backend_submit_npy_path():
+    """npy_path source should produce a symlink line in the script."""
     submitted = {}
 
     class FakeClient:
@@ -147,14 +147,14 @@ async def test_orion_backend_submit_image_path():
     )
     await backend.submit(
         model_name="vae",
-        image_path="/data/remote.npy",
+        npy_path="/data/remote.npy",
     )
     assert "ln -sf /data/remote.npy" in submitted["script"]
 
 
 @pytest.mark.asyncio
-async def test_orion_backend_tiled_output_injects_env(monkeypatch):
-    """output_mode='tiled' should add EMBLASE_TILED_SERVER_URI to the job environment."""
+async def test_orion_backend_output_injects_tiled_env(monkeypatch):
+    """output being set should add EMBLASE_TILED_SERVER_URI to the job environment."""
     submitted = {}
 
     class FakeClient:
@@ -174,9 +174,8 @@ async def test_orion_backend_tiled_output_injects_env(monkeypatch):
     )
     await backend.submit(
         model_name="vae",
-        image_data=DUMMY_IMAGES,
-        output_mode="tiled",
-        tiled_result_path="results/scan1",
+        images=DUMMY_IMAGES,
+        output="results/scan1",
     )
 
     env = submitted["environment"]
@@ -185,8 +184,8 @@ async def test_orion_backend_tiled_output_injects_env(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_orion_backend_tiled_entries_injects_env(monkeypatch):
-    """tiled_entries alone (output_mode='none') should still inject tiled env vars."""
+async def test_orion_backend_inputs_injects_tiled_env(monkeypatch):
+    """inputs alone should still inject Tiled env vars."""
     submitted = {}
 
     class FakeClient:
@@ -206,8 +205,7 @@ async def test_orion_backend_tiled_entries_injects_env(monkeypatch):
     )
     await backend.submit(
         model_name="vae",
-        tiled_entries=["proposal/scan"],
-        output_mode="none",
+        inputs=["proposal/scan"],
     )
 
     env = submitted["environment"]
@@ -217,7 +215,7 @@ async def test_orion_backend_tiled_entries_injects_env(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_orion_backend_tiled_missing_url_raises(monkeypatch):
-    """submit() with tiled_entries but no tiled_server_uri configured must raise."""
+    """submit() with inputs but no tiled_server_uri configured must raise."""
 
     class FakeClient:
         async def submit_job(self, **kwargs):
@@ -233,7 +231,7 @@ async def test_orion_backend_tiled_missing_url_raises(monkeypatch):
     with pytest.raises(ValueError, match="EMBLASE_TILED_SERVER_URI is not set"):
         await backend.submit(
             model_name="vae",
-            tiled_entries=["proposal/scan"],
+            inputs=["proposal/scan"],
         )
 
 
@@ -254,6 +252,6 @@ def test_build_sbatch_script_raises_with_two_sources():
             python_script="pass",
             project_dir="/code",
             job_name="test",
-            images_b64="abc",
-            image_path="/data/f.npy",
+            payload_b64="abc",
+            npy_path="/data/f.npy",
         )

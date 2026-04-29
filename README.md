@@ -63,13 +63,13 @@ pixi run orion test
 pixi run orion run path/to/script.sh --gpu
 
 # inference — upload images from a local .npy file
-pixi run orion infer --model vae --images-npy /local/data.npy
+pixi run orion infer --model vae --npy-file /local/data.npy
 
 # inference — images already on Orion filesystem
-pixi run orion infer --model vit --orion-path /nsls2/data/images.npy --image-size 512
+pixi run orion infer --model vit --npy-path /nsls2/data/images.npy --image-size 512
 
 # inference — fetch images from Tiled on the compute node
-pixi run orion infer --model vae --tiled-uris path/to/scan1 path/to/scan2
+pixi run orion infer --model vae --inputs path/to/scan1 path/to/scan2
 
 # inference — dummy data (for smoke testing)
 pixi run orion infer --model vae --n-images 4 --image-size 512
@@ -82,7 +82,7 @@ pixi run orion status 671
 pixi run orion cancel 671
 ```
 
-All `infer` options support `--model`, `--image-size`, `--latent-dim`, and `--no-wait`.
+All `infer` options support `--model`, `--image-size`, `--latent-dim`, `--output` (Tiled path to write embeddings into), and `--no-wait`.
 
 ### MLflow model registry
 
@@ -117,11 +117,18 @@ All `mlflow` subcommands accept `--tracking-uri` and `--api-key` to override the
 | `GET` | `/jobs/{id}` | Check job status / retrieve results |
 | `DELETE` | `/jobs/{id}` | Cancel a job |
 
-**Example:**
+**Example — dummy images, save output locally:**
 ```bash
 curl -X POST http://localhost:8000/evaluate \
   -H "Content-Type: application/json" \
   -d '{"model": "vae", "dummy_images": 2, "image_size": [512, 512]}'
+```
+
+**Example — write embeddings to Tiled:**
+```bash
+curl -X POST http://localhost:8000/evaluate \
+  -H "Content-Type: application/json" \
+  -d '{"model": "vae", "dummy_images": 2, "output": "proposal/scan1/embeddings"}'
 ```
 
 ## Configuration
@@ -133,7 +140,7 @@ Copy [`.env.example`](.env.example) to `.env` and fill in your values.
 |----------|---------|-------------|
 | `EMBLASE_COMPUTE_BACKEND` | `local` | `local` or `orion` |
 | `EMBLASE_MODELS_DIR` | `./models` | Path to model weights (local backend) |
-| `EMBLASE_TILED_URI` | — | Tiled server base URI (used by Orion node) |
+| `EMBLASE_TILED_SERVER_URI` | — | Tiled server base URI (used by Orion node) |
 | `EMBLASE_TILED_API_KEY` | — | API key for authenticated Tiled servers |
 | `EMBLASE_ORION_API_URL` | `https://orion-api-staging.nsls2.bnl.gov` | Orion API base URL |
 | `EMBLASE_ORION_API_KEY` | — | Orion API key |
@@ -169,7 +176,7 @@ $EMBLASE_ORION_WORKING_DIR/
 ## Development
 
 ```bash
-pixi run test    # 58 tests, no GPU or live connections required
+pixi run test    # 71 tests, no GPU or live connections required
 pixi run serve   # start API with auto-reload
 ```
 

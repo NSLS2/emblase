@@ -12,6 +12,10 @@ class Settings(BaseSettings):
     # Tiled
     tiled_server_uri: str = ""
     tiled_api_key: str = ""
+    # Comma-separated Tiled access tags applied to every node written by write_output.
+    # Example: "nsls2", "staff,nsls2"
+    # If empty, no access_tags argument is passed and server defaults apply.
+    tiled_access_tags: str = ""
 
     # MLflow — set EMBLASE_MLFLOW_TRACKING_URI to point at any compatible server.
     # For American Science Cloud (ASC): the tracking URI provided by the ASC portal.

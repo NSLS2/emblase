@@ -89,8 +89,8 @@ def test_cancel_job_not_found(app_with_mock_backend):
     assert resp.status_code == 404
 
 
-def test_evaluate_passes_output_mode_and_tiled_path(monkeypatch):
-    """output_mode and tiled_result_path must be forwarded to backend.submit."""
+def test_evaluate_passes_output(monkeypatch):
+    """output must be forwarded to backend.submit."""
     import emblase.app as app_module
 
     captured = {}
@@ -110,9 +110,7 @@ def test_evaluate_passes_output_mode_and_tiled_path(monkeypatch):
         json={
             "dummy_images": 1,
             "image_size": [64, 64],
-            "output_mode": "tiled",
-            "tiled_result_path": "results/scan1",
+            "output": "results/scan1",
         },
     )
-    assert captured.get("output_mode") == "tiled"
-    assert captured.get("tiled_result_path") == "results/scan1"
+    assert captured.get("output") == "results/scan1"

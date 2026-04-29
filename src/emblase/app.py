@@ -53,11 +53,10 @@ async def evaluate(req: EvaluateRequest):
 
     job_id = await backend.submit(
         model_name=req.model.value,
-        image_data=images,
+        images=images,
         image_size=req.image_size,
         latent_dim=req.latent_dim,
-        output_mode=req.output_mode.value,
-        tiled_result_path=req.tiled_result_path or "",
+        output=req.output or "",
         mlflow_model=req.mlflow_model or "",
         mlflow_version=req.mlflow_version or "",
     )

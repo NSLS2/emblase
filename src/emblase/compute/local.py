@@ -20,7 +20,7 @@ class LocalBackend(ComputeBackend):
     async def submit(
         self,
         model_name: str,
-        image_data: np.ndarray | None = None,
+        images: np.ndarray | None = None,
         latent_dim: int = 512,
         image_size: tuple[int, int] | None = None,
         **kwargs: Any,
@@ -33,9 +33,9 @@ class LocalBackend(ComputeBackend):
 
             from ..models import encode, load_model
 
-            if image_data is None:
-                raise ValueError("image_data is required for LocalBackend")
-            imgs = image_data[:, np.newaxis] if image_data.ndim == 3 else image_data
+            if images is None:
+                raise ValueError("images is required for LocalBackend")
+            imgs = images[:, np.newaxis] if images.ndim == 3 else images
             size = image_size or imgs.shape[-2:]
             model = load_model(model_name, latent_dim=latent_dim, image_size=size)
             output = encode(model, torch.from_numpy(imgs).float())
