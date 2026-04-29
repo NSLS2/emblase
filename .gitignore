@@ -213,4 +213,4 @@ models/*
 # noop is pure code (no weights) — track it
 !models/noop/
 !models/noop/**
-jobs/*
+jobs/*models/noop/__pycache__/
