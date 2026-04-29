@@ -219,12 +219,19 @@ class OrionClient:
     async def wait_for_job(
         self,
         job_id: int,
-        poll_interval: float = 2.0,
-        timeout: float = 120.0,
+        poll_interval: float = 5.0,
+        timeout: float = 1800.0,
     ) -> OrionJob:
-        """Poll until job reaches a terminal state."""
-        elapsed = 0.0
-        while elapsed < timeout:
+        """Poll until job reaches a terminal state.
+
+        Uses wall-clock time (monotonic) so sleep jitter doesn't accumulate.
+        Default timeout is 30 minutes — enough for any normal inference job.
+        """
+        import time
+
+        deadline = time.monotonic() + timeout
+        info = None
+        while time.monotonic() < deadline:
             info = await self.get_job(job_id)
             if info.state in (
                 "COMPLETED",
@@ -232,12 +239,13 @@ class OrionClient:
                 "CANCELLED",
                 "TIMEOUT",
                 "NODE_FAIL",
+                "OUT_OF_MEMORY",
             ):
                 return info
             await asyncio.sleep(poll_interval)
-            elapsed += poll_interval
         raise TimeoutError(
-            f"Job {job_id} did not complete within {timeout}s (last state: {info.state})"
+            f"Job {job_id} did not complete within {timeout}s "
+            f"(last state: {info.state if info else 'unknown'})"
         )
 
 
@@ -390,8 +398,8 @@ class OrionBackend(ComputeBackend):
     async def wait(
         self,
         job_id: str,
-        poll_interval: float = 3.0,
-        timeout: float = 300.0,
+        poll_interval: float = 5.0,
+        timeout: float = 1800.0,
     ) -> JobStatus:
         """Poll until the job reaches a terminal state. Returns final JobStatus."""
         info = await self.client.wait_for_job(

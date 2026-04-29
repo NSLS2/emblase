@@ -301,6 +301,11 @@ class LatentSpaceEmbedding(CompositeClient):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
+        # Cache whether the core arrays have been written to avoid repeated
+        # Tiled listing requests inside _write_arrays on subsequent appends.
+        # None = unknown (check once on first _write_arrays call).
+        self._arrays_initialised: bool | None = None
+
         # Create the _index table if not exists (appendable, SQL-backed, immutable after write)
         try:
             self._index_table = self.base["_index"]
@@ -339,8 +344,13 @@ class LatentSpaceEmbedding(CompositeClient):
         # tags already stored in the container's access_blob.
         tags = access_tags if access_tags is not None else self.access_blob.get("tags", None)
 
+        # Check once whether arrays have been initialised; cache the result to
+        # avoid a Tiled listing request on every subsequent append call.
+        if self._arrays_initialised is None:
+            self._arrays_initialised = "embeddings" in self
+
         # Arrays: create on first insert, extend on subsequent.
-        if "embeddings" not in self:
+        if not self._arrays_initialised:
             self.write_array(
                 embeddings.astype(np.float32),
                 key="embeddings",
@@ -373,6 +383,7 @@ class LatentSpaceEmbedding(CompositeClient):
                     metadata={"description": "Visualization projections"},
                     access_tags=tags,
                 )
+            self._arrays_initialised = True
         else:
             self["embeddings"].patch(
                 embeddings.astype(np.float32),

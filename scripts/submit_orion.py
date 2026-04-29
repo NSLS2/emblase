@@ -9,7 +9,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from emblase.compute.orion import OrionBackend, OrionClient  # noqa: E402
+from emblase.compute.orion import OrionBackend, OrionClient, _SLURM_STATE_MAP  # noqa: E402
 
 CONNECTIVITY_SCRIPT = """\
 #!/bin/bash
@@ -71,10 +71,20 @@ async def _infer(args):
         print("(not waiting — use 'status <id>' to check)")
         return
 
-    print("Waiting for job to complete...")
-    final_status = await backend.wait(job_id)
-    from emblase.compute.base import JobStatus
+    print("Waiting for job to complete (polling every 5s)...")
+    import time
+    t0 = time.monotonic()
+    while True:
+        await asyncio.sleep(5)
+        elapsed = int(time.monotonic() - t0)
+        async with OrionClient() as client:
+            info = await client.get_job(int(job_id))
+        print(f"  [{elapsed:>4}s] state={info.state} node={info.node or '(queued)'}")
+        if info.state in ("COMPLETED", "FAILED", "CANCELLED", "TIMEOUT", "NODE_FAIL", "OUT_OF_MEMORY"):
+            break
 
+    from emblase.compute.base import JobStatus
+    final_status = _SLURM_STATE_MAP.get(info.state, JobStatus.failed)
     print(f"\nJob {job_id} finished: {final_status.value}")
     if final_status != JobStatus.completed:
         print("Job did not complete successfully — check the log on the Orion filesystem.")
@@ -132,8 +142,8 @@ def main():
     infer_p.add_argument(
         "--batch-size",
         type=int,
-        default=1,
-        help="Images per encode call on the node. Default 1 is safe for large images.",
+        default=8,
+        help="Images per encode call on the node. Default 8; reduce if OOM on large images.",
     )
     infer_p.add_argument("--no-wait", action="store_true")
     infer_p.add_argument(
