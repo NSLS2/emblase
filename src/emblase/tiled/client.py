@@ -80,7 +80,7 @@ def _log_thumb_fn(
 # ``thumb_mode`` in ``write_output``.
 THUMB_MODES: dict[str, "Callable[[np.ndarray], np.ndarray]"] = {
     "default": _default_thumb_fn,
-    "log": _log_thumb_fn,
+    "logroi": _log_thumb_fn,
 }
 
 
@@ -186,7 +186,7 @@ def write_output(
             Nearest-neighbour resize of the full frame to ``thumb_shape``.
             No intensity normalisation.
 
-        ``"log"``
+        ``"logroi"``
             Crop ``_LOG_THUMB_ROI`` (rows 0:180, cols 220:400), clip
             negatives to 0, apply ``log1p``, then resize to ``thumb_shape``.
             Recommended for X-ray photon-count data (compresses the ~10^6

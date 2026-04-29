@@ -188,7 +188,7 @@ def main():
     infer_p.add_argument(
         "--thumb-mode",
         default="default",
-        choices=["default", "log"],
+        choices=["default", "logroi"],
         help=(
             "Thumbnail generation mode. "
             "'default': nearest-neighbour resize of the full frame. "

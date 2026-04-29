@@ -338,7 +338,7 @@ class TestLogThumbFn:
     def test_in_thumb_modes_registry(self):
         """Both 'default' and 'log' are registered in THUMB_MODES."""
         assert "default" in THUMB_MODES
-        assert "log" in THUMB_MODES
+        assert "logroi" in THUMB_MODES
 
 
 @patch("emblase.tiled.client.create_embedding_container")
@@ -354,7 +354,7 @@ def test_write_output_thumb_mode_log(mock_lse_cls, mock_create):
     root = MagicMock()
     root.__getitem__ = MagicMock(side_effect=KeyError)
 
-    write_output(root, "results", embeddings, images=images, thumb_mode="log")
+    write_output(root, "results", embeddings, images=images, thumb_mode="logroi")
 
     thumbnails = container.append.call_args.args[1]
     assert thumbnails.shape == (3, 64, 64)
@@ -397,8 +397,8 @@ def test_write_output_thumb_fn_overrides_mode(mock_lse_cls, mock_create):
         call_log.append(sentinel)
         return np.zeros((frames.shape[0], 4, 4), dtype=np.float32)
 
-    # thumb_fn supplied alongside thumb_mode="log" — custom_fn must win
+    # thumb_fn supplied alongside thumb_mode="logroi" — custom_fn must win
     write_output(root, "results", embeddings, images=images,
-                 thumb_fn=custom_fn, thumb_mode="log")
+                 thumb_fn=custom_fn, thumb_mode="logroi")
 
     assert len(call_log) == 1 and call_log[0] is sentinel

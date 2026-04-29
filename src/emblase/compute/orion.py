@@ -298,7 +298,7 @@ class OrionBackend(ComputeBackend):
             saved as ``output.npy`` in the job working directory only.
 
         Thumbnail:
-          - ``thumb_mode``: ``"default"`` (resize only) or ``"log"`` (ROI crop +
+          - ``thumb_mode``: ``"default"`` (resize only) or ``"logroi"`` (ROI crop +
             log1p normalisation).  See ``write_output`` for details.
         """
         py_script = _render_inference_script(
