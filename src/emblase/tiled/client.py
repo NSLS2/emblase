@@ -78,6 +78,9 @@ def read_images(
     return frames, frame_entries
 
 
+_embedding_container_cache: dict[tuple, "LatentSpaceEmbedding"] = {}
+
+
 def write_output(
     client,
     path: str,
@@ -135,27 +138,35 @@ def write_output(
     parts = path.rstrip("/").split("/")
     key = parts[-1]
     parent_path = "/".join(parts[:-1])
-    parent = client[parent_path] if parent_path else client
 
-    # Get or create the LatentSpaceEmbedding container.
-    try:
-        container = parent[key]
-        if not isinstance(container, LatentSpaceEmbedding):
-            raise TypeError(
-                f"Node at {path!r} exists but is not a LatentSpaceEmbedding "
-                f"(got {type(container).__name__})."
+    # Cache the LatentSpaceEmbedding client object across calls so that the
+    # local state (_num_embeddings, _arrays_initialised, _index_table) is
+    # preserved and we avoid redundant GETs on every append.
+    base_url = str(client.context.base_url)
+    _cache_key = (base_url, path)
+    container = _embedding_container_cache.get(_cache_key)
+    if container is None:
+        parent = client[parent_path] if parent_path else client
+        # Get or create the LatentSpaceEmbedding container.
+        try:
+            container = parent[key]
+            if not isinstance(container, LatentSpaceEmbedding):
+                raise TypeError(
+                    f"Node at {path!r} exists but is not a LatentSpaceEmbedding "
+                    f"(got {type(container).__name__})."
+                )
+        except KeyError:
+            container = create_embedding_container(
+                parent,
+                key,
+                embedding_dim=d,
+                thumb_shape=thumb_shape,
+                model_name=model_name,
+                model_version=model_version,
+                metadata=metadata,
+                access_tags=access_tags,
             )
-    except KeyError:
-        container = create_embedding_container(
-            parent,
-            key,
-            embedding_dim=d,
-            thumb_shape=thumb_shape,
-            model_name=model_name,
-            model_version=model_version,
-            metadata=metadata,
-            access_tags=access_tags,
-        )
+        _embedding_container_cache[_cache_key] = container
 
     # Build thumbnails — apply thumb_fn per image (handles ragged shapes).
     if images is not None:
@@ -272,11 +283,15 @@ def create_embedding_container(
         access_tags=access_tags,
     )
 
-    # The node comes back as LatentSpaceEmbedding (CompositeClient subclass)
-    # via spec dispatch. We need the raw Container to create the _index table
-    # since CompositeClient adds column-overlap validation we don't need here.
-    base = node.base if isinstance(node, CompositeClient) else node
+    # create_container returns the node via spec dispatch — it should already
+    # be a LatentSpaceEmbedding (CompositeClient subclass).  Return it directly
+    # to avoid re-fetching the container from the server (which would cost an
+    # extra GET + a second __init__ that loses the eagerly-set caches).
+    if isinstance(node, LatentSpaceEmbedding):
+        return node
 
+    # Fallback: server did not dispatch to LatentSpaceEmbedding (e.g. spec
+    # validator not registered).  Re-fetch so callers always get the right type.
     return parent[key]
 
 
@@ -301,10 +316,24 @@ class LatentSpaceEmbedding(CompositeClient):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        # Cache whether the core arrays have been written to avoid repeated
-        # Tiled listing requests inside _write_arrays on subsequent appends.
-        # None = unknown (check once on first _write_arrays call).
-        self._arrays_initialised: bool | None = None
+        # Use the structure.count already present in the fetched item to decide
+        # whether child arrays exist, avoiding a separate search GET.
+        # count=0 means no children → arrays not yet initialised.
+        # count>0 means children exist → treat as initialised (True).
+        # Fall back to None (lazy check) if count is unavailable.
+        _structure = self.item.get("attributes", {}).get("structure", {})
+        _count = _structure.get("count") if isinstance(_structure, dict) else getattr(_structure, "count", None)
+        if _count == 0:
+            self._arrays_initialised: bool | None = False
+        elif _count is not None and _count > 0:
+            self._arrays_initialised = True
+        else:
+            self._arrays_initialised = None
+
+        # Local embedding count cache.  None = unknown (resolved lazily from
+        # the _index table on first access).  Set to 0 immediately on fresh
+        # containers so we never need a remote read just to find the offset.
+        self._num_embeddings: int | None = None
 
         # Create the _index table if not exists (appendable, SQL-backed, immutable after write)
         try:
@@ -316,6 +345,12 @@ class LatentSpaceEmbedding(CompositeClient):
                 metadata={"description": "Per-embedding metadata index (append-only)"},
                 access_tags=self.access_blob.get("tags", None)
             )
+            # We just created both the table and the container — nothing has
+            # been written yet.  Initialise the caches eagerly so the first
+            # append() doesn't need any extra GET requests to discover these
+            # facts remotely.
+            self._arrays_initialised = False
+            self._num_embeddings = 0
 
     def __repr__(self) -> str:
         n = self.num_embeddings
@@ -332,8 +367,17 @@ class LatentSpaceEmbedding(CompositeClient):
 
     @property
     def num_embeddings(self) -> int:
-        """Return the number of embeddings currently stored."""
-        return len(self._index_table.read(columns=["timestamp"]))
+        """Return the number of embeddings currently stored.
+
+        Uses a local counter when available to avoid a remote table read.
+        The counter is populated eagerly on fresh containers and updated on
+        every ``append()`` call.  On containers that already existed when this
+        client object was created the counter starts as ``None`` and is
+        populated from the remote _index table on first access.
+        """
+        if self._num_embeddings is None:
+            self._num_embeddings = len(self._index_table.read(columns=["timestamp"]))
+        return self._num_embeddings
 
     def _write_arrays(self, embeddings, thumbnails, projections=None, offset=0, access_tags=None):
         batch_size = len(embeddings)
@@ -351,26 +395,26 @@ class LatentSpaceEmbedding(CompositeClient):
 
         # Arrays: create on first insert, extend on subsequent.
         if not self._arrays_initialised:
-            self.write_array(
+            self._arr_embeddings = self.write_array(
                 embeddings.astype(np.float32),
                 key="embeddings",
                 metadata={"description": "Embedding vectors"},
                 dims=["sample", "feature"],
                 access_tags=tags,
             )
-            self.write_array(
+            self._arr_thumbnails = self.write_array(
                 thumbnails,
                 key="thumbnails",
                 metadata={"description": "Thumbnail images"},
                 access_tags=tags,
             )
-            self.write_array(
+            self._arr_notes = self.write_array(
                 empty_notes,
                 key="notes",
                 metadata={"description": "Freeform mutable annotations"},
                 access_tags=tags,
             )
-            self.write_array(
+            self._arr_user_labels = self.write_array(
                 empty_user_labels,
                 key="user_labels",
                 metadata={"description": "Mutable user-assigned labels"},
@@ -385,26 +429,16 @@ class LatentSpaceEmbedding(CompositeClient):
                 )
             self._arrays_initialised = True
         else:
-            self["embeddings"].patch(
-                embeddings.astype(np.float32),
-                offset=(offset,),
-                extend=True,
-            )
-            self["thumbnails"].patch(
-                thumbnails,
-                offset=(offset,),
-                extend=True,
-            )
-            self["notes"].patch(
-                empty_notes,
-                offset=(offset,),
-                extend=True,
-            )
-            self["user_labels"].patch(
-                empty_user_labels,
-                offset=(offset,),
-                extend=True,
-            )
+            # Use cached array clients when available to avoid GET /metadata/…/key
+            # on each patch call (self[key] would re-fetch from the server).
+            emb = getattr(self, "_arr_embeddings", None) or self["embeddings"]
+            thu = getattr(self, "_arr_thumbnails", None) or self["thumbnails"]
+            nts = getattr(self, "_arr_notes", None) or self["notes"]
+            ulb = getattr(self, "_arr_user_labels", None) or self["user_labels"]
+            emb.patch(embeddings.astype(np.float32), offset=(offset,), extend=True)
+            thu.patch(thumbnails, offset=(offset,), extend=True)
+            nts.patch(empty_notes, offset=(offset,), extend=True)
+            ulb.patch(empty_user_labels, offset=(offset,), extend=True)
             if projections is not None:
                 if "projections" in self:
                     self["projections"].patch(
@@ -512,7 +546,11 @@ class LatentSpaceEmbedding(CompositeClient):
         )
         self._index_table.append_partition(0, table)
 
-        return current_n + batch_size
+        # Keep the local counter in sync so subsequent append() / num_embeddings
+        # calls don't need a remote table read to find the new offset.
+        self._num_embeddings = current_n + batch_size
+
+        return self._num_embeddings
 
     def update_note(self, index: int, note: str) -> None:
         """Update the note for a specific embedding by array index."""
