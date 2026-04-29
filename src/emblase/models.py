@@ -64,18 +64,44 @@ def _load_from_mlflow(model_name: str, **kwargs) -> torch.nn.Module:
 
     tracking_uri = kwargs.get("mlflow_tracking_uri")
     api_key = kwargs.get("mlflow_api_key")
-
-    version = mlflow_registry.resolve_version(
-        model_name,
-        version=kwargs.get("mlflow_version"),
-        tracking_uri=tracking_uri,
-        api_key=api_key,
-    )
+    requested_version = kwargs.get("mlflow_version")
 
     cache_root = kwargs.get("cache_dir") or Path(
         os.environ.get("EMBLASE_MODEL_CACHE_DIR")
         or Path.home() / ".cache" / "emblase" / "models"
     )
+
+    # Cache-first: if no specific version is requested, scan the local cache
+    # for existing versions and use the highest one — no MLflow network call.
+    # Only hit MLflow when the cache is empty or a specific version is pinned.
+    version: str | None = None
+    if requested_version is not None:
+        # Explicit version requested — resolve (no-op, just stringifies) then check cache.
+        version = mlflow_registry.resolve_version(
+            model_name, version=requested_version,
+            tracking_uri=tracking_uri, api_key=api_key,
+        )
+    else:
+        # Look for any cached versions: <cache_root>/<model_name>/v<N>/model/loader.py
+        model_cache = Path(cache_root) / model_name
+        cached_versions = sorted(
+            int(p.parent.parent.name[1:])
+            for p in model_cache.glob("v*/model/loader.py")
+            if p.parent.parent.name[1:].isdigit()
+        )
+        if cached_versions:
+            version = str(max(cached_versions))
+            log.info(
+                "Cache-first: using cached '%s' v%s (skip MLflow API call)",
+                model_name, version,
+            )
+        else:
+            # No cache — must resolve from MLflow.
+            version = mlflow_registry.resolve_version(
+                model_name, version=None,
+                tracking_uri=tracking_uri, api_key=api_key,
+            )
+
     # weights_dir is always <cache_root>/<model_name>/v<version>/model/
     # matching the artifact subpath MLflow uses on download.
     weights_dir = Path(cache_root) / model_name / f"v{version}" / "model"
