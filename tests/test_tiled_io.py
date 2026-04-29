@@ -1,25 +1,26 @@
-"""Tests for tiled_io — read_images and write_output."""
+"""Tests for emblase.tiled.client — read_images and write_output."""
 
 import numpy as np
 import pytest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
-from emblase.tiled_io import read_images, write_output
+from emblase.tiled.client import read_images, write_output
 
 
-def _make_array_node(arr: np.ndarray, sliced: dict | None = None) -> MagicMock:
+def _make_array_node(arr: np.ndarray, sliced_arr: np.ndarray | None = None) -> MagicMock:
     """Return a mock tiled array node.
 
-    ``sliced`` maps slice strings to the expected sub-array; if None, .read()
-    always returns ``arr`` regardless of the argument.
+    If ``sliced_arr`` is provided, ``node.read(anything_truthy)`` returns it;
+    ``node.read()`` / ``node.read(None)`` returns ``arr``.
     """
     node = MagicMock()
-    if sliced:
-        def _read(s=None):
-            return sliced[s] if s is not None else arr
-        node.read.side_effect = _read
-    else:
-        node.read.return_value = arr
+
+    def _read(s=None):
+        if s is not None and sliced_arr is not None:
+            return sliced_arr
+        return arr
+
+    node.read.side_effect = _read
     return node
 
 
@@ -97,15 +98,15 @@ def test_read_images_1d_raises():
 # ---------------------------------------------------------------------------
 
 def test_read_images_with_slice():
-    """(path, slice) tuple passes the slice string to node.read()."""
+    """(path, slice) tuple passes a slice object to node.read()."""
     full = np.arange(5 * 32 * 32, dtype=np.float32).reshape(5, 32, 32)
     sliced = full[1:3]  # shape (2, 32, 32)
-    node = _make_array_node(full, sliced={"1:3": sliced})
+    node = _make_array_node(full, sliced_arr=sliced)
     client = _make_client({"scan": node})
 
     frames = read_images(client, [("scan", "1:3")])
 
-    node.read.assert_called_once_with("1:3")
+    node.read.assert_called_once()  # called with an NDSlice, not bare string
     assert len(frames) == 2
     assert frames[0].shape == (32, 32)
 
@@ -115,29 +116,101 @@ def test_read_images_mixed_str_and_tuple():
     arr_full = np.ones((4, 8, 8), dtype=np.float32)
     arr_slice = arr_full[0:1]  # shape (1, 8, 8)
     node_a = _make_array_node(arr_full)
-    node_b = _make_array_node(arr_full, sliced={"0:1": arr_slice})
+    node_b = _make_array_node(arr_full, sliced_arr=arr_slice)
     client = _make_client({"a": node_a, "b": node_b})
 
     frames = read_images(client, ["a", ("b", "0:1")])
 
     assert len(frames) == 5  # 4 from "a", 1 from ("b", "0:1")
-    node_a.read.assert_called_once_with()
-    node_b.read.assert_called_once_with("0:1")
+    node_a.read.assert_called_once()
+    node_b.read.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
 # write_output
 # ---------------------------------------------------------------------------
 
-def test_write_output():
-    """write_output calls container.write_array with the correct array."""
-    output = np.zeros((5, 512), dtype=np.float32)
+@patch("emblase.tiled.client.create_embedding_container")
+@patch("emblase.tiled.client.LatentSpaceEmbedding")
+def test_write_output_creates_container_when_missing(mock_lse_cls, mock_create):
+    """write_output creates a new container if the key is missing."""
+    embeddings = np.zeros((3, 4), dtype=np.float32)
     container = MagicMock()
-    client = _make_client({"results": container})
+    container.metadata = {"embedding_dim": 4, "thumb_shape": [64, 64]}
+    mock_create.return_value = container
 
-    write_output(client, "results", output, key="job_42")
+    root = MagicMock()
+    root.__getitem__ = MagicMock(side_effect=KeyError("results"))
 
-    container.write_array.assert_called_once()
-    call_args = container.write_array.call_args
-    np.testing.assert_array_equal(call_args.args[0], output)
-    assert call_args.kwargs.get("key") == "job_42"
+    write_output(root, "results", embeddings)
+
+    mock_create.assert_called_once()
+    container.append.assert_called_once()
+    call = container.append.call_args
+    np.testing.assert_array_equal(call.args[0], embeddings)  # embeddings
+    assert call.args[1].shape == (3, 64, 64)  # default thumb_shape zeros
+
+
+@patch("emblase.tiled.client.create_embedding_container")
+def test_write_output_appends_to_existing_container(mock_create):
+    """write_output appends to existing container without re-creating it."""
+    from emblase.tiled.client import LatentSpaceEmbedding
+    from unittest.mock import create_autospec
+
+    embeddings = np.ones((2, 4), dtype=np.float32)
+    container = create_autospec(LatentSpaceEmbedding, instance=True)
+    container.metadata = {"embedding_dim": 4, "thumb_shape": [64, 64]}
+
+    root = MagicMock()
+    root.__getitem__ = MagicMock(return_value=container)
+
+    write_output(root, "results", embeddings)
+
+    mock_create.assert_not_called()
+    container.append.assert_called_once()
+
+
+@patch("emblase.tiled.client.create_embedding_container")
+@patch("emblase.tiled.client.LatentSpaceEmbedding")
+def test_write_output_passes_provenance(mock_lse_cls, mock_create):
+    """tiled_entries are split into paths and slices in the append call."""
+    embeddings = np.zeros((2, 4), dtype=np.float32)
+    container = MagicMock()
+    container.metadata = {"embedding_dim": 4, "thumb_shape": [64, 64]}
+    mock_create.return_value = container
+
+    root = MagicMock()
+    root.__getitem__ = MagicMock(side_effect=KeyError)
+
+    entries = ["scan/001", ("scan/002", "3:5")]
+    write_output(root, "results", embeddings, tiled_entries=entries)
+
+    call = container.append.call_args
+    assert call.kwargs["paths"] == ["scan/001", "scan/002"]
+    assert call.kwargs["slices"] == [None, "3:5"]
+
+
+@patch("emblase.tiled.client.create_embedding_container")
+@patch("emblase.tiled.client.LatentSpaceEmbedding")
+def test_write_output_custom_thumb_fn(mock_lse_cls, mock_create):
+    """A custom thumb_fn is applied to each frame."""
+    embeddings = np.zeros((2, 4), dtype=np.float32)
+    images = [np.ones((32, 32), dtype=np.float32) * i for i in range(2)]
+    container = MagicMock()
+    container.metadata = {"embedding_dim": 4, "thumb_shape": [64, 64]}
+    mock_create.return_value = container
+
+    root = MagicMock()
+    root.__getitem__ = MagicMock(side_effect=KeyError)
+
+    called_with = []
+
+    def my_thumb(frames):
+        called_with.append(frames.shape)
+        return np.zeros((frames.shape[0], 4, 4), dtype=np.float32)
+
+    write_output(root, "results", embeddings, images=images, thumb_fn=my_thumb)
+
+    assert len(called_with) == 2  # called once per image
+    thumbnails = container.append.call_args.args[1]
+    assert thumbnails.shape == (2, 4, 4)

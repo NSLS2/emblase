@@ -1,0 +1,1871 @@
+import React from "react";
+
+declare global {
+  interface Window {
+    __TILED_ACCESS_TOKEN__?: string | null;
+  }
+}
+
+/** Return auth headers if a token is available (works with or without auth). */
+function authHeaders(extra?: Record<string, string>): Record<string, string> {
+  const h: Record<string, string> = { ...extra };
+  const token = window.__TILED_ACCESS_TOKEN__;
+  if (token) h["Authorization"] = `Bearer ${token}`;
+  return h;
+}
+
+/** Fetch a URL with auth and return an object URL for use as img src. */
+function useAuthBlobUrl(url: string | null): string | null {
+  const [blobUrl, setBlobUrl] = React.useState<string | null>(null);
+  React.useEffect(() => {
+    if (!url) { setBlobUrl(null); return; }
+    let objectUrl: string | null = null;
+    let cancelled = false;
+    fetch(url, { headers: authHeaders() })
+      .then((r) => (r.ok ? r.blob() : Promise.reject(r.statusText)))
+      .then((blob) => {
+        if (cancelled) return;
+        objectUrl = URL.createObjectURL(blob);
+        setBlobUrl(objectUrl);
+      })
+      .catch(() => { if (!cancelled) setBlobUrl(null); });
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [url]);
+  return blobUrl;
+}
+
+/** <img> that fetches via auth headers (works with and without auth). */
+function AuthImg(props: React.ImgHTMLAttributes<HTMLImageElement>) {
+  const { src, ...rest } = props;
+  const blobUrl = useAuthBlobUrl(src ?? null);
+  if (!blobUrl) return null;
+  return React.createElement("img", { ...rest, src: blobUrl });
+}
+
+interface EmbeddingPoint {
+  x: number;
+  y: number;
+  index: number;
+  label?: string;
+  path?: string;
+}
+
+interface TooltipInfo {
+  point: EmbeddingPoint;
+  screenX: number;
+  screenY: number;
+  thumbnailUrl: string;
+}
+
+interface SelectedPointInfo {
+  point: EmbeddingPoint;
+  thumbnailUrl: string;
+  note: string;
+  userLabel: string;
+  originalNote: string;
+  originalUserLabel: string;
+  saving: boolean;
+}
+
+interface ChatMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  timestamp: number;
+}
+
+interface ViewState {
+  offsetX: number;
+  offsetY: number;
+  scale: number;
+}
+
+type WsStatus = "disconnected" | "connecting" | "connected";
+type ToolMode = "pan" | "lasso";
+
+const POINT_RADIUS = 4;
+const HOVER_RADIUS = 8;
+const NOTES_MAX_LEN = 1024;
+const USER_LABEL_MAX_LEN = 64;
+const CANVAS_HEIGHT = 500;
+const PANEL_WIDTH = 280;
+const PANEL_INSET = 70;
+const LABEL_COLORS: Record<string, string> = {};
+const COLOR_PALETTE = [
+  "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
+  "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf",
+  "#aec7e8", "#ffbb78", "#98df8a", "#ff9896", "#c5b0d5",
+];
+let colorIdx = 0;
+
+function getLabelColor(label: string): string {
+  if (!label) return "#888888";
+  if (!LABEL_COLORS[label]) {
+    LABEL_COLORS[label] = COLOR_PALETTE[colorIdx % COLOR_PALETTE.length];
+    colorIdx++;
+  }
+  return LABEL_COLORS[label];
+}
+
+function encodeUtf32LE(str: string, maxLen: number): ArrayBuffer {
+  const buf = new ArrayBuffer(maxLen * 4);
+  const view = new Uint32Array(buf);
+  for (let i = 0; i < Math.min(str.length, maxLen); i++) {
+    view[i] = str.codePointAt(i) || 0;
+  }
+  return buf;
+}
+
+async function patchStringArray(
+  apiUrl: string,
+  nodePath: string,
+  arrayName: string,
+  index: number,
+  value: string,
+  maxLen: number,
+): Promise<Response> {
+  const body = encodeUtf32LE(value, maxLen);
+  return fetch(
+    `${apiUrl}/array/full/${nodePath}/${arrayName}` +
+      `?offset=${index}&shape=1`,
+    { method: "PATCH", headers: authHeaders({ "Content-Type": "application/octet-stream" }), body },
+  );
+}
+
+async function fetchStringValue(
+  apiUrl: string,
+  nodePath: string,
+  arrayName: string,
+  index: number,
+): Promise<string> {
+  const res = await fetch(
+    `${apiUrl}/array/full/${nodePath}/${arrayName}` +
+      `?format=application/json&slice=${index}`,
+    { headers: authHeaders() },
+  );
+  if (!res.ok) return "";
+  const data = await res.json();
+  return typeof data === "string" ? data : String(data ?? "");
+}
+
+function fitViewToPoints(
+  pts: EmbeddingPoint[],
+  width: number,
+  height: number,
+): ViewState {
+  if (pts.length === 0) return { offsetX: 0, offsetY: 0, scale: 1 };
+  const xs = pts.map((p) => p.x);
+  const ys = pts.map((p) => p.y);
+  const minX = Math.min(...xs);
+  const maxX = Math.max(...xs);
+  const minY = Math.min(...ys);
+  const maxY = Math.max(...ys);
+  const rangeX = maxX - minX || 1;
+  const rangeY = maxY - minY || 1;
+  const padding = 0.1;
+  const scaleX = width / (rangeX * (1 + 2 * padding));
+  const scaleY = height / (rangeY * (1 + 2 * padding));
+  const scale = Math.min(scaleX, scaleY);
+  const cx = (minX + maxX) / 2;
+  const cy = (minY + maxY) / 2;
+  return {
+    offsetX: width / 2 - cx * scale,
+    offsetY: height / 2 + cy * scale,
+    scale,
+  };
+}
+
+// Ray-casting point-in-polygon test (screen coordinates)
+function pointInPolygon(px: number, py: number, poly: { x: number; y: number }[]): boolean {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const xi = poly[i].x, yi = poly[i].y;
+    const xj = poly[j].x, yj = poly[j].y;
+    if ((yi > py) !== (yj > py) && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
+const STATUS_COLORS: Record<WsStatus, string> = {
+  disconnected: "#999",
+  connecting: "#f0ad4e",
+  connected: "#5cb85c",
+};
+
+function EmbeddingScatter({
+  segments,
+  item,
+}: {
+  segments: string[];
+  item: any;
+}) {
+  const canvasRef = React.useRef<HTMLCanvasElement>(null);
+  const containerRef = React.useRef<HTMLDivElement>(null);
+  const [points, setPoints] = React.useState<EmbeddingPoint[]>([]);
+  const [tooltip, setTooltip] = React.useState<TooltipInfo | null>(null);
+  const [dragging, setDragging] = React.useState(false);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState<string | null>(null);
+  const [view, setView] = React.useState<ViewState>({
+    offsetX: 0,
+    offsetY: 0,
+    scale: 1,
+  });
+  const [wsStatus, setWsStatus] = React.useState<WsStatus>("disconnected");
+  const [liveEnabled, setLiveEnabled] = React.useState(true);
+  const [selected, setSelected] = React.useState<SelectedPointInfo | null>(
+    null,
+  );
+  const [saveError, setSaveError] = React.useState<string | null>(null);
+  const [chatOpen, setChatOpen] = React.useState(false);
+  const [chatMessages, setChatMessages] = React.useState<ChatMessage[]>([]);
+  const [chatInput, setChatInput] = React.useState("");
+  const [chatSending, setChatSending] = React.useState(false);
+  const chatListRef = React.useRef<HTMLDivElement>(null);
+  const [toolMode, setToolMode] = React.useState<ToolMode>("pan");
+  const [lassoPath, setLassoPath] = React.useState<{ x: number; y: number }[]>([]);
+  const [lassoSelected, setLassoSelected] = React.useState<Set<number>>(new Set());
+  const lassoDrawing = React.useRef(false);
+  const dragRef = React.useRef<{
+    startX: number;
+    startY: number;
+    startOffsetX: number;
+    startOffsetY: number;
+  } | null>(null);
+  const [containerWidth, setContainerWidth] = React.useState(800);
+  // Track how many points we've loaded so far for incremental fetching
+  const pointCountRef = React.useRef(0);
+  // Skip the catch-up refreshAll on the first live-effect run after initial load
+  const skipCatchupRef = React.useRef(false);
+
+  const apiUrl = `${window.location.origin}/api/v1`;
+
+  const nodePath = segments.join("/");
+  const customUrl = `${window.location.origin}/custom/emblase`;
+
+  const canvasWidth = selected || chatOpen || lassoSelected.size > 0
+    ? containerWidth - PANEL_INSET
+    : containerWidth;
+
+  // Fetch all current data (projections + index) and merge into state
+  const refreshAll = React.useCallback(async () => {
+    try {
+      const [projRes, indexRes] = await Promise.all([
+        fetch(
+          `${apiUrl}/array/full/${nodePath}/projections?format=application/json`,
+          { headers: authHeaders() },
+        ),
+        fetch(
+          `${apiUrl}/table/full/${nodePath}/_index?format=application/json`,
+          { headers: authHeaders() },
+        ),
+      ]);
+      if (!projRes.ok || !indexRes.ok) return;
+
+      const projData: number[][] = await projRes.json();
+      const indexData = await indexRes.json();
+      if (projData.length === 0) return;
+
+      const labels: string[] = indexData.label || [];
+      const paths: string[] = indexData.path || [];
+
+      const pts: EmbeddingPoint[] = projData.map(
+        (coords: number[], i: number) => ({
+          x: coords[0],
+          y: coords[1],
+          index: i,
+          label: labels[i] || "",
+          path: paths[i] || "",
+        }),
+      );
+      pointCountRef.current = pts.length;
+      setPoints(pts);
+      return pts;
+    } catch {
+      return undefined;
+    }
+  }, [apiUrl, nodePath]);
+
+  // Initial data load
+  const canvasWidthRef = React.useRef(canvasWidth);
+  canvasWidthRef.current = canvasWidth;
+  React.useEffect(() => {
+    let cancelled = false;
+
+    async function fetchData() {
+      try {
+        setLoading(true);
+        const pts = await refreshAll();
+        if (cancelled) return;
+        setError(null);
+        if (pts && pts.length > 0) {
+          const fitted = fitViewToPoints(pts, canvasWidthRef.current, CANVAS_HEIGHT);
+          setView(fitted);
+        }
+      } catch (err: any) {
+        if (!cancelled) setError(err.message);
+      } finally {
+        if (!cancelled) {
+          skipCatchupRef.current = true;
+          setLoading(false);
+        }
+      }
+    }
+
+    fetchData();
+    return () => {
+      cancelled = true;
+    };
+  }, [refreshAll]);
+
+  // Live updates via dual WebSocket subscriptions.
+  //
+  // We subscribe to both the projections array and the _index table.
+  // The write order on the server is: arrays first, _index table last.
+  // So the projection event (with x/y coords) typically arrives before the
+  // table event (with label/path). Points render immediately from the
+  // projection payload; when the table event arrives it fills in metadata.
+  //
+  // A pendingMeta buffer handles the rare case where the table event
+  // arrives before the projection event: metadata is buffered and applied
+  // once the projection event creates the points.
+  //
+  // On (re-)connect and on live re-enable we do a full refreshAll() to
+  // catch any updates that arrived while disconnected or paused.
+  React.useEffect(() => {
+    if (loading || !liveEnabled) return;
+
+    const wsScheme = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const wsBase = `${wsScheme}//${window.location.host}/api/v1/stream/single/${nodePath}`;
+
+    interface WsConn {
+      ws: WebSocket | null;
+      timer: ReturnType<typeof setTimeout> | null;
+      connected: boolean;
+      schemaReceived: boolean;
+    }
+
+    const proj: WsConn = { ws: null, timer: null, connected: false, schemaReceived: false };
+    const idx: WsConn = { ws: null, timer: null, connected: false, schemaReceived: false };
+    let disposed = false;
+
+    // Buffer for table metadata that arrived before projections
+    const pendingMeta = new Map<number, { labels: string[]; paths: string[] }>();
+
+    function updateStatus() {
+      if (proj.connected && idx.connected) setWsStatus("connected");
+      else if (proj.connected || idx.connected) setWsStatus("connecting");
+      else setWsStatus("disconnected");
+    }
+
+    function connect(conn: WsConn, subpath: string, handler: (msg: any) => void) {
+      function doConnect() {
+        if (disposed) return;
+        conn.schemaReceived = false;
+        conn.ws = new WebSocket(`${wsBase}/${subpath}?envelope_format=json`);
+        conn.ws.onopen = () => {
+          if (disposed) { conn.ws?.close(); return; }
+          // Send credentials via first message (avoids token in URL/logs).
+          const token = window.__TILED_ACCESS_TOKEN__;
+          if (token) {
+            conn.ws!.send(JSON.stringify({ type: "auth", access_token: token }));
+          }
+          conn.connected = true;
+          updateStatus();
+        };
+        conn.ws.onmessage = (event) => {
+          if (disposed) return;
+          try {
+            const msg = JSON.parse(event.data);
+            if (!conn.schemaReceived && msg.type?.endsWith("-schema")) {
+              conn.schemaReceived = true;
+              return;
+            }
+            handler(msg);
+          } catch { /* ignore parse errors */ }
+        };
+        conn.ws.onclose = () => {
+          conn.connected = false;
+          updateStatus();
+          if (!disposed) conn.timer = setTimeout(doConnect, 3000);
+        };
+        conn.ws.onerror = () => {};
+      }
+      doConnect();
+    }
+
+    // Catch up on anything missed while live was off or WS was disconnected.
+    // Skip on the first run right after initial load (data is already fresh).
+    if (skipCatchupRef.current) {
+      skipCatchupRef.current = false;
+    } else {
+      refreshAll();
+    }
+
+    function applyMeta(startIdx: number, count: number) {
+      const meta = pendingMeta.get(startIdx);
+      if (!meta) return;
+      if (meta.labels.length !== count) return;
+      pendingMeta.delete(startIdx);
+      setPoints((prev) =>
+        prev.map((p) => {
+          const rel = p.index - startIdx;
+          if (rel >= 0 && rel < count) {
+            return {
+              ...p,
+              label: meta.labels[rel] || p.label,
+              path: meta.paths[rel] || p.path,
+            };
+          }
+          return p;
+        }),
+      );
+    }
+
+    function handleProjectionEvent(msg: any) {
+      if (msg.type !== "array-data" && msg.type !== "array-ref") return;
+      const offset = msg.offset;
+      const payload = msg.payload;
+      if (!offset || !Array.isArray(offset) || offset.length === 0) {
+        refreshAll();
+        return;
+      }
+      const startIdx = offset[0];
+      if (!payload || !Array.isArray(payload) || payload.length === 0) {
+        refreshAll();
+        return;
+      }
+      const newPts: EmbeddingPoint[] = payload.map(
+        (coords: number[], i: number) => ({
+          x: coords[0],
+          y: coords[1],
+          index: startIdx + i,
+          label: "",
+          path: "",
+        }),
+      );
+      pointCountRef.current = startIdx + payload.length;
+      setPoints((prev) => prev.slice(0, startIdx).concat(newPts));
+
+      // Check if metadata already arrived for this range
+      applyMeta(startIdx, payload.length);
+    }
+
+    function handleTableEvent(msg: any) {
+      if (msg.type !== "table-data") return;
+      if (!msg.append) {
+        refreshAll();
+        return;
+      }
+      const payload = msg.payload;
+      if (!payload) return;
+      const labels: string[] = payload.label || [];
+      const paths: string[] = payload.path || [];
+      const count = labels.length;
+      if (count === 0) return;
+
+      // Determine which indices these rows correspond to.
+      // If projections already arrived, pointCountRef is updated and the
+      // points exist — apply metadata directly. Otherwise buffer it.
+      const startIdx = pointCountRef.current - count;
+      if (startIdx >= 0) {
+        setPoints((prev) => {
+          // Verify the points at this range exist
+          if (prev.length >= startIdx + count) {
+            return prev.map((p) => {
+              const rel = p.index - startIdx;
+              if (rel >= 0 && rel < count) {
+                return {
+                  ...p,
+                  label: labels[rel] || p.label,
+                  path: paths[rel] || p.path,
+                };
+              }
+              return p;
+            });
+          }
+          // Points don't exist yet; buffer metadata
+          pendingMeta.set(pointCountRef.current, { labels, paths });
+          return prev;
+        });
+      } else {
+        // Projection event hasn't arrived yet; buffer metadata
+        pendingMeta.set(pointCountRef.current, { labels, paths });
+      }
+    }
+
+    connect(proj, "projections", handleProjectionEvent);
+    connect(idx, "_index", handleTableEvent);
+
+    return () => {
+      disposed = true;
+      for (const c of [proj, idx]) {
+        if (c.timer) clearTimeout(c.timer);
+        if (c.ws) { c.ws.onclose = null; c.ws.close(); }
+      }
+      setWsStatus("disconnected");
+    };
+  }, [loading, liveEnabled, nodePath, apiUrl, refreshAll]);
+
+  // Resize observer — tracks container width
+  React.useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const { width } = entry.contentRect;
+        if (width > 0) setContainerWidth(Math.floor(width));
+      }
+    });
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, []);
+
+  // Draw canvas
+  React.useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = canvasWidth * dpr;
+    canvas.height = CANVAS_HEIGHT * dpr;
+    ctx.scale(dpr, dpr);
+
+    ctx.fillStyle = "#fafafa";
+    ctx.fillRect(0, 0, canvasWidth, CANVAS_HEIGHT);
+
+    // Grid
+    ctx.strokeStyle = "#e0e0e0";
+    ctx.lineWidth = 1;
+    const gridStep = 50 * view.scale;
+    if (gridStep > 10) {
+      const startX = view.offsetX % gridStep;
+      for (let x = startX; x < canvasWidth; x += gridStep) {
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, CANVAS_HEIGHT);
+        ctx.stroke();
+      }
+      const startY = view.offsetY % gridStep;
+      for (let y = startY; y < CANVAS_HEIGHT; y += gridStep) {
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(canvasWidth, y);
+        ctx.stroke();
+      }
+    }
+
+    // Points
+    const hasLasso = lassoSelected.size > 0;
+    for (const p of points) {
+      const sx = p.x * view.scale + view.offsetX;
+      const sy = -p.y * view.scale + view.offsetY;
+      if (
+        sx < -10 ||
+        sx > canvasWidth + 10 ||
+        sy < -10 ||
+        sy > CANVAS_HEIGHT + 10
+      )
+        continue;
+      const isHovered = tooltip?.point.index === p.index;
+      const isSelected = selected?.point.index === p.index;
+      const isLassoed = hasLasso && lassoSelected.has(p.index);
+      const radius = isHovered || isSelected ? HOVER_RADIUS : POINT_RADIUS;
+      ctx.beginPath();
+      ctx.arc(sx, sy, radius, 0, Math.PI * 2);
+      ctx.fillStyle = getLabelColor(p.label || "");
+      ctx.globalAlpha = hasLasso && !isLassoed && !isHovered && !isSelected ? 0.15 : (isHovered || isSelected ? 1.0 : 0.7);
+      ctx.fill();
+      if (isSelected) {
+        ctx.strokeStyle = "#1976d2";
+        ctx.lineWidth = 2.5;
+        ctx.stroke();
+      } else if (isLassoed) {
+        ctx.globalAlpha = 1.0;
+        ctx.strokeStyle = "#ff6f00";
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      } else if (isHovered) {
+        ctx.strokeStyle = "#000";
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      }
+    }
+    ctx.globalAlpha = 1.0;
+
+    // Draw lasso path (stored in data coords, convert to screen)
+    if (lassoPath.length > 1) {
+      ctx.beginPath();
+      const lp0x = lassoPath[0].x * view.scale + view.offsetX;
+      const lp0y = -lassoPath[0].y * view.scale + view.offsetY;
+      ctx.moveTo(lp0x, lp0y);
+      for (let i = 1; i < lassoPath.length; i++) {
+        const lpx = lassoPath[i].x * view.scale + view.offsetX;
+        const lpy = -lassoPath[i].y * view.scale + view.offsetY;
+        ctx.lineTo(lpx, lpy);
+      }
+      if (!lassoDrawing.current && lassoPath.length > 2) {
+        ctx.closePath();
+      }
+      ctx.strokeStyle = "#ff6f00";
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([6, 3]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      if (!lassoDrawing.current && lassoPath.length > 2) {
+        ctx.fillStyle = "rgba(255, 111, 0, 0.06)";
+        ctx.fill();
+      }
+    }
+  }, [points, view, canvasWidth, tooltip, selected, lassoPath, lassoSelected]);
+
+  // Mouse handlers
+  const toDataCoords = React.useCallback(
+    (clientX: number, clientY: number) => {
+      const canvas = canvasRef.current;
+      if (!canvas) return null;
+      const rect = canvas.getBoundingClientRect();
+      return { mx: clientX - rect.left, my: clientY - rect.top };
+    },
+    [],
+  );
+
+  // Convert screen coords to data-space coords (inverse of the view transform)
+  const screenToData = React.useCallback(
+    (sx: number, sy: number, v: ViewState) => ({
+      x: (sx - v.offsetX) / v.scale,
+      y: -(sy - v.offsetY) / v.scale,
+    }),
+    [],
+  );
+
+  const findPoint = React.useCallback(
+    (mx: number, my: number): EmbeddingPoint | null => {
+      let closest: EmbeddingPoint | null = null;
+      let minDist = Infinity;
+      for (const p of points) {
+        const sx = p.x * view.scale + view.offsetX;
+        const sy = -p.y * view.scale + view.offsetY;
+        const d = Math.sqrt((mx - sx) ** 2 + (my - sy) ** 2);
+        if (d < HOVER_RADIUS * 2 && d < minDist) {
+          minDist = d;
+          closest = p;
+        }
+      }
+      return closest;
+    },
+    [points, view],
+  );
+
+  const handleMouseMove = React.useCallback(
+    (e: React.MouseEvent) => {
+      const coords = toDataCoords(e.clientX, e.clientY);
+      if (!coords) return;
+
+      // Lasso drawing
+      if (toolMode === "lasso" && lassoDrawing.current) {
+        const dp = screenToData(coords.mx, coords.my, viewRef.current);
+        setLassoPath((prev) => [...prev, dp]);
+        return;
+      }
+
+      // Pan dragging
+      if (dragRef.current) {
+        const dx = e.clientX - dragRef.current.startX;
+        const dy = e.clientY - dragRef.current.startY;
+        setView((v) => ({
+          ...v,
+          offsetX: dragRef.current!.startOffsetX + dx,
+          offsetY: dragRef.current!.startOffsetY + dy,
+        }));
+        return;
+      }
+
+      const p = findPoint(coords.mx, coords.my);
+      if (p) {
+        const thumbUrl = `${apiUrl}/array/full/${nodePath}/thumbnails?format=image/png&slice=${p.index}`;
+        setTooltip({
+          point: p,
+          screenX: coords.mx,
+          screenY: coords.my,
+          thumbnailUrl: thumbUrl,
+        });
+      } else {
+        setTooltip(null);
+      }
+    },
+    [toDataCoords, findPoint, apiUrl, nodePath, toolMode],
+  );
+
+  const viewRef = React.useRef(view);
+  viewRef.current = view;
+
+  const pointsRef = React.useRef(points);
+  pointsRef.current = points;
+
+  const handleMouseDown = React.useCallback(
+    (e: React.MouseEvent) => {
+      if (toolMode === "lasso") {
+        const coords = toDataCoords(e.clientX, e.clientY);
+        if (!coords) return;
+        lassoDrawing.current = true;
+        const dp = screenToData(coords.mx, coords.my, viewRef.current);
+        setLassoPath([dp]);
+        setLassoSelected(new Set());
+        return;
+      }
+      dragRef.current = {
+        startX: e.clientX,
+        startY: e.clientY,
+        startOffsetX: viewRef.current.offsetX,
+        startOffsetY: viewRef.current.offsetY,
+      };
+      setDragging(true);
+    },
+    [toolMode, toDataCoords],
+  );
+
+  const handleMouseUp = React.useCallback(() => {
+    if (toolMode === "lasso" && lassoDrawing.current) {
+      lassoDrawing.current = false;
+      // Compute which points are inside the lasso polygon
+      const path = lassoPath;
+      if (path.length < 3) {
+        setLassoPath([]);
+        return;
+      }
+      const sel = new Set<number>();
+      for (const p of pointsRef.current) {
+        if (pointInPolygon(p.x, p.y, path)) {
+          sel.add(p.index);
+        }
+      }
+      if (sel.size === 0) {
+        setLassoPath([]);
+      } else {
+        setLassoSelected(sel);
+        // Close detail panel and chat when lasso selects points
+        setSelected(null);
+        setChatOpen(false);
+      }
+      return;
+    }
+    dragRef.current = null;
+    setDragging(false);
+  }, [toolMode, lassoPath]);
+
+  // Attach mouseup to window so drag release is always caught
+  React.useEffect(() => {
+    const onUp = () => {
+      if (dragRef.current) {
+        dragRef.current = null;
+        setDragging(false);
+      }
+    };
+    window.addEventListener("mouseup", onUp);
+    return () => window.removeEventListener("mouseup", onUp);
+  }, []);
+
+  const handleClick = React.useCallback(
+    (e: React.MouseEvent) => {
+      // In lasso mode, clicks are handled by mousedown/mouseup
+      if (toolMode === "lasso") return;
+      const coords = toDataCoords(e.clientX, e.clientY);
+      if (!coords) return;
+      const p = findPoint(coords.mx, coords.my);
+      if (!p) {
+        setSelected(null);
+        // Don't clear lasso on empty click — user must explicitly clear
+        return;
+      }
+      // Close chat when selecting a point (mutual exclusion)
+      setChatOpen(false);
+      const thumbUrl = `${apiUrl}/array/full/${nodePath}/thumbnails?format=image/png&slice=${p.index}`;
+      setSelected({
+        point: p,
+        thumbnailUrl: thumbUrl,
+        note: "",
+        userLabel: "",
+        originalNote: "",
+        originalUserLabel: "",
+        saving: false,
+      });
+      // Fetch current note and user_label
+      Promise.all([
+        fetchStringValue(apiUrl, nodePath, "notes", p.index),
+        fetchStringValue(apiUrl, nodePath, "user_labels", p.index),
+      ]).then(([note, userLabel]) => {
+        setSelected((prev) =>
+          prev && prev.point.index === p.index
+            ? { ...prev, note, userLabel, originalNote: note, originalUserLabel: userLabel }
+            : prev,
+        );
+      });
+      setSaveError(null);
+    },
+    [toDataCoords, findPoint, apiUrl, nodePath, toolMode],
+  );
+
+  const handleWheel = React.useCallback(
+    (e: React.WheelEvent) => {
+      e.preventDefault();
+      const coords = toDataCoords(e.clientX, e.clientY);
+      if (!coords) return;
+      const factor = e.deltaY > 0 ? 0.9 : 1.1;
+      setView((v) => ({
+        scale: v.scale * factor,
+        offsetX: coords.mx - (coords.mx - v.offsetX) * factor,
+        offsetY: coords.my - (coords.my - v.offsetY) * factor,
+      }));
+    },
+    [toDataCoords],
+  );
+
+  const handleSave = React.useCallback(async () => {
+    if (!selected) return;
+    setSaveError(null);
+    setSelected((prev) => (prev ? { ...prev, saving: true } : prev));
+    const [noteRes, labelRes] = await Promise.all([
+      patchStringArray(
+        apiUrl, nodePath, "notes",
+        selected.point.index, selected.note, NOTES_MAX_LEN,
+      ),
+      patchStringArray(
+        apiUrl, nodePath, "user_labels",
+        selected.point.index, selected.userLabel, USER_LABEL_MAX_LEN,
+      ),
+    ]);
+    setSelected((prev) => (prev ? { ...prev, saving: false } : prev));
+    if (noteRes.status === 401 || labelRes.status === 401 ||
+        noteRes.status === 403 || labelRes.status === 403) {
+      setSaveError(
+        window.__TILED_ACCESS_TOKEN__
+          ? "You don't have write permission for this entry."
+          : "Authentication required. Please log in to save changes.",
+      );
+    } else if (!noteRes.ok || !labelRes.ok) {
+      setSaveError("Save failed");
+    } else {
+      // Save succeeded — update originals so button goes back to gray
+      setSelected((prev) =>
+        prev
+          ? { ...prev, originalNote: prev.note, originalUserLabel: prev.userLabel }
+          : prev,
+      );
+    }
+  }, [selected, apiUrl, nodePath]);
+
+  const loadChatHistory = React.useCallback(async () => {
+    try {
+      const res = await fetch(`${customUrl}/chat/history/${nodePath}`, {
+        headers: authHeaders(),
+      });
+      if (res.ok) {
+        const history: ChatMessage[] = await res.json();
+        setChatMessages(history);
+      }
+    } catch { /* ignore */ }
+  }, [customUrl, nodePath]);
+
+  const sendChatMessage = React.useCallback(async () => {
+    const text = chatInput.trim();
+    if (!text || chatSending) return;
+    setChatInput("");
+    setChatSending(true);
+
+    // Optimistically add user message
+    const userMsg: ChatMessage = {
+      id: Date.now().toString(36),
+      role: "user",
+      content: text,
+      timestamp: Date.now() / 1000,
+    };
+    setChatMessages((prev) => [...prev, userMsg]);
+
+    try {
+      const res = await fetch(`${customUrl}/chat`, {
+        method: "POST",
+        headers: authHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({ message: text, node_path: nodePath }),
+      });
+      if (res.ok) {
+        const assistantMsg: ChatMessage = await res.json();
+        setChatMessages((prev) => [...prev, assistantMsg]);
+      }
+    } catch { /* ignore */ }
+    setChatSending(false);
+  }, [chatInput, chatSending, customUrl, nodePath]);
+
+  const clearChatHistory = React.useCallback(async () => {
+    try {
+      await fetch(`${customUrl}/chat/history/${nodePath}`, {
+        method: "DELETE",
+        headers: authHeaders(),
+      });
+      setChatMessages([]);
+    } catch { /* ignore */ }
+  }, [customUrl, nodePath]);
+
+  // Load chat history when chat panel opens
+  React.useEffect(() => {
+    if (chatOpen) loadChatHistory();
+  }, [chatOpen, loadChatHistory]);
+
+  // Auto-scroll chat to bottom when new messages arrive
+  React.useEffect(() => {
+    if (chatListRef.current) {
+      chatListRef.current.scrollTop = chatListRef.current.scrollHeight;
+    }
+  }, [chatMessages]);
+
+  // Escape key clears lasso selection
+  React.useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape" && lassoSelected.size > 0) {
+        setLassoSelected(new Set());
+        setLassoPath([]);
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [lassoSelected]);
+
+  const uniqueLabels = React.useMemo(() => {
+    const labels = new Set<string>();
+    for (const p of points) {
+      if (p.label) labels.add(p.label);
+    }
+    return Array.from(labels).sort();
+  }, [points]);
+
+  // Lasso selection summary
+  const lassoSummary = React.useMemo(() => {
+    if (lassoSelected.size === 0) return null;
+    const selectedPts = points.filter((p) => lassoSelected.has(p.index));
+    const labelCounts: Record<string, number> = {};
+    for (const p of selectedPts) {
+      const lbl = p.label || "(unlabeled)";
+      labelCounts[lbl] = (labelCounts[lbl] || 0) + 1;
+    }
+    return { count: selectedPts.length, labelCounts, points: selectedPts };
+  }, [lassoSelected, points]);
+
+  const meta = item?.data?.attributes?.metadata || {};
+
+  if (loading) {
+    return React.createElement(
+      "div",
+      { style: { padding: 24, color: "#666" } },
+      "Loading embedding data...",
+    );
+  }
+
+  if (error) {
+    return React.createElement(
+      "div",
+      { style: { padding: 24, color: "#c00" } },
+      `Error: ${error}`,
+    );
+  }
+
+  const isDirty =
+    selected != null &&
+    (selected.note !== selected.originalNote ||
+      selected.userLabel !== selected.originalUserLabel);
+
+  return React.createElement(
+    "div",
+    { ref: containerRef },
+    // Header (full width, always above canvas + panel)
+    React.createElement(
+      "div",
+      {
+        style: {
+          marginBottom: 12,
+          fontSize: 14,
+          color: "#555",
+          display: "flex",
+          alignItems: "center",
+          gap: 16,
+        },
+      },
+      React.createElement("span", null, `${points.length} embeddings`),
+      meta.model_name
+        ? React.createElement("span", null, `Model: ${meta.model_name}`)
+        : null,
+      meta.embedding_dim
+        ? React.createElement("span", null, `Dim: ${meta.embedding_dim}`)
+        : null,
+      // Tool mode toggle (Pan / Lasso)
+      React.createElement(
+        "div",
+        {
+          style: {
+            marginLeft: "auto",
+            display: "flex",
+            border: "1px solid #ccc",
+            borderRadius: 12,
+            overflow: "hidden",
+          },
+        },
+        React.createElement(
+          "button",
+          {
+            onClick: () => { setToolMode("pan"); },
+            title: "Pan & zoom (drag to pan)",
+            style: {
+              display: "flex",
+              alignItems: "center",
+              gap: 3,
+              fontSize: 12,
+              background: toolMode === "pan" ? "#e3f2fd" : "none",
+              border: "none",
+              borderRight: "1px solid #ccc",
+              padding: "2px 10px",
+              cursor: "pointer",
+              color: toolMode === "pan" ? "#1976d2" : "#555",
+            },
+          },
+          // Move/pan icon
+          React.createElement(
+            "svg",
+            { width: 12, height: 12, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round", strokeLinejoin: "round" },
+            React.createElement("polyline", { points: "5 9 2 12 5 15" }),
+            React.createElement("polyline", { points: "9 5 12 2 15 5" }),
+            React.createElement("polyline", { points: "15 19 12 22 9 19" }),
+            React.createElement("polyline", { points: "19 9 22 12 19 15" }),
+            React.createElement("line", { x1: 2, y1: 12, x2: 22, y2: 12 }),
+            React.createElement("line", { x1: 12, y1: 2, x2: 12, y2: 22 }),
+          ),
+          React.createElement("span", null, "Pan"),
+        ),
+        React.createElement(
+          "button",
+          {
+            onClick: () => { setToolMode("lasso"); },
+            title: "Lasso select (draw to select points)",
+            style: {
+              display: "flex",
+              alignItems: "center",
+              gap: 3,
+              fontSize: 12,
+              background: toolMode === "lasso" ? "#fff3e0" : "none",
+              border: "none",
+              padding: "2px 10px",
+              cursor: "pointer",
+              color: toolMode === "lasso" ? "#ff6f00" : "#555",
+            },
+          },
+          // Lasso icon
+          React.createElement(
+            "svg",
+            { width: 12, height: 12, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round", strokeLinejoin: "round" },
+            React.createElement("path", { d: "M7 22a5 5 0 0 1-2-4c0-2 1-3 2-4l8-8c2-2 5-2 7 0s2 5 0 7l-8 8c-1 1-2 2-4 2s-3-1-3-1" }),
+          ),
+          React.createElement("span", null, "Lasso"),
+        ),
+      ),
+      // Live status toggle
+      React.createElement(
+        "button",
+        {
+          onClick: () => setLiveEnabled((v) => !v),
+          style: {
+            display: "flex",
+            alignItems: "center",
+            gap: 4,
+            fontSize: 12,
+            background: "none",
+            border: "1px solid #ccc",
+            borderRadius: 12,
+            padding: "2px 10px",
+            cursor: "pointer",
+            color: liveEnabled ? STATUS_COLORS[wsStatus] : "#999",
+          },
+        },
+        React.createElement("span", {
+          style: {
+            width: 8,
+            height: 8,
+            borderRadius: "50%",
+            backgroundColor: liveEnabled
+              ? STATUS_COLORS[wsStatus]
+              : "#999",
+            display: "inline-block",
+          },
+        }),
+        React.createElement(
+          "span",
+          null,
+          !liveEnabled
+            ? "Off"
+            : wsStatus === "connected"
+              ? "Live"
+              : wsStatus === "connecting"
+                ? "Connecting..."
+                : "Reconnecting...",
+        ),
+      ),
+      // Chat toggle button
+      React.createElement(
+        "button",
+        {
+          onClick: () => {
+            setChatOpen((v) => {
+              if (!v) setSelected(null); // close detail panel when opening chat
+              return !v;
+            });
+            setSaveError(null);
+          },
+          title: chatOpen ? "Close chat" : "Chat with data",
+          style: {
+            display: "flex",
+            alignItems: "center",
+            gap: 4,
+            fontSize: 12,
+            background: chatOpen ? "#1976d2" : "none",
+            border: chatOpen ? "1px solid #1976d2" : "1px solid #ccc",
+            borderRadius: 12,
+            padding: "2px 10px",
+            cursor: "pointer",
+            color: chatOpen ? "#fff" : "#555",
+            transition: "background 0.2s, color 0.2s, border-color 0.2s",
+          },
+        },
+        // Chat bubble icon (SVG)
+        React.createElement(
+          "svg",
+          {
+            width: 14,
+            height: 14,
+            viewBox: "0 0 24 24",
+            fill: "none",
+            stroke: "currentColor",
+            strokeWidth: 2,
+            strokeLinecap: "round",
+            strokeLinejoin: "round",
+          },
+          React.createElement("path", {
+            d: "M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z",
+          }),
+        ),
+        React.createElement("span", null, "Chat"),
+      ),
+    ),
+    React.createElement(
+      "div",
+      { style: { position: "relative" } },
+      // Canvas + tooltip wrapper
+      React.createElement(
+        "div",
+        { style: { position: "relative", display: "inline-block" } },
+      // Canvas
+      React.createElement("canvas", {
+        ref: canvasRef,
+        width: canvasWidth,
+        height: CANVAS_HEIGHT,
+        style: {
+          width: canvasWidth,
+          height: CANVAS_HEIGHT,
+          cursor: toolMode === "lasso" ? "crosshair" : dragging ? "grabbing" : tooltip ? "pointer" : "grab",
+          border: "1px solid #ddd",
+          borderRadius: 4,
+          display: "block",
+        },
+        onMouseMove: handleMouseMove,
+        onMouseDown: handleMouseDown,
+        onMouseUp: handleMouseUp,
+        onMouseLeave: () => {
+          dragRef.current = null;
+          setDragging(false);
+          setTooltip(null);
+        },
+        onWheel: handleWheel,
+        onClick: handleClick,
+      }),
+      // Tooltip
+      tooltip
+        ? React.createElement(
+            "div",
+            {
+              style: {
+                position: "absolute",
+                left: tooltip.screenX + 16,
+                top: tooltip.screenY - 16,
+                background: "white",
+                border: "1px solid #ccc",
+                borderRadius: 6,
+                padding: 8,
+                boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
+                pointerEvents: "none",
+                zIndex: 10,
+                maxWidth: 240,
+                fontSize: 12,
+              },
+            },
+            React.createElement(AuthImg, {
+              src: tooltip.thumbnailUrl,
+              alt: "thumbnail",
+              style: {
+                width: 96,
+                height: 96,
+                objectFit: "contain",
+                display: "block",
+                marginBottom: 4,
+                imageRendering: "pixelated",
+              },
+            }),
+            React.createElement("div", null, `#${tooltip.point.index}`),
+            tooltip.point.label
+              ? React.createElement(
+                  "div",
+                  null,
+                  `Label: ${tooltip.point.label}`,
+                )
+              : null,
+
+          )
+        : null,
+      ),
+      // Detail panel — anchored to right edge of content area
+      selected
+        ? React.createElement(
+            "div",
+            {
+              style: {
+                position: "absolute" as const,
+                right: 0,
+                top: 0,
+                width: PANEL_WIDTH,
+                height: CANVAS_HEIGHT,
+                background: "white",
+                border: "1px solid #ccc",
+                borderRadius: 4,
+                padding: "12px 16px",
+                boxShadow: "0 2px 8px rgba(0,0,0,0.08)",
+                overflowY: "auto" as const,
+                fontSize: 13,
+                boxSizing: "border-box" as const,
+              },
+            },
+            // Close button
+            React.createElement(
+              "button",
+              {
+                onClick: () => { setSelected(null); setSaveError(null); },
+                style: {
+                  position: "absolute" as const,
+                  top: 6,
+                  right: 8,
+                  background: "none",
+                  border: "none",
+                  fontSize: 18,
+                  cursor: "pointer",
+                  color: "#999",
+                  lineHeight: 1,
+                },
+              },
+              "\u00D7",
+            ),
+            // Thumbnail
+            React.createElement(AuthImg, {
+              src: selected.thumbnailUrl,
+              alt: "thumbnail",
+              style: {
+                width: "100%",
+                maxHeight: 180,
+                objectFit: "contain",
+                display: "block",
+                marginBottom: 10,
+                imageRendering: "pixelated" as const,
+                background: "#f5f5f5",
+                borderRadius: 4,
+              },
+            }),
+            // Point info row
+            React.createElement(
+              "div",
+              {
+                style: {
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "baseline",
+                  marginBottom: 4,
+                  color: "#333",
+                },
+              },
+              React.createElement("span", null, `#${selected.point.index}`),
+              selected.point.label
+                ? React.createElement(
+                    "span",
+                    { style: { color: getLabelColor(selected.point.label), fontWeight: 500 } },
+                    selected.point.label,
+                  )
+                : null,
+            ),
+            // Source link
+            selected.point.path
+              ? React.createElement(
+                  "a",
+                  {
+                    href: `/ui/browse/${selected.point.path}`,
+                    target: "_blank",
+                    rel: "noopener",
+                    style: {
+                      display: "block",
+                      color: "#1976d2",
+                      fontSize: 11,
+                      marginBottom: 12,
+                      wordBreak: "break-all" as const,
+                    },
+                  },
+                  "View source \u2192",
+                )
+              : React.createElement("div", { style: { marginBottom: 12 } }),
+            // User label
+            React.createElement(
+              "label",
+              { style: { display: "block", fontSize: 11, color: "#777", marginBottom: 2 } },
+              "User label",
+            ),
+            React.createElement("input", {
+              type: "text",
+              value: selected.userLabel,
+              maxLength: USER_LABEL_MAX_LEN,
+              onChange: (e: React.ChangeEvent<HTMLInputElement>) => {
+                const val = e.target.value;
+                setSelected((prev) => (prev ? { ...prev, userLabel: val } : prev));
+              },
+              onKeyDown: (e: React.KeyboardEvent) => {
+                if (e.key === "Enter") handleSave();
+              },
+              style: {
+                width: "100%",
+                padding: "4px 8px",
+                border: "1px solid #ccc",
+                borderRadius: 4,
+                fontSize: 13,
+                marginBottom: 10,
+                boxSizing: "border-box" as const,
+              },
+            }),
+            // Note
+            React.createElement(
+              "label",
+              { style: { display: "block", fontSize: 11, color: "#777", marginBottom: 2 } },
+              "Note",
+            ),
+            React.createElement("textarea", {
+              value: selected.note,
+              maxLength: NOTES_MAX_LEN,
+              onChange: (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+                const val = e.target.value;
+                setSelected((prev) => (prev ? { ...prev, note: val } : prev));
+              },
+              style: {
+                width: "100%",
+                minHeight: 72,
+                padding: "4px 8px",
+                border: "1px solid #ccc",
+                borderRadius: 4,
+                fontSize: 13,
+                resize: "vertical" as const,
+                boxSizing: "border-box" as const,
+              },
+            }),
+            // Save button (highlighted when dirty)
+            React.createElement(
+              "button",
+              {
+                onClick: handleSave,
+                disabled: selected.saving || !isDirty,
+                style: {
+                  marginTop: 8,
+                  width: "100%",
+                  padding: "6px 0",
+                  fontSize: 13,
+                  border: isDirty ? "1px solid #1976d2" : "1px solid #ccc",
+                  borderRadius: 4,
+                  background: selected.saving
+                    ? "#eee"
+                    : isDirty
+                      ? "#1976d2"
+                      : "#f5f5f5",
+                  color: isDirty && !selected.saving ? "#fff" : "#333",
+                  cursor: selected.saving || !isDirty ? "default" : "pointer",
+                  transition: "background 0.2s, border-color 0.2s, color 0.2s",
+                },
+              },
+              selected.saving ? "Saving..." : "Save",
+            ),
+            // Save error
+            saveError
+              ? React.createElement(
+                  "div",
+                  { style: { marginTop: 6, fontSize: 11, color: "#c00" } },
+                  saveError,
+                )
+              : null,
+          )
+        : null,
+      // Chat panel — same position as detail panel (mutual exclusion)
+      chatOpen && !selected
+        ? React.createElement(
+            "div",
+            {
+              style: {
+                position: "absolute" as const,
+                right: 0,
+                top: 0,
+                width: PANEL_WIDTH,
+                height: CANVAS_HEIGHT,
+                background: "white",
+                border: "1px solid #ccc",
+                borderRadius: 4,
+                boxShadow: "0 2px 8px rgba(0,0,0,0.08)",
+                fontSize: 13,
+                boxSizing: "border-box" as const,
+                display: "flex",
+                flexDirection: "column" as const,
+              },
+            },
+            // Chat header
+            React.createElement(
+              "div",
+              {
+                style: {
+                  padding: "10px 16px",
+                  borderBottom: "1px solid #eee",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  flexShrink: 0,
+                },
+              },
+              React.createElement(
+                "span",
+                { style: { fontWeight: 500, color: "#333" } },
+                "Chat with data",
+              ),
+              React.createElement(
+                "div",
+                { style: { display: "flex", gap: 8, alignItems: "center" } },
+                // Clear history button
+                chatMessages.length > 0
+                  ? React.createElement(
+                      "button",
+                      {
+                        onClick: clearChatHistory,
+                        title: "Clear conversation",
+                        style: {
+                          background: "none",
+                          border: "none",
+                          fontSize: 12,
+                          color: "#999",
+                          cursor: "pointer",
+                          padding: 0,
+                        },
+                      },
+                      "Clear",
+                    )
+                  : null,
+                // Close button
+                React.createElement(
+                  "button",
+                  {
+                    onClick: () => setChatOpen(false),
+                    style: {
+                      background: "none",
+                      border: "none",
+                      fontSize: 18,
+                      cursor: "pointer",
+                      color: "#999",
+                      lineHeight: 1,
+                      padding: 0,
+                    },
+                  },
+                  "\u00D7",
+                ),
+              ),
+            ),
+            // Message list
+            React.createElement(
+              "div",
+              {
+                ref: chatListRef,
+                style: {
+                  flex: 1,
+                  overflowY: "auto" as const,
+                  padding: "8px 16px",
+                },
+              },
+              chatMessages.length === 0
+                ? React.createElement(
+                    "div",
+                    {
+                      style: {
+                        color: "#aaa",
+                        fontSize: 12,
+                        textAlign: "center" as const,
+                        marginTop: 40,
+                      },
+                    },
+                    "Ask a question about your dataset",
+                  )
+                : null,
+              ...chatMessages.map((msg) =>
+                React.createElement(
+                  "div",
+                  {
+                    key: msg.id,
+                    style: {
+                      marginBottom: 10,
+                      display: "flex",
+                      flexDirection: "column" as const,
+                      alignItems: msg.role === "user" ? "flex-end" : "flex-start",
+                    },
+                  },
+                  React.createElement(
+                    "div",
+                    {
+                      style: {
+                        background: msg.role === "user" ? "#1976d2" : "#f0f0f0",
+                        color: msg.role === "user" ? "#fff" : "#333",
+                        padding: "6px 10px",
+                        borderRadius: msg.role === "user" ? "12px 12px 2px 12px" : "12px 12px 12px 2px",
+                        maxWidth: "85%",
+                        fontSize: 12,
+                        lineHeight: "1.4",
+                        wordBreak: "break-word" as const,
+                      },
+                    },
+                    msg.content,
+                  ),
+                ),
+              ),
+              // Typing indicator while sending
+              chatSending
+                ? React.createElement(
+                    "div",
+                    {
+                      style: {
+                        display: "flex",
+                        alignItems: "flex-start",
+                        marginBottom: 10,
+                      },
+                    },
+                    React.createElement(
+                      "div",
+                      {
+                        style: {
+                          background: "#f0f0f0",
+                          padding: "6px 10px",
+                          borderRadius: "12px 12px 12px 2px",
+                          fontSize: 12,
+                          color: "#999",
+                        },
+                      },
+                      "Thinking...",
+                    ),
+                  )
+                : null,
+            ),
+            // Input area
+            React.createElement(
+              "div",
+              {
+                style: {
+                  padding: "8px 12px",
+                  borderTop: "1px solid #eee",
+                  display: "flex",
+                  gap: 6,
+                  flexShrink: 0,
+                },
+              },
+              React.createElement("input", {
+                type: "text",
+                value: chatInput,
+                placeholder: "Ask about the data...",
+                onChange: (e: React.ChangeEvent<HTMLInputElement>) =>
+                  setChatInput(e.target.value),
+                onKeyDown: (e: React.KeyboardEvent) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    sendChatMessage();
+                  }
+                },
+                disabled: chatSending,
+                style: {
+                  flex: 1,
+                  padding: "6px 10px",
+                  border: "1px solid #ccc",
+                  borderRadius: 16,
+                  fontSize: 12,
+                  outline: "none",
+                  boxSizing: "border-box" as const,
+                },
+              }),
+              React.createElement(
+                "button",
+                {
+                  onClick: sendChatMessage,
+                  disabled: chatSending || !chatInput.trim(),
+                  style: {
+                    background: chatInput.trim() && !chatSending ? "#1976d2" : "#e0e0e0",
+                    color: chatInput.trim() && !chatSending ? "#fff" : "#999",
+                    border: "none",
+                    borderRadius: "50%",
+                    width: 30,
+                    height: 30,
+                    cursor: chatInput.trim() && !chatSending ? "pointer" : "default",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    flexShrink: 0,
+                    transition: "background 0.2s",
+                  },
+                },
+                // Send arrow icon
+                React.createElement(
+                  "svg",
+                  {
+                    width: 14,
+                    height: 14,
+                    viewBox: "0 0 24 24",
+                    fill: "none",
+                    stroke: "currentColor",
+                    strokeWidth: 2,
+                    strokeLinecap: "round",
+                    strokeLinejoin: "round",
+                  },
+                  React.createElement("line", { x1: 22, y1: 2, x2: 11, y2: 13 }),
+                  React.createElement("polygon", { points: "22 2 15 22 11 13 2 9 22 2" }),
+                ),
+              ),
+            ),
+          )
+        : null,
+      // Lasso selection panel — same position as detail/chat panels
+      lassoSummary && !selected && !chatOpen
+        ? React.createElement(
+            "div",
+            {
+              style: {
+                position: "absolute" as const,
+                right: 0,
+                top: 0,
+                width: PANEL_WIDTH,
+                height: CANVAS_HEIGHT,
+                background: "white",
+                border: "1px solid #ccc",
+                borderRadius: 4,
+                boxShadow: "0 2px 8px rgba(0,0,0,0.08)",
+                fontSize: 13,
+                boxSizing: "border-box" as const,
+                display: "flex",
+                flexDirection: "column" as const,
+              },
+            },
+            // Header
+            React.createElement(
+              "div",
+              {
+                style: {
+                  padding: "10px 16px",
+                  borderBottom: "1px solid #eee",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  flexShrink: 0,
+                },
+              },
+              React.createElement(
+                "span",
+                { style: { fontWeight: 500, color: "#333" } },
+                `${lassoSummary.count} points selected`,
+              ),
+              React.createElement(
+                "button",
+                {
+                  onClick: () => { setLassoSelected(new Set()); setLassoPath([]); },
+                  style: {
+                    background: "none",
+                    border: "none",
+                    fontSize: 12,
+                    color: "#999",
+                    cursor: "pointer",
+                    padding: 0,
+                  },
+                },
+                "Clear",
+              ),
+            ),
+            // Label breakdown
+            React.createElement(
+              "div",
+              {
+                style: {
+                  padding: "10px 16px",
+                  borderBottom: "1px solid #eee",
+                  flexShrink: 0,
+                },
+              },
+              React.createElement(
+                "div",
+                { style: { fontSize: 11, color: "#777", marginBottom: 6 } },
+                "Labels",
+              ),
+              ...Object.entries(lassoSummary.labelCounts)
+                .sort((a, b) => b[1] - a[1])
+                .map(([label, count]) =>
+                  React.createElement(
+                    "div",
+                    {
+                      key: label,
+                      style: {
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                        marginBottom: 3,
+                        fontSize: 12,
+                      },
+                    },
+                    React.createElement("div", {
+                      style: {
+                        width: 8,
+                        height: 8,
+                        borderRadius: "50%",
+                        backgroundColor: label === "(unlabeled)" ? "#888" : getLabelColor(label),
+                        flexShrink: 0,
+                      },
+                    }),
+                    React.createElement("span", { style: { flex: 1 } }, label),
+                    React.createElement("span", { style: { color: "#999" } }, String(count)),
+                  ),
+                ),
+            ),
+            // Point list (scrollable)
+            React.createElement(
+              "div",
+              {
+                style: {
+                  flex: 1,
+                  overflowY: "auto" as const,
+                  padding: "8px 16px",
+                },
+              },
+              React.createElement(
+                "div",
+                { style: { fontSize: 11, color: "#777", marginBottom: 6 } },
+                "Points",
+              ),
+              ...lassoSummary.points.map((p) =>
+                React.createElement(
+                  "div",
+                  {
+                    key: p.index,
+                    onClick: () => {
+                      // Switch to pan mode and open detail panel for this point
+                      setToolMode("pan");
+                      setChatOpen(false);
+                      const thumbUrl = `${apiUrl}/array/full/${nodePath}/thumbnails?format=image/png&slice=${p.index}`;
+                      setSelected({
+                        point: p,
+                        thumbnailUrl: thumbUrl,
+                        note: "",
+                        userLabel: "",
+                        originalNote: "",
+                        originalUserLabel: "",
+                        saving: false,
+                      });
+                      Promise.all([
+                        fetchStringValue(apiUrl, nodePath, "notes", p.index),
+                        fetchStringValue(apiUrl, nodePath, "user_labels", p.index),
+                      ]).then(([note, userLabel]) => {
+                        setSelected((prev) =>
+                          prev && prev.point.index === p.index
+                            ? { ...prev, note, userLabel, originalNote: note, originalUserLabel: userLabel }
+                            : prev,
+                        );
+                      });
+                    },
+                    style: {
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 6,
+                      padding: "3px 4px",
+                      borderRadius: 3,
+                      cursor: "pointer",
+                      fontSize: 12,
+                      marginBottom: 1,
+                    },
+                    onMouseEnter: (e: React.MouseEvent<HTMLDivElement>) => {
+                      (e.currentTarget as HTMLDivElement).style.background = "#f5f5f5";
+                    },
+                    onMouseLeave: (e: React.MouseEvent<HTMLDivElement>) => {
+                      (e.currentTarget as HTMLDivElement).style.background = "none";
+                    },
+                  },
+                  React.createElement("span", { style: { color: "#1976d2" } }, `#${p.index}`),
+                  p.label
+                    ? React.createElement(
+                        "span",
+                        { style: { color: getLabelColor(p.label), fontSize: 11 } },
+                        p.label,
+                      )
+                    : null,
+                ),
+              ),
+            ),
+          )
+        : null,
+    ),
+    uniqueLabels.length > 0
+      ? React.createElement(
+          "div",
+          {
+            style: {
+              marginTop: 8,
+              display: "flex",
+              flexWrap: "wrap",
+              gap: 12,
+              fontSize: 12,
+            },
+          },
+          ...uniqueLabels.map((label) =>
+            React.createElement(
+              "div",
+              {
+                key: label,
+                style: { display: "flex", alignItems: "center", gap: 4 },
+              },
+              React.createElement("div", {
+                style: {
+                  width: 10,
+                  height: 10,
+                  borderRadius: "50%",
+                  backgroundColor: getLabelColor(label),
+                },
+              }),
+              React.createElement("span", null, label),
+            ),
+          ),
+        )
+      : null,
+    // Instructions
+    React.createElement(
+      "div",
+      { style: { marginTop: 6, fontSize: 11, color: "#999" } },
+      "Scroll to zoom. Pan mode: drag to pan, click point to inspect. Lasso mode: draw to select points.",
+    ),
+  );
+}
+
+export default EmbeddingScatter;

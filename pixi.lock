@@ -1361,7 +1361,7 @@ packages:
 - pypi: ./
   name: emblase
   version: 0.1.0
-  sha256: eaf39e96ea7932424a80dcc4a8ffceaf22e67c355db141d9de8da6ffe8fb27ff
+  sha256: e7e091801bbe2a0a7fadcfc64ed6bae6c972b56613a9e47677fc21db00afba46
   requires_dist:
   - fastapi>=0.115
   - uvicorn[standard]>=0.30

@@ -84,7 +84,7 @@ log.info("Model loaded in %.1f s", time.perf_counter() - t0)
 tiled_client = None
 if tiled_entries:
     from tiled.client import from_uri
-    from emblase.tiled_io import read_images  # noqa: E402
+    from emblase.tiled.client import read_images  # noqa: E402
 
     tiled_server = os.environ["EMBLASE_TILED_SERVER_URI"]
     log.info("Connecting to Tiled: %s", tiled_server)
@@ -126,7 +126,7 @@ log.info("output.npy saved: %s", output_path)
 # --- write to Tiled if requested ---
 if output_mode == "tiled":
     from tiled.client import from_uri
-    from emblase.tiled_io import write_output  # noqa: E402
+    from emblase.tiled.client import write_output  # noqa: E402
 
     if tiled_client is None:
         tiled_server = os.environ["EMBLASE_TILED_SERVER_URI"]
@@ -137,7 +137,14 @@ if output_mode == "tiled":
         )
     log.info("Writing output to Tiled: %s  shape=%s", tiled_result_path, output.shape)
     t0 = time.perf_counter()
-    write_output(tiled_client, tiled_result_path, output)
+    write_output(
+        tiled_client,
+        tiled_result_path,
+        output,
+        images=images if isinstance(images, list) else None,
+        tiled_entries=tiled_entries or None,
+        model_name=model_name,
+    )
     log.info("Written to Tiled in %.1f s", time.perf_counter() - t0)
 
 log.info("=== Done ===")
