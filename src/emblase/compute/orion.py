@@ -329,7 +329,10 @@ class OrionBackend(ComputeBackend):
             **script_kwargs,
         )
 
-        environment = [f"PATH={self.path}", f"HOME={self.home}", "SLURM_EXPORT_ENV=ALL"]
+        environment = [f"PATH={self.path}", f"HOME={self.home}", "SLURM_EXPORT_ENV=ALL",
+                       # Skip HuggingFace network checks — use local cache unconditionally.
+                       # Saves ~10s of HEAD requests when transformers models are pre-cached.
+                       "TRANSFORMERS_OFFLINE=1", "HF_DATASETS_OFFLINE=1"]
         if inputs or output:
             if not settings.tiled_server_uri:
                 raise ValueError(
