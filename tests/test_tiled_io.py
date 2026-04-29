@@ -4,7 +4,13 @@ import numpy as np
 import pytest
 from unittest.mock import MagicMock, patch
 
-from emblase.tiled.client import read_images, write_output
+from emblase.tiled.client import (
+    read_images,
+    write_output,
+    _log_thumb_fn,
+    _LOG_THUMB_ROI,
+    THUMB_MODES,
+)
 
 
 def _make_array_node(arr: np.ndarray, sliced_arr: np.ndarray | None = None) -> MagicMock:
@@ -288,3 +294,111 @@ def test_write_output_passes_access_tags_to_append(mock_lse_cls, mock_create):
 
     call = container.append.call_args
     assert call.kwargs["access_tags"] == ["nsls2"]
+
+
+# ---------------------------------------------------------------------------
+# _log_thumb_fn and thumb_mode tests
+# ---------------------------------------------------------------------------
+
+class TestLogThumbFn:
+    """Unit tests for the log-normalised thumbnail function."""
+
+    def test_output_shape(self):
+        """Output shape is (N, 64, 64) for any (N, H, W) input that fits the ROI."""
+        frames = np.ones((5, 300, 500), dtype=np.float32) * 100
+        out = _log_thumb_fn(frames)
+        assert out.shape == (5, 64, 64)
+
+    def test_clips_negatives(self):
+        """Negative pixel values are clipped to 0 before log1p."""
+        frames = np.full((1, 300, 500), -50.0, dtype=np.float32)
+        out = _log_thumb_fn(frames)
+        assert out.min() == 0.0
+
+    def test_log1p_applied(self):
+        """Output equals log1p(clip(roi, 0)) after resize — spot-check with known value."""
+        val = 100.0
+        frames = np.full((1, 300, 500), val, dtype=np.float32)
+        out = _log_thumb_fn(frames)
+        expected = np.log1p(val)
+        np.testing.assert_allclose(out, expected, rtol=1e-5)
+
+    def test_custom_roi(self):
+        """A custom ROI can override the default."""
+        frames = np.zeros((2, 300, 500), dtype=np.float32)
+        frames[:, 50:100, 100:200] = 1000.0  # only non-zero in a non-default region
+        roi = (slice(50, 100), slice(100, 200))
+        out = _log_thumb_fn(frames, roi=roi)
+        assert out.max() > 0  # non-zero region was captured
+
+    def test_log_thumb_roi_default_constant(self):
+        """The default ROI covers rows 0:180, cols 220:400."""
+        assert _LOG_THUMB_ROI == (slice(0, 180), slice(220, 400))
+
+    def test_in_thumb_modes_registry(self):
+        """Both 'default' and 'log' are registered in THUMB_MODES."""
+        assert "default" in THUMB_MODES
+        assert "log" in THUMB_MODES
+
+
+@patch("emblase.tiled.client.create_embedding_container")
+@patch("emblase.tiled.client.LatentSpaceEmbedding")
+def test_write_output_thumb_mode_log(mock_lse_cls, mock_create):
+    """thumb_mode='log' routes through _log_thumb_fn."""
+    embeddings = np.zeros((3, 4), dtype=np.float32)
+    # Frames large enough for the default ROI (rows 0:180, cols 220:400)
+    images = [np.ones((300, 500), dtype=np.float32) * 200.0 for _ in range(3)]
+    container = MagicMock()
+    container.metadata = {"embedding_dim": 4, "thumb_shape": [64, 64]}
+    mock_create.return_value = container
+    root = MagicMock()
+    root.__getitem__ = MagicMock(side_effect=KeyError)
+
+    write_output(root, "results", embeddings, images=images, thumb_mode="log")
+
+    thumbnails = container.append.call_args.args[1]
+    assert thumbnails.shape == (3, 64, 64)
+    expected_val = np.log1p(200.0)
+    np.testing.assert_allclose(thumbnails, expected_val, rtol=1e-5)
+
+
+@patch("emblase.tiled.client.create_embedding_container")
+@patch("emblase.tiled.client.LatentSpaceEmbedding")
+def test_write_output_thumb_mode_unknown_raises(mock_lse_cls, mock_create):
+    """An unknown thumb_mode raises ValueError."""
+    embeddings = np.zeros((2, 4), dtype=np.float32)
+    images = [np.ones((300, 500), dtype=np.float32) for _ in range(2)]
+    container = MagicMock()
+    container.metadata = {"embedding_dim": 4, "thumb_shape": [64, 64]}
+    mock_create.return_value = container
+    root = MagicMock()
+    root.__getitem__ = MagicMock(side_effect=KeyError)
+
+    with pytest.raises(ValueError, match="Unknown thumb_mode"):
+        write_output(root, "results", embeddings, images=images, thumb_mode="bogus")
+
+
+@patch("emblase.tiled.client.create_embedding_container")
+@patch("emblase.tiled.client.LatentSpaceEmbedding")
+def test_write_output_thumb_fn_overrides_mode(mock_lse_cls, mock_create):
+    """Explicit thumb_fn takes priority over thumb_mode."""
+    embeddings = np.zeros((2, 4), dtype=np.float32)
+    images = [np.ones((300, 500), dtype=np.float32) for _ in range(2)]
+    container = MagicMock()
+    container.metadata = {"embedding_dim": 4, "thumb_shape": [64, 64]}
+    mock_create.return_value = container
+    root = MagicMock()
+    root.__getitem__ = MagicMock(side_effect=KeyError)
+
+    sentinel = object()
+    call_log = []
+
+    def custom_fn(frames):
+        call_log.append(sentinel)
+        return np.zeros((frames.shape[0], 4, 4), dtype=np.float32)
+
+    # thumb_fn supplied alongside thumb_mode="log" — custom_fn must win
+    write_output(root, "results", embeddings, images=images,
+                 thumb_fn=custom_fn, thumb_mode="log")
+
+    assert len(call_log) == 1 and call_log[0] is sentinel

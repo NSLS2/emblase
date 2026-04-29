@@ -45,6 +45,7 @@ batch_size = {batch_size}
 inputs = {inputs}
 output = "{output}"
 mlflow_version = "{mlflow_version}" or None
+thumb_mode = "{thumb_mode}"
 
 # access_tags: comma-separated string from env → list[str], or None if unset/empty
 _raw_tags = os.environ.get("EMBLASE_TILED_ACCESS_TAGS", "").strip()
@@ -55,6 +56,7 @@ log.info("job_dir    : %s", job_dir)
 log.info("model      : %s", model_name)
 log.info("mlflow_ver : %s", mlflow_version or "latest")
 log.info("batch_size : %d", batch_size)
+log.info("thumb_mode : %s", thumb_mode)
 log.info("inputs     : %s", inputs or "(none — loading input.npy)")
 log.info("output     : %s", output or "(none — saving output.npy)")
 log.info("access_tags: %s", access_tags or "(none — server default)")
@@ -147,6 +149,7 @@ if output:
         images=images if isinstance(images, list) else None,
         source_entries=frame_entries,
         model_name=model_name,
+        thumb_mode=thumb_mode,
         access_tags=access_tags,
     )
     log.info("Written to Tiled in %.1f s", time.perf_counter() - t0)

@@ -38,6 +38,7 @@ def _render_inference_script(
     inputs: list[str | tuple[str, str]] | None = None,
     output: str = "",
     mlflow_version: str = "",
+    thumb_mode: str = "default",
 ) -> str:
     """Render the inference template with concrete values."""
     return _TEMPLATE.format(
@@ -47,6 +48,7 @@ def _render_inference_script(
         inputs=repr(inputs or []),
         output=output,
         mlflow_version=mlflow_version,
+        thumb_mode=thumb_mode,
     )
 
 
@@ -280,6 +282,7 @@ class OrionBackend(ComputeBackend):
         inputs: list[str | tuple[str, str]] | None = None,
         output: str = "",
         mlflow_version: str = "",
+        thumb_mode: str = "default",
         **kwargs: Any,
     ) -> str:
         """Submit an inference job.
@@ -293,6 +296,10 @@ class OrionBackend(ComputeBackend):
         Output:
           - ``output``: Tiled path to write embeddings into. If omitted, results are
             saved as ``output.npy`` in the job working directory only.
+
+        Thumbnail:
+          - ``thumb_mode``: ``"default"`` (resize only) or ``"log"`` (ROI crop +
+            log1p normalisation).  See ``write_output`` for details.
         """
         py_script = _render_inference_script(
             model_name=model_name,
@@ -301,6 +308,7 @@ class OrionBackend(ComputeBackend):
             inputs=inputs,
             output=output,
             mlflow_version=mlflow_version,
+            thumb_mode=thumb_mode,
         )
 
         if images is not None:

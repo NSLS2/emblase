@@ -40,6 +40,7 @@ async def _infer(args):
         model_name=args.model,
         batch_size=args.batch_size,
         output=args.output or "",
+        thumb_mode=args.thumb_mode,
     )
 
     if args.npy_file:
@@ -183,6 +184,17 @@ def main():
         type=int,
         default=2,
         help="Number of dummy images (ignored if an image source is given)",
+    )
+    infer_p.add_argument(
+        "--thumb-mode",
+        default="default",
+        choices=["default", "log"],
+        help=(
+            "Thumbnail generation mode. "
+            "'default': nearest-neighbour resize of the full frame. "
+            "'log': crop ROI (rows 0:180, cols 220:400), clip negatives, "
+            "apply log1p, then resize. Recommended for X-ray photon-count data."
+        ),
     )
 
     # -- status subcommand --

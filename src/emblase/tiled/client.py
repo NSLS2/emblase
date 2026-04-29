@@ -17,14 +17,71 @@ TiledEntry = str | tuple[str, str]
 
 _DEFAULT_THUMB_SHAPE: tuple[int, int] = (64, 64)
 
+# ROI used by the log-normalised thumbnail function (rows, cols).
+# Chosen to cover the Bragg-peak region in SMI resting-state diffraction images.
+_LOG_THUMB_ROI: tuple[slice, slice] = (slice(0, 180), slice(220, 400))
+
+
+def _resize_nn(frames: np.ndarray, out_h: int, out_w: int) -> np.ndarray:
+    """Nearest-neighbour resize (N, H, W) → (N, out_h, out_w)."""
+    n, h, w = frames.shape
+    row_idx = (np.arange(out_h) * h / out_h).astype(int)
+    col_idx = (np.arange(out_w) * w / out_w).astype(int)
+    return frames[:, row_idx[:, None], col_idx[None, :]].astype(np.float32)
+
 
 def _default_thumb_fn(frames: np.ndarray) -> np.ndarray:
-    """Resize (N, H, W) frames to _DEFAULT_THUMB_SHAPE using nearest-neighbour."""
-    n, h, w = frames.shape
+    """Resize (N, H, W) frames to _DEFAULT_THUMB_SHAPE using nearest-neighbour.
+
+    No intensity normalisation — pixel values are preserved as-is (float32).
+    Suitable when frames have already been preprocessed or when a raw look is
+    preferred.
+    """
     th, tw = _DEFAULT_THUMB_SHAPE
-    row_idx = (np.arange(th) * h / th).astype(int)
-    col_idx = (np.arange(tw) * w / tw).astype(int)
-    return frames[:, row_idx[:, None], col_idx[None, :]].astype(np.float32)
+    return _resize_nn(frames, th, tw)
+
+
+def _log_thumb_fn(
+    frames: np.ndarray,
+    roi: tuple[slice, slice] = _LOG_THUMB_ROI,
+    out_shape: tuple[int, int] = _DEFAULT_THUMB_SHAPE,
+) -> np.ndarray:
+    """Crop a ROI, log-normalise, then resize to *out_shape*.
+
+    Processing pipeline per frame
+    -----------------------------
+    1. Crop ``frames[:, roi[0], roi[1]]`` — isolates the region of interest.
+    2. Clip negative values to 0 (dark-current / detector artefacts are tiny
+       and negative; treating them as zero preserves log domain).
+    3. Apply ``log1p`` — maps photon-count data (Poisson-distributed, range
+       [0, ~10^6]) to a perceptually uniform [0, ~14] scale that compresses
+       bright Bragg peaks without saturating background.
+    4. Nearest-neighbour resize to *out_shape*.
+
+    Parameters
+    ----------
+    frames:
+        ``(N, H, W)`` float32 array.  H and W must be large enough to contain
+        the ROI.
+    roi:
+        ``(row_slice, col_slice)`` defining the crop region.
+        Default ``_LOG_THUMB_ROI`` = ``(slice(0,180), slice(220,400))``.
+    out_shape:
+        ``(height, width)`` of the output thumbnails.  Default 64×64.
+    """
+    cropped = frames[:, roi[0], roi[1]].astype(np.float32)
+    cropped = np.clip(cropped, 0.0, None)
+    log_normed = np.log1p(cropped)
+    return _resize_nn(log_normed, out_shape[0], out_shape[1])
+
+
+# Registry of named thumbnail functions.
+# Extend this dict to add new presets; the name is what callers pass as
+# ``thumb_mode`` in ``write_output``.
+THUMB_MODES: dict[str, "Callable[[np.ndarray], np.ndarray]"] = {
+    "default": _default_thumb_fn,
+    "log": _log_thumb_fn,
+}
 
 
 def read_images(
@@ -89,6 +146,7 @@ def write_output(
     *,
     source_entries: Optional[Sequence[TiledEntry]] = None,
     thumb_fn: Optional[Callable[[np.ndarray], np.ndarray]] = None,
+    thumb_mode: str = "default",
     thumb_shape: tuple[int, int] = _DEFAULT_THUMB_SHAPE,
     model_name: str = "",
     model_version: str = "",
@@ -119,9 +177,24 @@ def write_output(
         Callable with signature ``(frames: ndarray (N, H, W)) -> ndarray (N, th, tw)``.
         Called once on the whole batch when all frames share the same shape,
         or once per frame (as a ``(1, H, W)`` batch) for ragged inputs.
-        Defaults to nearest-neighbour resize to ``thumb_shape``.
+        Takes priority over ``thumb_mode`` when both are supplied.
+    thumb_mode:
+        Name of a built-in thumbnail preset from ``THUMB_MODES``.
+        Ignored when ``thumb_fn`` is provided.  Available modes:
+
+        ``"default"``
+            Nearest-neighbour resize of the full frame to ``thumb_shape``.
+            No intensity normalisation.
+
+        ``"log"``
+            Crop ``_LOG_THUMB_ROI`` (rows 0:180, cols 220:400), clip
+            negatives to 0, apply ``log1p``, then resize to ``thumb_shape``.
+            Recommended for X-ray photon-count data (compresses the ~10^6
+            dynamic range into a perceptually uniform [0, ~14] scale).
     thumb_shape:
-        ``(height, width)`` passed to the default ``thumb_fn``.
+        ``(height, width)`` of the output thumbnails.  Used by the default
+        resize inside ``_default_thumb_fn``; ignored when ``thumb_fn`` or a
+        mode that defines its own output size is used.
     model_name, model_version:
         Stored in container metadata on creation.
     embedding_dim:
@@ -171,12 +244,23 @@ def write_output(
         _embedding_container_cache[_cache_key] = container
 
     # Build thumbnails.
+    # Resolve the effective thumbnail function: explicit thumb_fn takes priority,
+    # then thumb_mode lookup, then the "default" preset.
     # thumb_fn contract: (N, H, W) float32 → (N, th, tw) float32.
-    # When all images share the same shape we call thumb_fn once on the whole
-    # batch (fast, and the natural API for a user-supplied function).
-    # When shapes differ (ragged) we fall back to one call per frame.
+    # When all images share the same shape we call it once on the whole batch;
+    # when shapes differ (ragged) we fall back to one call per frame.
     if images is not None:
-        _fn = thumb_fn or _default_thumb_fn
+        if thumb_fn is not None:
+            _fn = thumb_fn
+        elif thumb_mode != "default":
+            if thumb_mode not in THUMB_MODES:
+                raise ValueError(
+                    f"Unknown thumb_mode {thumb_mode!r}. "
+                    f"Available: {sorted(THUMB_MODES)}"
+                )
+            _fn = THUMB_MODES[thumb_mode]
+        else:
+            _fn = _default_thumb_fn
         shapes = {img.shape for img in images}
         if len(shapes) == 1:
             batch = np.stack([img.astype(np.float32) for img in images])  # (N, H, W)
