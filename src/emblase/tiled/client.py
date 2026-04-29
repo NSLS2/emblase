@@ -116,7 +116,9 @@ def write_output(
         Original tiled entries used as input — stored as provenance in the
         ``_index`` table. Length must equal ``len(embeddings)`` if provided.
     thumb_fn:
-        ``(frames: ndarray (N,H,W)) -> ndarray (N,th,tw)``.
+        Callable with signature ``(frames: ndarray (N, H, W)) -> ndarray (N, th, tw)``.
+        Called once on the whole batch when all frames share the same shape,
+        or once per frame (as a ``(1, H, W)`` batch) for ragged inputs.
         Defaults to nearest-neighbour resize to ``thumb_shape``.
     thumb_shape:
         ``(height, width)`` passed to the default ``thumb_fn``.
@@ -168,11 +170,20 @@ def write_output(
             )
         _embedding_container_cache[_cache_key] = container
 
-    # Build thumbnails — apply thumb_fn per image (handles ragged shapes).
+    # Build thumbnails.
+    # thumb_fn contract: (N, H, W) float32 → (N, th, tw) float32.
+    # When all images share the same shape we call thumb_fn once on the whole
+    # batch (fast, and the natural API for a user-supplied function).
+    # When shapes differ (ragged) we fall back to one call per frame.
     if images is not None:
         _fn = thumb_fn or _default_thumb_fn
-        thumbs_list = [_fn(img[np.newaxis].astype(np.float32))[0] for img in images]
-        thumbnails = np.stack(thumbs_list, axis=0)
+        shapes = {img.shape for img in images}
+        if len(shapes) == 1:
+            batch = np.stack([img.astype(np.float32) for img in images])  # (N, H, W)
+            thumbnails = _fn(batch)  # (N, th, tw)
+        else:
+            thumbs_list = [_fn(img[np.newaxis].astype(np.float32))[0] for img in images]
+            thumbnails = np.stack(thumbs_list, axis=0)
     else:
         thumbnails = np.zeros((n, *thumb_shape), dtype=np.float32)
 

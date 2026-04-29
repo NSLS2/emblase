@@ -199,7 +199,7 @@ def test_write_output_passes_provenance(mock_lse_cls, mock_create):
 @patch("emblase.tiled.client.create_embedding_container")
 @patch("emblase.tiled.client.LatentSpaceEmbedding")
 def test_write_output_custom_thumb_fn(mock_lse_cls, mock_create):
-    """A custom thumb_fn is applied to each frame."""
+    """A custom thumb_fn is called on the whole batch when shapes are uniform."""
     embeddings = np.zeros((2, 4), dtype=np.float32)
     images = [np.ones((32, 32), dtype=np.float32) * i for i in range(2)]
     container = MagicMock()
@@ -217,7 +217,39 @@ def test_write_output_custom_thumb_fn(mock_lse_cls, mock_create):
 
     write_output(root, "results", embeddings, images=images, thumb_fn=my_thumb)
 
-    assert len(called_with) == 2  # called once per image
+    # Uniform shapes → called once on the full (N, H, W) batch
+    assert len(called_with) == 1
+    assert called_with[0] == (2, 32, 32)
+    thumbnails = container.append.call_args.args[1]
+    assert thumbnails.shape == (2, 4, 4)
+
+
+@patch("emblase.tiled.client.create_embedding_container")
+@patch("emblase.tiled.client.LatentSpaceEmbedding")
+def test_write_output_custom_thumb_fn_ragged(mock_lse_cls, mock_create):
+    """A custom thumb_fn is called once per frame for ragged (varying-shape) inputs."""
+    embeddings = np.zeros((2, 4), dtype=np.float32)
+    # Two frames with different spatial shapes → ragged
+    images = [np.ones((32, 32), dtype=np.float32), np.ones((64, 64), dtype=np.float32)]
+    container = MagicMock()
+    container.metadata = {"embedding_dim": 4, "thumb_shape": [4, 4]}
+    mock_create.return_value = container
+
+    root = MagicMock()
+    root.__getitem__ = MagicMock(side_effect=KeyError)
+
+    called_with = []
+
+    def my_thumb(frames):
+        called_with.append(frames.shape)
+        return np.zeros((frames.shape[0], 4, 4), dtype=np.float32)
+
+    write_output(root, "results", embeddings, images=images, thumb_fn=my_thumb)
+
+    # Ragged shapes → called once per frame as (1, H, W)
+    assert len(called_with) == 2
+    assert called_with[0] == (1, 32, 32)
+    assert called_with[1] == (1, 64, 64)
     thumbnails = container.append.call_args.args[1]
     assert thumbnails.shape == (2, 4, 4)
 
