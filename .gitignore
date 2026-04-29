@@ -210,3 +210,4 @@ __marimo__/
 
 # ML models and artifacts
 models/*
+jobs/*
