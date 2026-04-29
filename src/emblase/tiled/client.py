@@ -30,8 +30,8 @@ def _default_thumb_fn(frames: np.ndarray) -> np.ndarray:
 def read_images(
     client,
     entries: Sequence[TiledEntry],
-) -> list[np.ndarray]:
-    """Read tiled nodes and return a flat list of 2-D float32 numpy arrays.
+) -> tuple[list[np.ndarray], list[TiledEntry]]:
+    """Read tiled nodes and return frames with per-frame provenance.
 
     Parameters
     ----------
@@ -48,8 +48,17 @@ def read_images(
     Each node may be:
     - A 2-D array ``(H, W)``       → one frame
     - An N-D array ``(..., H, W)`` → all frames (product of leading dims)
+
+    Returns
+    -------
+    frames : list[np.ndarray]
+        Flat list of 2-D float32 arrays, one per frame across all entries.
+    frame_entries : list[TiledEntry]
+        Parallel list of the source entry for each frame — same length as
+        ``frames``. Pass directly to ``write_output`` as ``source_entries``.
     """
     frames: list[np.ndarray] = []
+    frame_entries: list[TiledEntry] = []
     for entry in entries:
         if isinstance(entry, str):
             path, slc = entry, None
@@ -65,7 +74,8 @@ def read_images(
             )
         for frame in arr.reshape(-1, arr.shape[-2], arr.shape[-1]):
             frames.append(frame)
-    return frames
+            frame_entries.append(entry)
+    return frames, frame_entries
 
 
 def write_output(

@@ -36,52 +36,56 @@ def _make_client(nodes: dict) -> MagicMock:
 # ---------------------------------------------------------------------------
 
 def test_read_images_2d():
-    """A single 2-D array (bare path) yields one frame."""
+    """A single 2-D array (bare path) yields one frame and one provenance entry."""
     arr = np.ones((64, 128), dtype=np.float32)
     client = _make_client({"scan": _make_array_node(arr)})
 
-    frames = read_images(client, ["scan"])
+    frames, frame_entries = read_images(client, ["scan"])
 
     assert len(frames) == 1
     np.testing.assert_array_equal(frames[0], arr)
     assert frames[0].dtype == np.float32
+    assert frame_entries == ["scan"]
 
 
 def test_read_images_3d_stack():
-    """A (N, H, W) array (bare path) yields N frames."""
+    """A (N, H, W) array yields N frames, each pointing to the same entry."""
     arr = np.arange(3 * 4 * 5, dtype=np.float32).reshape(3, 4, 5)
     client = _make_client({"stack": _make_array_node(arr)})
 
-    frames = read_images(client, ["stack"])
+    frames, frame_entries = read_images(client, ["stack"])
 
     assert len(frames) == 3
     for i, frame in enumerate(frames):
         assert frame.shape == (4, 5)
         np.testing.assert_array_equal(frame, arr[i])
+    assert frame_entries == ["stack"] * 3
 
 
 def test_read_images_4d_stack():
-    """A (A, B, H, W) array (bare path) yields A*B frames."""
+    """A (A, B, H, W) array yields A*B frames all pointing to the same entry."""
     arr = np.zeros((2, 3, 8, 8), dtype=np.float32)
     client = _make_client({"nd": _make_array_node(arr)})
 
-    frames = read_images(client, ["nd"])
+    frames, frame_entries = read_images(client, ["nd"])
 
     assert len(frames) == 6
     assert all(f.shape == (8, 8) for f in frames)
+    assert frame_entries == ["nd"] * 6
 
 
 def test_read_images_mixed_paths():
-    """Multiple bare paths with different shapes combine into one flat list."""
+    """frame_entries tracks which entry each frame came from."""
     arr_2d = np.ones((10, 20), dtype=np.float32)
     arr_3d = np.zeros((4, 6, 7), dtype=np.float32)
     client = _make_client({"a": _make_array_node(arr_2d), "b": _make_array_node(arr_3d)})
 
-    frames = read_images(client, ["a", "b"])
+    frames, frame_entries = read_images(client, ["a", "b"])
 
     assert len(frames) == 5  # 1 + 4
     assert frames[0].shape == (10, 20)
     assert frames[1].shape == (6, 7)
+    assert frame_entries == ["a"] + ["b"] * 4
 
 
 def test_read_images_1d_raises():
@@ -104,11 +108,12 @@ def test_read_images_with_slice():
     node = _make_array_node(full, sliced_arr=sliced)
     client = _make_client({"scan": node})
 
-    frames = read_images(client, [("scan", "1:3")])
+    frames, frame_entries = read_images(client, [("scan", "1:3")])
 
     node.read.assert_called_once()  # called with an NDSlice, not bare string
     assert len(frames) == 2
     assert frames[0].shape == (32, 32)
+    assert frame_entries == [("scan", "1:3")] * 2
 
 
 def test_read_images_mixed_str_and_tuple():
@@ -119,11 +124,12 @@ def test_read_images_mixed_str_and_tuple():
     node_b = _make_array_node(arr_full, sliced_arr=arr_slice)
     client = _make_client({"a": node_a, "b": node_b})
 
-    frames = read_images(client, ["a", ("b", "0:1")])
+    frames, frame_entries = read_images(client, ["a", ("b", "0:1")])
 
     assert len(frames) == 5  # 4 from "a", 1 from ("b", "0:1")
     node_a.read.assert_called_once()
     node_b.read.assert_called_once()
+    assert frame_entries == ["a"] * 4 + [("b", "0:1")]
 
 
 # ---------------------------------------------------------------------------

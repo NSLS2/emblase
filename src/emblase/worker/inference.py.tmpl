@@ -96,7 +96,7 @@ if inputs:
     )
     log.info("Reading %d Tiled entr%s ...", len(inputs), "y" if len(inputs) == 1 else "ies")
     t0 = time.perf_counter()
-    images = read_images(tiled_client, inputs)
+    images, frame_entries = read_images(tiled_client, inputs)
     unique_shapes = sorted(set(img.shape for img in images))
     log.info(
         "Read %d frame(s) in %.1f s  (shapes: %s)",
@@ -105,6 +105,7 @@ if inputs:
         unique_shapes,
     )
 else:
+    images, frame_entries = [], None
     input_path = os.path.join(job_dir, "input.npy")
     log.info("Loading input from %s ...", input_path)
     arr = np.load(input_path)
@@ -144,7 +145,7 @@ if output:
         output,
         embeddings,
         images=images if isinstance(images, list) else None,
-        source_entries=inputs or None,
+        source_entries=frame_entries,
         model_name=model_name,
         access_tags=access_tags,
     )
