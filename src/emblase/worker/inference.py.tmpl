@@ -84,18 +84,17 @@ model = load_model(
 )
 log.info("Model loaded in %.1f s", time.perf_counter() - t0)
 
-# --- load input ---
+# --- connect to Tiled if needed ---
 tiled_client = None
-if inputs:
+if inputs or output:
     from tiled.client import from_uri
-    from emblase.tiled.client import read_images  # noqa: E402
-
     tiled_server = os.environ["EMBLASE_TILED_SERVER_URI"]
     log.info("Connecting to Tiled: %s", tiled_server)
-    tiled_client = from_uri(
-        tiled_server,
-        api_key=os.environ.get("EMBLASE_TILED_API_KEY") or None,
-    )
+    tiled_client = from_uri(tiled_server, api_key=os.environ.get("EMBLASE_TILED_API_KEY") or None)
+
+# --- load input ---
+if inputs:
+    from emblase.tiled.client import read_images  # noqa: E402
     log.info("Reading %d Tiled entr%s ...", len(inputs), "y" if len(inputs) == 1 else "ies")
     t0 = time.perf_counter()
     images, frame_entries = read_images(tiled_client, inputs)
@@ -130,16 +129,7 @@ log.info("output.npy saved: %s", output_path)
 
 # --- write to Tiled if output path given ---
 if output:
-    from tiled.client import from_uri
     from emblase.tiled.client import write_output  # noqa: E402
-
-    if tiled_client is None:
-        tiled_server = os.environ["EMBLASE_TILED_SERVER_URI"]
-        log.info("Connecting to Tiled for output: %s", tiled_server)
-        tiled_client = from_uri(
-            tiled_server,
-            api_key=os.environ.get("EMBLASE_TILED_API_KEY") or None,
-        )
     log.info("Writing embeddings to Tiled: %s  shape=%s", output, embeddings.shape)
     t0 = time.perf_counter()
     write_output(

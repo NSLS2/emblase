@@ -10,6 +10,7 @@ from emblase.compute.orion import (
     OrionBackend,
     _build_sbatch_script,
     _render_inference_script,
+    _render_streaming_inference_script,
 )
 
 DUMMY_IMAGES = np.zeros((2, 512, 512), dtype=np.float32)
@@ -255,3 +256,140 @@ def test_build_sbatch_script_raises_with_two_sources():
             payload_b64="abc",
             npy_path="/data/f.npy",
         )
+
+
+# ---------------------------------------------------------------------------
+# Streaming script rendering
+# ---------------------------------------------------------------------------
+
+def test_render_streaming_inference_script_substitutes_all_placeholders():
+    script = _render_streaming_inference_script(
+        model_name="noop",
+        models_dir="/models",
+        run_path="smi/sandbox/run_xyz",
+        output="smi/sandbox/results/run_xyz",
+        batch_size=4,
+        thumb_mode="logroi",
+        image_key="pil900KW_image",
+        ws_max_size=8 * 1024 * 1024,
+    )
+    assert 'model_name     = "noop"' in script
+    assert 'models_dir = "/models"' in script
+    assert 'run_path       = "smi/sandbox/run_xyz"' in script
+    assert 'output         = "smi/sandbox/results/run_xyz"' in script
+    assert "batch_size     = 4" in script
+    assert 'thumb_mode     = "logroi"' in script
+    assert 'image_key      = "pil900KW_image"' in script
+    assert f"ws_max_size    = {8 * 1024 * 1024}" in script
+
+
+def test_render_streaming_inference_script_contains_valid_python():
+    """The rendered script must compile without syntax errors."""
+    script = _render_streaming_inference_script(
+        model_name="noop",
+        models_dir="/models",
+        run_path="smi/sandbox/run_xyz",
+        output="smi/sandbox/results/run_xyz",
+    )
+    compile(script, "<streaming_inference>", "exec")  # raises SyntaxError on failure
+
+
+# ---------------------------------------------------------------------------
+# submit_streaming — environment injection
+# ---------------------------------------------------------------------------
+
+class _FakeClient:
+    def __init__(self):
+        self.last_environment = None
+
+    async def submit_job(self, script, working_dir, overrides=None, environment=None):
+        self.last_environment = environment
+        return 42
+
+
+@pytest.mark.asyncio
+async def test_submit_streaming_injects_tiled_env(monkeypatch):
+    """submit_streaming must forward Tiled URI and API key to the job environment."""
+    import emblase.compute.orion as orion_module
+    monkeypatch.setattr(orion_module.settings, "tiled_server_uri", "https://tiled.example.com")
+    monkeypatch.setattr(orion_module.settings, "tiled_api_key", "secret")
+    monkeypatch.setattr(orion_module.settings, "tiled_access_tags", "")
+
+    client = _FakeClient()
+    backend = OrionBackend(client=client, working_dir="/jobs", models_dir="/models", account="staff")
+    await backend.submit_streaming(
+        run_path="smi/sandbox/run_xyz",
+        output="smi/sandbox/results/run_xyz",
+        model_name="noop",
+    )
+
+    env = client.last_environment
+    assert any("EMBLASE_TILED_SERVER_URI=https://tiled.example.com" in e for e in env)
+    assert any("EMBLASE_TILED_API_KEY=secret" in e for e in env)
+
+
+@pytest.mark.asyncio
+async def test_submit_streaming_missing_tiled_uri_raises(monkeypatch):
+    """submit_streaming must raise if EMBLASE_TILED_SERVER_URI is not configured."""
+    import emblase.compute.orion as orion_module
+    monkeypatch.setattr(orion_module.settings, "tiled_server_uri", "")
+
+    backend = OrionBackend(
+        client=_FakeClient(), working_dir="/jobs", models_dir="/models", account="staff"
+    )
+    with pytest.raises(ValueError, match="EMBLASE_TILED_SERVER_URI is not set"):
+        await backend.submit_streaming(
+            run_path="smi/sandbox/run_xyz",
+            output="smi/sandbox/results/run_xyz",
+            model_name="noop",
+        )
+
+
+@pytest.mark.asyncio
+async def test_submit_streaming_injects_access_tags(monkeypatch):
+    """Access tags must appear in the environment when configured."""
+    import emblase.compute.orion as orion_module
+    monkeypatch.setattr(orion_module.settings, "tiled_server_uri", "https://tiled.example.com")
+    monkeypatch.setattr(orion_module.settings, "tiled_api_key", "")
+    monkeypatch.setattr(orion_module.settings, "tiled_access_tags", "smi_sandbox,staff")
+
+    client = _FakeClient()
+    backend = OrionBackend(client=client, working_dir="/jobs", models_dir="/models", account="staff")
+    await backend.submit_streaming(
+        run_path="smi/sandbox/run_xyz",
+        output="smi/sandbox/results/run_xyz",
+        model_name="noop",
+    )
+
+    env = client.last_environment
+    assert any("EMBLASE_TILED_ACCESS_TAGS=smi_sandbox,staff" in e for e in env)
+
+
+# ---------------------------------------------------------------------------
+# OrionBackend.wait and result
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_orion_backend_wait_returns_completed():
+    class FakeClient:
+        async def wait_for_job(self, job_id, poll_interval, timeout):
+            from emblase.compute.orion import OrionJob
+            return OrionJob(job_id=job_id, state="COMPLETED")
+
+    backend = OrionBackend(client=FakeClient(), working_dir="/jobs", models_dir="/models", account="staff")
+    status = await backend.wait("5", poll_interval=0, timeout=10)
+    from emblase.compute.base import JobStatus
+    assert status == JobStatus.completed
+
+
+@pytest.mark.asyncio
+async def test_orion_backend_wait_returns_failed():
+    class FakeClient:
+        async def wait_for_job(self, job_id, poll_interval, timeout):
+            from emblase.compute.orion import OrionJob
+            return OrionJob(job_id=job_id, state="FAILED")
+
+    backend = OrionBackend(client=FakeClient(), working_dir="/jobs", models_dir="/models", account="staff")
+    status = await backend.wait("5", poll_interval=0, timeout=10)
+    from emblase.compute.base import JobStatus
+    assert status == JobStatus.failed

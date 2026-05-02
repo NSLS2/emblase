@@ -1,5 +1,5 @@
 import time
-from typing import Any, Callable, Optional, Sequence, Union
+from typing import Any, Callable, Literal, Optional, Sequence, Union
 
 import numpy as np
 import pyarrow as pa
@@ -7,6 +7,53 @@ from tiled.client.composite import CompositeClient
 from tiled.client.container import Container
 from tiled.ndslice import NDSlice
 from tiled.structures.core import Spec, StructureFamily
+from typing_extensions import NotRequired, TypedDict
+
+
+# ---------------------------------------------------------------------------
+# Parameter descriptors
+# ---------------------------------------------------------------------------
+
+ParamDtype = Literal["float", "integer", "string", "boolean"]
+
+
+class ParamSpec(TypedDict):
+    """Descriptor for a single continuous or categorical parameter stored in _index.
+
+    Modelled on the Bluesky DataKey vocabulary (event-model), restricted to the
+    scalar case (shape=[]) and with ``dtype`` using plain names instead of
+    JSON-Schema ``"number"``/``"integer"``:
+
+    dtype
+        ``"float"``   → pa.float64()   (temperature, pressure, …)
+        ``"integer"`` → pa.int64()     (scan_id, frame_number, …)
+        ``"string"``  → pa.string()    (sample_name, phase, …)
+        ``"boolean"`` → pa.bool_()     (flag, is_calibration, …)
+    units
+        Engineering units, e.g. ``"°C"``, ``"bar"``, ``"mm"``.
+    source
+        Where the value was extracted from, e.g. ``"start.sample.temperature"``.
+        Informational — not used for data access.
+    precision
+        Number of decimal places to show in the UI (floats only).
+    display_name
+        Human-readable label for the UI.  Falls back to the param name when absent.
+    """
+
+    dtype: ParamDtype
+    units: NotRequired[str]
+    source: NotRequired[str]
+    precision: NotRequired[int]
+    display_name: NotRequired[str]
+
+
+# Mapping from ParamDtype → PyArrow field type (always nullable)
+_PARAM_DTYPE_TO_PA: dict[ParamDtype, pa.DataType] = {
+    "float": pa.float64(),
+    "integer": pa.int64(),
+    "string": pa.string(),
+    "boolean": pa.bool_(),
+}
 
 # ---------------------------------------------------------------------------
 # I/O helpers — public API for reading source images and writing embeddings
@@ -135,6 +182,28 @@ def read_images(
     return frames, frame_entries
 
 
+def _infer_param_specs(params: dict[str, list]) -> dict[str, "ParamSpec"]:
+    """Infer minimal ParamSpec dicts from param value lists.
+
+    Used by ``write_output`` when ``param_specs`` is not provided explicitly.
+    Looks at the first non-None value in each list to guess the dtype.
+    """
+    specs: dict[str, ParamSpec] = {}
+    for name, values in params.items():
+        # Find first non-None value to determine type
+        sample = next((v for v in values if v is not None), None)
+        if sample is None or isinstance(sample, float):
+            dtype: ParamDtype = "float"
+        elif isinstance(sample, bool):
+            dtype = "boolean"
+        elif isinstance(sample, int):
+            dtype = "integer"
+        else:
+            dtype = "string"
+        specs[name] = {"dtype": dtype}
+    return specs
+
+
 _embedding_container_cache: dict[tuple, "LatentSpaceEmbedding"] = {}
 
 
@@ -151,6 +220,8 @@ def write_output(
     model_name: str = "",
     model_version: str = "",
     embedding_dim: Optional[int] = None,
+    params: Optional[dict[str, list]] = None,
+    param_specs: Optional[dict[str, "ParamSpec"]] = None,
     metadata: Optional[dict] = None,
     access_tags: Optional[list[str]] = None,
 ) -> None:
@@ -164,65 +235,53 @@ def write_output(
         An already-initialised tiled client pointing at the catalog root.
     path:
         Slash-separated path to the target LatentSpaceEmbedding container.
-        The final component is the key; everything before it is the parent path.
     embeddings:
         Shape ``(N, D)`` float32 array of embedding vectors.
     images:
-        List of N 2-D float32 numpy arrays (one per embedding) used to generate
-        thumbnails. If ``None``, zero arrays are stored.
+        List of N 2-D float32 numpy arrays used to generate thumbnails.
+        If ``None``, zero arrays are stored.
     source_entries:
         Original tiled entries used as input — stored as provenance in the
         ``_index`` table. Length must equal ``len(embeddings)`` if provided.
     thumb_fn:
-        Callable with signature ``(frames: ndarray (N, H, W)) -> ndarray (N, th, tw)``.
-        Called once on the whole batch when all frames share the same shape,
-        or once per frame (as a ``(1, H, W)`` batch) for ragged inputs.
-        Takes priority over ``thumb_mode`` when both are supplied.
+        Custom thumbnail function ``(N, H, W) → (N, th, tw)``.
+        Takes priority over ``thumb_mode``.
     thumb_mode:
-        Name of a built-in thumbnail preset from ``THUMB_MODES``.
-        Ignored when ``thumb_fn`` is provided.  Available modes:
-
-        ``"default"``
-            Nearest-neighbour resize of the full frame to ``thumb_shape``.
-            No intensity normalisation.
-
-        ``"logroi"``
-            Crop ``_LOG_THUMB_ROI`` (rows 0:180, cols 220:400), clip
-            negatives to 0, apply ``log1p``, then resize to ``thumb_shape``.
-            Recommended for X-ray photon-count data (compresses the ~10^6
-            dynamic range into a perceptually uniform [0, ~14] scale).
+        Built-in thumbnail preset name (``"default"`` or ``"logroi"``).
     thumb_shape:
-        ``(height, width)`` of the output thumbnails.  Used by the default
-        resize inside ``_default_thumb_fn``; ignored when ``thumb_fn`` or a
-        mode that defines its own output size is used.
+        ``(height, width)`` of thumbnails when using default resize.
     model_name, model_version:
         Stored in container metadata on creation.
     embedding_dim:
         Inferred from ``embeddings`` if omitted.
+    params : dict[str, list], optional
+        Per-embedding parameter values to store alongside each embedding in
+        the _index table.  Keys are parameter names; values are lists of
+        length N.  Must match the ``param_specs`` declared at container
+        creation — or, on first write, ``param_specs`` is used to initialise
+        the container schema.
+    param_specs : dict[str, ParamSpec], optional
+        Parameter descriptors used when *creating* the container for the first
+        time.  Ignored if the container already exists.  If omitted but
+        ``params`` is provided, minimal specs (``{"dtype": "float"}``) are
+        inferred from the value types.
     metadata:
         Extra key/value pairs merged into container metadata on creation.
     access_tags:
-        Tiled access tags applied to every node written (container, arrays,
-        index table).  When ``None`` the server's default policy applies.
-        Typically sourced from ``settings.tiled_access_tags``.
+        Tiled access tags applied to every node written.
     """
     n = len(embeddings)
     d = embedding_dim or embeddings.shape[1]
 
-    # Resolve parent container and leaf key from slash-separated path.
     parts = path.rstrip("/").split("/")
     key = parts[-1]
     parent_path = "/".join(parts[:-1])
 
-    # Cache the LatentSpaceEmbedding client object across calls so that the
-    # local state (_num_embeddings, _arrays_initialised, _index_table) is
-    # preserved and we avoid redundant GETs on every append.
     base_url = str(client.context.base_url)
     _cache_key = (base_url, path)
     container = _embedding_container_cache.get(_cache_key)
     if container is None:
         parent = client[parent_path] if parent_path else client
-        # Get or create the LatentSpaceEmbedding container.
         try:
             container = parent[key]
             if not isinstance(container, LatentSpaceEmbedding):
@@ -231,6 +290,10 @@ def write_output(
                     f"(got {type(container).__name__})."
                 )
         except KeyError:
+            # Infer param_specs from params values if not provided explicitly
+            resolved_specs = param_specs or {}
+            if params and not resolved_specs:
+                resolved_specs = _infer_param_specs(params)
             container = create_embedding_container(
                 parent,
                 key,
@@ -238,40 +301,31 @@ def write_output(
                 thumb_shape=thumb_shape,
                 model_name=model_name,
                 model_version=model_version,
+                params=resolved_specs,
                 metadata=metadata,
                 access_tags=access_tags,
             )
         _embedding_container_cache[_cache_key] = container
 
-    # Build thumbnails.
-    # Resolve the effective thumbnail function: explicit thumb_fn takes priority,
-    # then thumb_mode lookup, then the "default" preset.
-    # thumb_fn contract: (N, H, W) float32 → (N, th, tw) float32.
-    # When all images share the same shape we call it once on the whole batch;
-    # when shapes differ (ragged) we fall back to one call per frame.
+    # Build thumbnails
     if images is not None:
-        if thumb_fn is not None:
-            _fn = thumb_fn
-        elif thumb_mode != "default":
+        if thumb_fn is None:
             if thumb_mode not in THUMB_MODES:
                 raise ValueError(
-                    f"Unknown thumb_mode {thumb_mode!r}. "
-                    f"Available: {sorted(THUMB_MODES)}"
+                    f"Unknown thumb_mode {thumb_mode!r}. Available: {sorted(THUMB_MODES)}"
                 )
-            _fn = THUMB_MODES[thumb_mode]
-        else:
-            _fn = _default_thumb_fn
+            thumb_fn = THUMB_MODES[thumb_mode]
         shapes = {img.shape for img in images}
         if len(shapes) == 1:
-            batch = np.stack([img.astype(np.float32) for img in images])  # (N, H, W)
-            thumbnails = _fn(batch)  # (N, th, tw)
+            thumbnails = thumb_fn(np.stack(images).astype(np.float32))
         else:
-            thumbs_list = [_fn(img[np.newaxis].astype(np.float32))[0] for img in images]
-            thumbnails = np.stack(thumbs_list, axis=0)
+            thumbnails = np.stack(
+                [thumb_fn(img[np.newaxis].astype(np.float32))[0] for img in images]
+            )
     else:
         thumbnails = np.zeros((n, *thumb_shape), dtype=np.float32)
 
-    # Unpack provenance.
+    # Unpack provenance
     if source_entries:
         paths = [e if isinstance(e, str) else e[0] for e in source_entries]
         slices = [None if isinstance(e, str) else e[1] for e in source_entries]
@@ -286,24 +340,47 @@ def write_output(
         slices=slices,
         model_version=model_version or None,
         timestamps=list(time.time() + np.arange(n) * 1e-6),
+        params=params,
         access_tags=access_tags,
     )
 
-# Maximum character widths for zarr string arrays
 NOTES_MAX_LEN = 1024
 USER_LABEL_MAX_LEN = 64
 
-# PyArrow schema for the _index table (append-only, immutable columns)
-INDEX_SCHEMA = pa.schema(
-    [
-        pa.field("path", pa.string()),
-        pa.field("slice", pa.string(), nullable=True),
-        pa.field("label", pa.string(), nullable=True),
-        pa.field("model_version", pa.string(), nullable=True),
-        pa.field("mlflow_run_id", pa.string(), nullable=True),
-        pa.field("timestamp", pa.float64()),
-    ]
-)
+# Base fields present in every _index table (param columns are appended after)
+_INDEX_BASE_FIELDS = [
+    pa.field("path", pa.string()),
+    pa.field("slice", pa.string(), nullable=True),
+    pa.field("label", pa.string(), nullable=True),
+    pa.field("model_version", pa.string(), nullable=True),
+    pa.field("mlflow_run_id", pa.string(), nullable=True),
+    pa.field("timestamp", pa.float64()),
+]
+
+
+def _make_index_schema(
+    param_specs: Optional[dict[str, "ParamSpec"]] = None,
+) -> pa.Schema:
+    """Build the PyArrow schema for the _index table.
+
+    Base fields are always present.  One nullable column is appended for each
+    declared parameter, named ``param_<name>`` and typed according to its
+    ``dtype``.
+    """
+    fields = list(_INDEX_BASE_FIELDS)
+    for name, spec in (param_specs or {}).items():
+        pa_type = _PARAM_DTYPE_TO_PA.get(spec["dtype"])
+        if pa_type is None:
+            raise ValueError(
+                f"Unknown param dtype {spec['dtype']!r} for parameter {name!r}. "
+                f"Valid dtypes: {list(_PARAM_DTYPE_TO_PA)}"
+            )
+        fields.append(pa.field(f"param_{name}", pa_type, nullable=True))
+    return pa.schema(fields)
+
+
+# Keep backward-compat name for containers created without params
+INDEX_SCHEMA = _make_index_schema()
 
 REQUIRED_METADATA_KEYS = set()
 
@@ -324,6 +401,7 @@ def create_embedding_container(
     model_version: str = "",
     mlflow_model_uri: str = "",
     description: str = "",
+    params: Optional[dict[str, "ParamSpec"]] = None,
     metadata: Optional[dict[str, Any]] = None,
     access_tags: Optional[list[str]] = None,
 ) -> "LatentSpaceEmbedding":
@@ -349,9 +427,26 @@ def create_embedding_container(
         MLFlow model URI (e.g. ``models:/my_encoder/3``).
     description : str
         Human-readable description of this embedding collection.
+    params : dict[str, ParamSpec], optional
+        Declares the continuous/categorical parameters stored alongside each
+        embedding in the _index table.  Keys are parameter names (column names
+        will be ``param_<name>``); values are ``ParamSpec`` dicts describing
+        dtype, units, source, display_name, and precision.
+
+        Example::
+
+            params={
+                "temperature": {"dtype": "float", "units": "°C",
+                                "source": "start.sample.temperature"},
+                "scan_id":     {"dtype": "integer", "source": "start.scan_id"},
+                "sample":      {"dtype": "string",  "source": "start.sample_name",
+                                "display_name": "Sample"},
+            }
+
     metadata : dict, optional
         Additional user metadata merged into the container metadata.
-        Use this for experiment-specific context (beamline, sample info, etc.).
+    access_tags : list[str], optional
+        Tiled access tags applied to every node written.
 
     Returns
     -------
@@ -367,6 +462,7 @@ def create_embedding_container(
         "mlflow_model_uri": mlflow_model_uri,
         "created_at": time.time(),
         "description": description,
+        "param_specs": params or {},
     }
     if metadata:
         container_metadata.update(metadata)
@@ -378,15 +474,8 @@ def create_embedding_container(
         access_tags=access_tags,
     )
 
-    # create_container returns the node via spec dispatch — it should already
-    # be a LatentSpaceEmbedding (CompositeClient subclass).  Return it directly
-    # to avoid re-fetching the container from the server (which would cost an
-    # extra GET + a second __init__ that loses the eagerly-set caches).
     if isinstance(node, LatentSpaceEmbedding):
         return node
-
-    # Fallback: server did not dispatch to LatentSpaceEmbedding (e.g. spec
-    # validator not registered).  Re-fetch so callers always get the right type.
     return parent[key]
 
 
@@ -403,8 +492,11 @@ class LatentSpaceEmbedding(CompositeClient):
         user_labels  : (N,) <U64 — mutable user-assigned labels
 
     SQL table (append-only, immutable after write):
-        _index : [path, slice, label, model_version, mlflow_run_id, timestamp]
+        _index : [path, slice, label, model_version, mlflow_run_id, timestamp,
+                  param_<name>, ...]
             ``label`` is the immutable model-assigned label.
+            ``param_*`` columns hold per-embedding parameter values declared
+            in ``param_specs`` container metadata.
             Rows ordered by timestamp on read.
     """
 
@@ -413,9 +505,6 @@ class LatentSpaceEmbedding(CompositeClient):
 
         # Use the structure.count already present in the fetched item to decide
         # whether child arrays exist, avoiding a separate search GET.
-        # count=0 means no children → arrays not yet initialised.
-        # count>0 means children exist → treat as initialised (True).
-        # Fall back to None (lazy check) if count is unavailable.
         _structure = self.item.get("attributes", {}).get("structure", {})
         _count = _structure.get("count") if isinstance(_structure, dict) else getattr(_structure, "count", None)
         if _count == 0:
@@ -425,25 +514,24 @@ class LatentSpaceEmbedding(CompositeClient):
         else:
             self._arrays_initialised = None
 
-        # Local embedding count cache.  None = unknown (resolved lazily from
-        # the _index table on first access).  Set to 0 immediately on fresh
-        # containers so we never need a remote read just to find the offset.
+        # Local embedding count cache.
         self._num_embeddings: int | None = None
 
-        # Create the _index table if not exists (appendable, SQL-backed, immutable after write)
+        # Build the _index schema from param_specs in container metadata.
+        # Containers created before params were introduced will have an empty dict.
+        self._param_specs: dict[str, ParamSpec] = self.metadata.get("param_specs", {})
+        self._index_schema = _make_index_schema(self._param_specs)
+
+        # Create the _index table if not exists
         try:
             self._index_table = self.base["_index"]
         except KeyError:
             self._index_table = self.create_appendable_table(
-                INDEX_SCHEMA,
+                self._index_schema,
                 key="_index",
                 metadata={"description": "Per-embedding metadata index (append-only)"},
                 access_tags=self.access_blob.get("tags", None)
             )
-            # We just created both the table and the container — nothing has
-            # been written yet.  Initialise the caches eagerly so the first
-            # append() doesn't need any extra GET requests to discover these
-            # facts remotely.
             self._arrays_initialised = False
             self._num_embeddings = 0
 
@@ -478,76 +566,51 @@ class LatentSpaceEmbedding(CompositeClient):
         batch_size = len(embeddings)
         empty_notes = _make_string_array([""] * batch_size, NOTES_MAX_LEN)
         empty_user_labels = _make_string_array([""] * batch_size, USER_LABEL_MAX_LEN)
-
-        # Resolve effective tags: explicit argument takes priority over the
-        # tags already stored in the container's access_blob.
         tags = access_tags if access_tags is not None else self.access_blob.get("tags", None)
 
-        # Check once whether arrays have been initialised; cache the result to
-        # avoid a Tiled listing request on every subsequent append call.
+        proj_dim = self.metadata.get("projection_dim", 2)
+        if projections is not None:
+            proj_data = projections.astype(np.float32)
+        else:
+            proj_data = np.full((batch_size, proj_dim), np.nan, dtype=np.float32)
+
         if self._arrays_initialised is None:
             self._arrays_initialised = "embeddings" in self
 
-        # Arrays: create on first insert, extend on subsequent.
         if not self._arrays_initialised:
             self._arr_embeddings = self.write_array(
-                embeddings.astype(np.float32),
-                key="embeddings",
-                metadata={"description": "Embedding vectors"},
-                dims=["sample", "feature"],
+                embeddings.astype(np.float32), key="embeddings",
+                metadata={"description": "Embedding vectors"}, dims=["sample", "feature"],
                 access_tags=tags,
             )
             self._arr_thumbnails = self.write_array(
-                thumbnails,
-                key="thumbnails",
-                metadata={"description": "Thumbnail images"},
-                access_tags=tags,
+                thumbnails, key="thumbnails",
+                metadata={"description": "Thumbnail images"}, access_tags=tags,
+            )
+            self._arr_projections = self.write_array(
+                proj_data, key="projections",
+                metadata={"description": "Visualization projections"}, access_tags=tags,
             )
             self._arr_notes = self.write_array(
-                empty_notes,
-                key="notes",
-                metadata={"description": "Freeform mutable annotations"},
-                access_tags=tags,
+                empty_notes, key="notes",
+                metadata={"description": "Freeform mutable annotations"}, access_tags=tags,
             )
             self._arr_user_labels = self.write_array(
-                empty_user_labels,
-                key="user_labels",
-                metadata={"description": "Mutable user-assigned labels"},
-                access_tags=tags,
+                empty_user_labels, key="user_labels",
+                metadata={"description": "Mutable user-assigned labels"}, access_tags=tags,
             )
-            if projections is not None:
-                self.write_array(
-                    projections.astype(np.float32),
-                    key="projections",
-                    metadata={"description": "Visualization projections"},
-                    access_tags=tags,
-                )
             self._arrays_initialised = True
         else:
-            # Use cached array clients when available to avoid GET /metadata/…/key
-            # on each patch call (self[key] would re-fetch from the server).
             emb = getattr(self, "_arr_embeddings", None) or self["embeddings"]
             thu = getattr(self, "_arr_thumbnails", None) or self["thumbnails"]
+            prj = getattr(self, "_arr_projections", None) or self["projections"]
             nts = getattr(self, "_arr_notes", None) or self["notes"]
             ulb = getattr(self, "_arr_user_labels", None) or self["user_labels"]
             emb.patch(embeddings.astype(np.float32), offset=(offset,), extend=True)
             thu.patch(thumbnails, offset=(offset,), extend=True)
+            prj.patch(proj_data, offset=(offset,), extend=True)
             nts.patch(empty_notes, offset=(offset,), extend=True)
             ulb.patch(empty_user_labels, offset=(offset,), extend=True)
-            if projections is not None:
-                if "projections" in self:
-                    self["projections"].patch(
-                        projections.astype(np.float32),
-                        offset=(offset,),
-                        extend=True,
-                    )
-                else:
-                    self.write_array(
-                        projections.astype(np.float32),
-                        key="projections",
-                        metadata={"description": "Visualization projections"},
-                        access_tags=tags,
-                    )
 
     def append(
         self,
@@ -561,6 +624,7 @@ class LatentSpaceEmbedding(CompositeClient):
         mlflow_run_id: Optional[str] = None,
         timestamps: Optional[list[float]] = None,
         projections: Optional[np.ndarray] = None,
+        params: Optional[dict[str, list]] = None,
         access_tags: Optional[list[str]] = None,
     ) -> int:
         """Append one or more embeddings with their associated data.
@@ -579,16 +643,28 @@ class LatentSpaceEmbedding(CompositeClient):
             Immutable model-assigned labels.
         model_version : str, optional
             Version of the model that produced these embeddings.
-            Defaults to the container's ``model_version`` metadata.
         mlflow_run_id : str, optional
             MLFlow run ID that produced these embeddings.
         timestamps : list[float], optional
             Epoch timestamps. Defaults to current time for each.
         projections : np.ndarray, optional
             Shape (B, P) pre-computed projection vectors.
+        params : dict[str, list], optional
+            Per-embedding parameter values.  Keys must match the ``param_specs``
+            declared at container creation.  Each value is a list of length B.
+
+            Example::
+
+                params={
+                    "temperature": [25.1, 25.3, 24.9],
+                    "scan_id":     [1042, 1042, 1043],
+                    "sample":      ["CsPbBr3", "CsPbBr3", "MAPbI3"],
+                }
+
+            Unknown keys raise ``ValueError``.  Declared params that are absent
+            from ``params`` are stored as ``None`` (null) for all rows in the batch.
         access_tags : list[str], optional
             Tiled access tags applied to newly created child arrays.
-            Falls back to the container's own access_blob tags when ``None``.
 
         Returns
         -------
@@ -616,35 +692,41 @@ class LatentSpaceEmbedding(CompositeClient):
             msg = f"Expected {batch_size} paths, got {len(paths)}"
             raise ValueError(msg)
 
+        # Validate param keys against declared param_specs
+        params = params or {}
+        unknown = set(params) - set(self._param_specs)
+        if unknown:
+            raise ValueError(
+                f"Unknown parameter(s) {sorted(unknown)}. "
+                f"Declared params: {sorted(self._param_specs)}"
+            )
+        for name, values in params.items():
+            if len(values) != batch_size:
+                raise ValueError(
+                    f"Parameter {name!r}: expected {batch_size} values, got {len(values)}"
+                )
+
         current_n = self.num_embeddings
 
-        # Write arrays first, then _index table last.
-        # The UI subscribes to both streams; writing the table last ensures
-        # projections are committed before the table WS event arrives.
         self._write_arrays(embeddings, thumbnails, projections, offset=current_n, access_tags=access_tags)
 
-        table = pa.table(
-            {
-                "path": paths,
-                "slice": [None] * batch_size if slices is None else slices,
-                "label": [None] * batch_size if labels is None else labels,
-                "model_version": [model_version or self.metadata.get("model_version")]
-                * batch_size,
-                "mlflow_run_id": [
-                    mlflow_run_id or self.metadata.get("mlflow_run_id", "")
-                ]
-                * batch_size,
-                "timestamp": timestamps
-                or np.array([time.time()] * batch_size) + np.arange(batch_size) * 1e-6,
-            },
-            schema=INDEX_SCHEMA,
-        )
+        # Build the _index table row, including param columns
+        table_data: dict[str, Any] = {
+            "path": paths,
+            "slice": [None] * batch_size if slices is None else slices,
+            "label": [None] * batch_size if labels is None else labels,
+            "model_version": [model_version or self.metadata.get("model_version")] * batch_size,
+            "mlflow_run_id": [mlflow_run_id or self.metadata.get("mlflow_run_id", "")] * batch_size,
+            "timestamp": timestamps or list(time.time() + np.arange(batch_size) * 1e-6),
+        }
+        for name in self._param_specs:
+            col = f"param_{name}"
+            table_data[col] = params.get(name, [None] * batch_size)
+
+        table = pa.table(table_data, schema=self._index_schema)
         self._index_table.append_partition(0, table)
 
-        # Keep the local counter in sync so subsequent append() / num_embeddings
-        # calls don't need a remote table read to find the new offset.
         self._num_embeddings = current_n + batch_size
-
         return self._num_embeddings
 
     def update_note(self, index: int, note: str) -> None:
@@ -708,10 +790,8 @@ class LatentSpaceEmbedding(CompositeClient):
         "Read thumbnail images, optionally sliced."
         return self["thumbnails"][indices]
 
-    def read_projections(self, indices=None) -> Optional[np.ndarray]:
-        "Read projection vectors. Returns None if not yet computed"
-        if "projections" not in self:
-            return None
+    def read_projections(self, indices=None) -> np.ndarray:
+        "Read projection vectors. Returns NaN-filled array if not yet computed."
         return self["projections"][indices]
 
     def read_notes(self, indices=None) -> np.ndarray:
@@ -726,6 +806,47 @@ class LatentSpaceEmbedding(CompositeClient):
         "Read the _index table as a pandas DataFrame; sort rows by timestamp"
         df = self._index_table.read()
         return df.sort_values("timestamp").reset_index(drop=True)
+
+    def read_params(
+        self,
+        names: Optional[list[str]] = None,
+    ) -> dict[str, Any]:
+        """Read parameter columns from the _index table.
+
+        Parameters
+        ----------
+        names : list[str], optional
+            Parameter names to read (without the ``param_`` prefix).
+            When ``None`` (default), all declared parameters are returned.
+
+        Returns
+        -------
+        dict[str, pandas.Series]
+            Mapping from parameter name → Series (sorted by timestamp,
+            index-aligned with ``read_index()``).
+
+        Raises
+        ------
+        ValueError
+            If any requested name is not a declared parameter.
+        """
+        if names is None:
+            names = list(self._param_specs)
+        else:
+            unknown = set(names) - set(self._param_specs)
+            if unknown:
+                raise ValueError(
+                    f"Unknown parameter(s) {sorted(unknown)}. "
+                    f"Declared params: {sorted(self._param_specs)}"
+                )
+
+        if not names:
+            return {}
+
+        columns = [f"param_{n}" for n in names] + ["timestamp"]
+        df = self._index_table.read(columns=columns)
+        df = df.sort_values("timestamp").reset_index(drop=True)
+        return {n: df[f"param_{n}"] for n in names}
 
 
 async def validate_embedding(spec, metadata, entry, structure_family, structure):
@@ -760,6 +881,7 @@ async def validate_embedding(spec, metadata, entry, structure_family, structure)
             "model_version": "",
             "mlflow_model_uri": "",
             "description": "",
+            "param_specs": {},
         }
         changed = False
         for k, v in defaults.items():

@@ -16,6 +16,7 @@ from ..config import settings
 from .base import ComputeBackend, JobResult, JobStatus
 
 _TEMPLATE = (Path(__file__).parent.parent / "worker" / "inference.py.tmpl").read_text()
+_STREAMING_TEMPLATE = (Path(__file__).parent.parent / "worker" / "streaming_inference.py.tmpl").read_text()
 
 _SLURM_STATE_MAP = {
     "PENDING": JobStatus.pending,
@@ -40,7 +41,7 @@ def _render_inference_script(
     mlflow_version: str = "",
     thumb_mode: str = "default",
 ) -> str:
-    """Render the inference template with concrete values."""
+    """Render the batch inference template with concrete values."""
     return _TEMPLATE.format(
         model_name=model_name,
         models_dir=models_dir,
@@ -52,12 +53,38 @@ def _render_inference_script(
     )
 
 
+def _render_streaming_inference_script(
+    model_name: str,
+    models_dir: str,
+    run_path: str,
+    output: str,
+    batch_size: int = 8,
+    mlflow_version: str = "",
+    thumb_mode: str = "logroi",
+    image_key: str = "pil900KW_image",
+    ws_max_size: int = 16 * 1024 * 1024,
+) -> str:
+    """Render the streaming inference template with concrete values."""
+    return _STREAMING_TEMPLATE.format(
+        model_name=model_name,
+        models_dir=models_dir,
+        run_path=run_path,
+        output=output,
+        batch_size=batch_size,
+        mlflow_version=mlflow_version,
+        thumb_mode=thumb_mode,
+        image_key=image_key,
+        ws_max_size=ws_max_size,
+    )
+
+
 def _build_sbatch_script(
     working_dir: str,
     python_script: str,
     project_dir: str,
     job_name: str = "emblase",
     time_limit: str = "0-00:10:00",
+    mem: str = "16G",
     payload_b64: str | None = None,
     npy_path: str | None = None,
     tiled_input: bool = False,
@@ -102,6 +129,7 @@ rm -f "$JOB_DIR/_input_b64.txt"
 #SBATCH --time={time_limit}
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
+#SBATCH --mem={mem}
 #SBATCH --output={working_dir}/slurm-%j.out
 #SBATCH --error={working_dir}/slurm-%j.out
 
@@ -273,6 +301,33 @@ class OrionBackend(ComputeBackend):
         self.path = path or settings.orion_path
         self._jobs: dict[int, dict[str, Any]] = {}
 
+    def _build_environment(self, *, require_tiled: bool = False) -> list[str]:
+        """Build the environment variable list for a Slurm job."""
+        if require_tiled and not settings.tiled_server_uri:
+            raise ValueError(
+                "EMBLASE_TILED_SERVER_URI is not set — required for this job type."
+            )
+        env = [
+            f"PATH={self.path}",
+            f"HOME={self.home}",
+            "SLURM_EXPORT_ENV=ALL",
+            "TRANSFORMERS_OFFLINE=1",
+            "HF_DATASETS_OFFLINE=1",
+        ]
+        if settings.tiled_server_uri:
+            env.append(f"EMBLASE_TILED_SERVER_URI={settings.tiled_server_uri}")
+            if settings.tiled_api_key:
+                env.append(f"EMBLASE_TILED_API_KEY={settings.tiled_api_key}")
+            if settings.tiled_access_tags:
+                env.append(f"EMBLASE_TILED_ACCESS_TAGS={settings.tiled_access_tags}")
+        if settings.mlflow_tracking_uri:
+            env.append(f"EMBLASE_MLFLOW_TRACKING_URI={settings.mlflow_tracking_uri}")
+            if settings.mlflow_api_key:
+                env.append(f"EMBLASE_MLFLOW_API_KEY={settings.mlflow_api_key}")
+            if settings.model_cache_dir:
+                env.append(f"EMBLASE_MODEL_CACHE_DIR={settings.model_cache_dir}")
+        return env
+
     async def submit(
         self,
         model_name: str,
@@ -337,26 +392,7 @@ class OrionBackend(ComputeBackend):
             **script_kwargs,
         )
 
-        environment = [f"PATH={self.path}", f"HOME={self.home}", "SLURM_EXPORT_ENV=ALL",
-                       # Skip HuggingFace network checks — use local cache unconditionally.
-                       # Saves ~10s of HEAD requests when transformers models are pre-cached.
-                       "TRANSFORMERS_OFFLINE=1", "HF_DATASETS_OFFLINE=1"]
-        if inputs or output:
-            if not settings.tiled_server_uri:
-                raise ValueError(
-                    "EMBLASE_TILED_SERVER_URI is not set — required when using inputs or output."
-                )
-            environment.append(f"EMBLASE_TILED_SERVER_URI={settings.tiled_server_uri}")
-            if settings.tiled_api_key:
-                environment.append(f"EMBLASE_TILED_API_KEY={settings.tiled_api_key}")
-            if settings.tiled_access_tags:
-                environment.append(f"EMBLASE_TILED_ACCESS_TAGS={settings.tiled_access_tags}")
-        if settings.mlflow_tracking_uri:
-            environment.append(f"EMBLASE_MLFLOW_TRACKING_URI={settings.mlflow_tracking_uri}")
-            if settings.mlflow_api_key:
-                environment.append(f"EMBLASE_MLFLOW_API_KEY={settings.mlflow_api_key}")
-            if settings.model_cache_dir:
-                environment.append(f"EMBLASE_MODEL_CACHE_DIR={settings.model_cache_dir}")
+        environment = self._build_environment(require_tiled=bool(inputs or output))
 
         job_id = await self.client.submit_job(
             script=script,
@@ -420,3 +456,69 @@ class OrionBackend(ComputeBackend):
 
     async def cancel(self, job_id: str) -> None:
         await self.client.cancel_job(int(job_id))
+
+    async def submit_streaming(
+        self,
+        run_path: str,
+        output: str,
+        model_name: str,
+        batch_size: int = 8,
+        mlflow_version: str = "",
+        thumb_mode: str = "logroi",
+        image_key: str = "pil900KW_image",
+        ws_max_size: int = 16 * 1024 * 1024,
+        mem: str = "32G",
+        **kwargs: Any,
+    ) -> str:
+        """Submit a streaming inference job that subscribes to a BlueskyRun on Orion.
+
+        The job connects to Tiled via WebSocket, watches the run's image stream,
+        encodes frames incrementally, and writes embeddings until the stop document
+        is received.
+
+        Parameters
+        ----------
+        run_path:
+            Tiled path to the BlueskyRun container (e.g. ``smi/.../inputs_copy/run_xyz``).
+        output:
+            Tiled path to write embeddings into (e.g. ``smi/.../results/run_xyz``).
+        model_name, batch_size, mlflow_version, thumb_mode, image_key, ws_max_size:
+            Forwarded to the streaming inference script.
+        """
+        py_script = _render_streaming_inference_script(
+            model_name=model_name,
+            models_dir=self.models_dir,
+            run_path=run_path,
+            output=output,
+            batch_size=batch_size,
+            mlflow_version=mlflow_version,
+            thumb_mode=thumb_mode,
+            image_key=image_key,
+            ws_max_size=ws_max_size,
+        )
+
+        script = _build_sbatch_script(
+            working_dir=self.working_dir,
+            python_script=py_script,
+            project_dir=self.project_dir,
+            job_name=f"emblase-stream-{model_name}",
+            time_limit="0-02:00:00",
+            tiled_input=True,
+            mem=mem,
+        )
+
+        environment = self._build_environment(require_tiled=True)
+
+        job_id = await self.client.submit_job(
+            script=script,
+            working_dir=self.working_dir,
+            overrides={"tres_per_job": "gres/gpu:1", "account": self.account},
+            environment=environment,
+        )
+
+        self._jobs[job_id] = {
+            "job_dir": f"{self.working_dir}/job_{job_id}",
+            "model_name": model_name,
+            "output": output,
+        }
+        return str(job_id)

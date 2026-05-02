@@ -9,7 +9,11 @@ from emblase.tiled.client import (
     write_output,
     _log_thumb_fn,
     _LOG_THUMB_ROI,
+    _infer_param_specs,
+    _make_index_schema,
     THUMB_MODES,
+    LatentSpaceEmbedding,
+    ParamSpec,
 )
 
 
@@ -402,3 +406,376 @@ def test_write_output_thumb_fn_overrides_mode(mock_lse_cls, mock_create):
                  thumb_fn=custom_fn, thumb_mode="logroi")
 
     assert len(call_log) == 1 and call_log[0] is sentinel
+
+
+@patch("emblase.tiled.client.create_embedding_container")
+@patch("emblase.tiled.client.LatentSpaceEmbedding")
+def test_write_output_no_images_produces_zero_thumbnails(mock_lse_cls, mock_create):
+    """When images=None, thumbnails are zeros of the expected shape."""
+    embeddings = np.zeros((3, 4), dtype=np.float32)
+    container = MagicMock()
+    container.metadata = {"embedding_dim": 4, "thumb_shape": [8, 8]}
+    mock_create.return_value = container
+    root = MagicMock()
+    root.__getitem__ = MagicMock(side_effect=KeyError)
+
+    write_output(root, "results", embeddings, images=None, thumb_shape=(8, 8))
+
+    thumbnails = container.append.call_args.args[1]
+    assert thumbnails.shape == (3, 8, 8)
+    np.testing.assert_array_equal(thumbnails, 0.0)
+
+
+@patch("emblase.tiled.client.create_embedding_container")
+@patch("emblase.tiled.client.LatentSpaceEmbedding")
+def test_write_output_default_thumb_mode_resizes(mock_lse_cls, mock_create):
+    """thumb_mode='default' resizes frames to thumb_shape without normalisation."""
+    embeddings = np.zeros((2, 4), dtype=np.float32)
+    pixel_val = 42.0
+    images = [np.full((128, 256), pixel_val, dtype=np.float32) for _ in range(2)]
+    container = MagicMock()
+    container.metadata = {"embedding_dim": 4, "thumb_shape": [64, 64]}
+    mock_create.return_value = container
+    root = MagicMock()
+    root.__getitem__ = MagicMock(side_effect=KeyError)
+
+    write_output(root, "results", embeddings, images=images, thumb_mode="default")
+
+    thumbnails = container.append.call_args.args[1]
+    assert thumbnails.shape == (2, 64, 64)
+    # Constant-value image should survive resize unchanged.
+    np.testing.assert_allclose(thumbnails, pixel_val, rtol=1e-5)
+
+
+# ---------------------------------------------------------------------------
+# LatentSpaceEmbedding._write_arrays — projections always present
+# ---------------------------------------------------------------------------
+
+class _FakeLSE:
+    """Minimal stand-in for LatentSpaceEmbedding for _write_arrays testing."""
+
+    _write_arrays = LatentSpaceEmbedding._write_arrays
+
+    def __init__(self, proj_dim: int = 2):
+        self._arrays_initialised: bool | None = False
+        self._num_embeddings = 0
+        self.metadata = {"projection_dim": proj_dim}
+        self.access_blob = {}
+        self._written: dict = {}
+
+    def write_array(self, data, key, **kwargs):
+        arr = MagicMock()
+        arr.data = data.copy()
+        self._written[key] = arr
+        return arr
+
+    def __contains__(self, key):
+        return key in self._written
+
+    def __getitem__(self, key):
+        return self._written[key]
+
+
+def test_write_arrays_projections_nan_when_not_supplied():
+    """When projections=None, a NaN-filled (B, 2) array must be written."""
+    lse = _FakeLSE(proj_dim=2)
+    embeddings = np.zeros((3, 8), dtype=np.float32)
+    thumbnails = np.zeros((3, 16, 16), dtype=np.float32)
+
+    LatentSpaceEmbedding._write_arrays(lse, embeddings, thumbnails)
+
+    assert "projections" in lse._written
+    proj = lse._written["projections"].data
+    assert proj.shape == (3, 2)
+    assert proj.dtype == np.float32
+    assert np.all(np.isnan(proj))
+
+
+def test_write_arrays_projections_stored_when_supplied():
+    """When projections are provided they must be stored as-is."""
+    lse = _FakeLSE(proj_dim=2)
+    embeddings = np.zeros((3, 8), dtype=np.float32)
+    thumbnails = np.zeros((3, 16, 16), dtype=np.float32)
+    projections = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]], dtype=np.float32)
+
+    LatentSpaceEmbedding._write_arrays(lse, embeddings, thumbnails, projections=projections)
+
+    proj = lse._written["projections"].data
+    np.testing.assert_array_equal(proj, projections)
+
+
+def test_write_arrays_projections_shape_matches_batch():
+    """Shape of the stored projections must equal (batch_size, projection_dim)."""
+    for n in (1, 5, 16):
+        lse = _FakeLSE(proj_dim=2)
+        embeddings = np.zeros((n, 4), dtype=np.float32)
+        thumbnails = np.zeros((n, 8, 8), dtype=np.float32)
+        LatentSpaceEmbedding._write_arrays(lse, embeddings, thumbnails)
+        assert lse._written["projections"].data.shape == (n, 2), f"failed for n={n}"
+
+
+# ---------------------------------------------------------------------------
+# _make_index_schema — param column generation
+# ---------------------------------------------------------------------------
+
+class TestMakeIndexSchema:
+    def test_no_params_returns_base_schema(self):
+        schema = _make_index_schema()
+        names = schema.names
+        assert "path" in names
+        assert "timestamp" in names
+        assert not any(n.startswith("param_") for n in names)
+
+    def test_float_param_is_float64(self):
+        import pyarrow as pa
+        schema = _make_index_schema({"temp": {"dtype": "float", "units": "°C"}})
+        field = schema.field("param_temp")
+        assert field.type == pa.float64()
+        assert field.nullable
+
+    def test_integer_param_is_int64(self):
+        import pyarrow as pa
+        schema = _make_index_schema({"scan_id": {"dtype": "integer"}})
+        assert schema.field("param_scan_id").type == pa.int64()
+
+    def test_string_param_is_string(self):
+        import pyarrow as pa
+        schema = _make_index_schema({"sample": {"dtype": "string"}})
+        assert schema.field("param_sample").type == pa.string()
+
+    def test_boolean_param_is_bool(self):
+        import pyarrow as pa
+        schema = _make_index_schema({"is_cal": {"dtype": "boolean"}})
+        assert schema.field("param_is_cal").type == pa.bool_()
+
+    def test_multiple_params_all_present(self):
+        specs = {
+            "temperature": {"dtype": "float"},
+            "scan_id": {"dtype": "integer"},
+            "sample": {"dtype": "string"},
+        }
+        schema = _make_index_schema(specs)
+        assert "param_temperature" in schema.names
+        assert "param_scan_id" in schema.names
+        assert "param_sample" in schema.names
+
+    def test_unknown_dtype_raises(self):
+        with pytest.raises(ValueError, match="Unknown param dtype"):
+            _make_index_schema({"x": {"dtype": "array"}})  # type: ignore
+
+
+# ---------------------------------------------------------------------------
+# _infer_param_specs — dtype inference from values
+# ---------------------------------------------------------------------------
+
+class TestInferParamSpecs:
+    def test_float_values(self):
+        specs = _infer_param_specs({"temp": [25.1, 25.3]})
+        assert specs["temp"]["dtype"] == "float"
+
+    def test_int_values(self):
+        specs = _infer_param_specs({"scan_id": [1, 2, 3]})
+        assert specs["scan_id"]["dtype"] == "integer"
+
+    def test_bool_values(self):
+        specs = _infer_param_specs({"flag": [True, False]})
+        assert specs["flag"]["dtype"] == "boolean"
+
+    def test_string_values(self):
+        specs = _infer_param_specs({"sample": ["CsPbBr3", "MAPbI3"]})
+        assert specs["sample"]["dtype"] == "string"
+
+    def test_none_only_defaults_to_float(self):
+        specs = _infer_param_specs({"unknown": [None, None]})
+        assert specs["unknown"]["dtype"] == "float"
+
+    def test_none_skipped_to_find_sample(self):
+        specs = _infer_param_specs({"scan_id": [None, 42]})
+        assert specs["scan_id"]["dtype"] == "integer"
+
+    def test_multiple_params(self):
+        specs = _infer_param_specs({
+            "temp": [25.0], "scan_id": [1], "sample": ["A"]
+        })
+        assert specs["temp"]["dtype"] == "float"
+        assert specs["scan_id"]["dtype"] == "integer"
+        assert specs["sample"]["dtype"] == "string"
+
+
+# ---------------------------------------------------------------------------
+# LatentSpaceEmbedding.append — params validation
+# ---------------------------------------------------------------------------
+
+class _FakeLSEWithParams:
+    """Stand-in for LatentSpaceEmbedding with param support for append() testing."""
+
+    append = LatentSpaceEmbedding.append
+    _write_arrays = MagicMock()
+    num_embeddings = 0
+    _num_embeddings = 0
+
+    def __init__(self, param_specs=None):
+        import pyarrow as pa
+        self._param_specs = param_specs or {}
+        self._index_schema = _make_index_schema(self._param_specs)
+        self.metadata = {"embedding_dim": 4, "thumb_shape": [8, 8]}
+        self.embedding_dim = 4
+
+        # Track appended tables
+        self._appended = []
+
+        class FakeTable:
+            def append_partition(inner_self, partition, table):
+                self._appended.append(table)
+
+        self._index_table = FakeTable()
+        self._write_arrays = MagicMock()
+
+    def _write_arrays(self, *a, **kw):
+        pass
+
+
+def test_append_params_stored_in_index_table():
+    """Param values end up as columns in the PyArrow table passed to append_partition."""
+    lse = _FakeLSEWithParams({"temp": {"dtype": "float"}, "scan_id": {"dtype": "integer"}})
+    embeddings = np.zeros((2, 4), dtype=np.float32)
+    thumbnails = np.zeros((2, 8, 8), dtype=np.float32)
+
+    LatentSpaceEmbedding.append(
+        lse, embeddings, thumbnails,
+        paths=["a", "b"],
+        params={"temp": [25.1, 25.3], "scan_id": [1, 2]},
+    )
+
+    assert len(lse._appended) == 1
+    table = lse._appended[0]
+    assert "param_temp" in table.schema.names
+    assert "param_scan_id" in table.schema.names
+    assert table.column("param_temp").to_pylist() == [25.1, 25.3]
+    assert table.column("param_scan_id").to_pylist() == [1, 2]
+
+
+def test_append_missing_param_stored_as_null():
+    """A declared param absent from the params dict is stored as all-None."""
+    lse = _FakeLSEWithParams({"temp": {"dtype": "float"}, "sample": {"dtype": "string"}})
+    embeddings = np.zeros((2, 4), dtype=np.float32)
+    thumbnails = np.zeros((2, 8, 8), dtype=np.float32)
+
+    # Only supply "temp", omit "sample"
+    LatentSpaceEmbedding.append(
+        lse, embeddings, thumbnails,
+        paths=["a", "b"],
+        params={"temp": [25.0, 26.0]},
+    )
+
+    table = lse._appended[0]
+    assert table.column("param_sample").to_pylist() == [None, None]
+
+
+def test_append_unknown_param_raises():
+    """Supplying a param not in param_specs raises ValueError."""
+    lse = _FakeLSEWithParams({"temp": {"dtype": "float"}})
+    embeddings = np.zeros((2, 4), dtype=np.float32)
+    thumbnails = np.zeros((2, 8, 8), dtype=np.float32)
+
+    with pytest.raises(ValueError, match="Unknown parameter"):
+        LatentSpaceEmbedding.append(
+            lse, embeddings, thumbnails,
+            paths=["a", "b"],
+            params={"temp": [25.0, 26.0], "typo": [1, 2]},
+        )
+
+
+def test_append_param_wrong_length_raises():
+    """A param list with wrong length raises ValueError."""
+    lse = _FakeLSEWithParams({"temp": {"dtype": "float"}})
+    embeddings = np.zeros((3, 4), dtype=np.float32)
+    thumbnails = np.zeros((3, 8, 8), dtype=np.float32)
+
+    with pytest.raises(ValueError, match="expected 3 values"):
+        LatentSpaceEmbedding.append(
+            lse, embeddings, thumbnails,
+            paths=["a", "b", "c"],
+            params={"temp": [25.0, 26.0]},  # only 2, batch_size=3
+        )
+
+
+def test_append_no_params_ok_when_none_declared():
+    """append() with no params works fine on containers with no param_specs."""
+    lse = _FakeLSEWithParams({})
+    embeddings = np.zeros((2, 4), dtype=np.float32)
+    thumbnails = np.zeros((2, 8, 8), dtype=np.float32)
+
+    LatentSpaceEmbedding.append(
+        lse, embeddings, thumbnails, paths=["a", "b"],
+    )
+
+    table = lse._appended[0]
+    assert not any(n.startswith("param_") for n in table.schema.names)
+
+
+# ---------------------------------------------------------------------------
+# write_output — params forwarded correctly
+# ---------------------------------------------------------------------------
+
+@patch("emblase.tiled.client.create_embedding_container")
+@patch("emblase.tiled.client.LatentSpaceEmbedding")
+def test_write_output_passes_params_to_append(mock_lse_cls, mock_create):
+    """params dict is forwarded to container.append()."""
+    embeddings = np.zeros((2, 4), dtype=np.float32)
+    container = MagicMock()
+    container.metadata = {"embedding_dim": 4, "thumb_shape": [64, 64]}
+    mock_create.return_value = container
+
+    root = MagicMock()
+    root.__getitem__ = MagicMock(side_effect=KeyError)
+
+    params = {"temperature": [25.1, 25.3], "scan_id": [1, 2]}
+    write_output(root, "results", embeddings, params=params)
+
+    call = container.append.call_args
+    assert call.kwargs["params"] == params
+
+
+@patch("emblase.tiled.client.create_embedding_container")
+@patch("emblase.tiled.client.LatentSpaceEmbedding")
+def test_write_output_infers_param_specs_when_not_given(mock_lse_cls, mock_create):
+    """When param_specs is omitted, specs are inferred and passed to create_embedding_container."""
+    embeddings = np.zeros((2, 4), dtype=np.float32)
+    container = MagicMock()
+    container.metadata = {"embedding_dim": 4, "thumb_shape": [64, 64]}
+    mock_create.return_value = container
+
+    root = MagicMock()
+    root.__getitem__ = MagicMock(side_effect=KeyError)
+
+    write_output(root, "results", embeddings,
+                 params={"temp": [25.0, 26.0], "scan_id": [1, 2]})
+
+    _, kwargs = mock_create.call_args
+    specs = kwargs["params"]
+    assert specs["temp"]["dtype"] == "float"
+    assert specs["scan_id"]["dtype"] == "integer"
+
+
+@patch("emblase.tiled.client.create_embedding_container")
+@patch("emblase.tiled.client.LatentSpaceEmbedding")
+def test_write_output_uses_explicit_param_specs(mock_lse_cls, mock_create):
+    """Explicit param_specs override inference and are passed to create_embedding_container."""
+    embeddings = np.zeros((2, 4), dtype=np.float32)
+    container = MagicMock()
+    container.metadata = {"embedding_dim": 4, "thumb_shape": [64, 64]}
+    mock_create.return_value = container
+
+    root = MagicMock()
+    root.__getitem__ = MagicMock(side_effect=KeyError)
+
+    explicit_specs = {
+        "temp": {"dtype": "float", "units": "°C", "display_name": "Temperature"},
+    }
+    write_output(root, "results", embeddings,
+                 params={"temp": [25.0, 26.0]},
+                 param_specs=explicit_specs)
+
+    _, kwargs = mock_create.call_args
+    assert kwargs["params"] == explicit_specs
