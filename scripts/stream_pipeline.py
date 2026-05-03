@@ -115,6 +115,17 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument(
+        "--umap",
+        default=None,
+        metavar="NAME|false",
+        help=(
+            "UMAP projection behaviour. "
+            "Omit (default): fit from scratch over all embeddings after the run completes. "
+            "NAME: use a saved approximator (checks models_dir/<NAME> → MLflow). "
+            "'false'/'0': skip projections entirely and write NaN."
+        ),
+    )
+    p.add_argument(
         "--log-level",
         default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
@@ -191,6 +202,7 @@ def main() -> None:
         mlflow_version=args.mlflow_version,
         access_tags=access_tags,
         param_specs=param_specs,
+        umap=args.umap,
         loop=loop,
     )
 

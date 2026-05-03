@@ -34,6 +34,20 @@ _SLURM_STATE_MAP = {
 }
 
 
+def _umap_mode_and_name(umap: str | None) -> tuple[str, str]:
+    """Translate the ``--umap`` CLI value into (umap_mode, umap_name).
+
+    umap=None        → ("scratch", "")   — fit UMAP from scratch after encoding
+    umap="false"/0   → ("false",  "")   — write NaN projections, skip UMAP entirely
+    umap="<name>"    → ("name",   name) — resolve saved model by name
+    """
+    if umap is None:
+        return "scratch", ""
+    if umap.lower() in ("false", "0", "no", "none"):
+        return "false", ""
+    return "name", umap
+
+
 def _render_inference_script(
     model_name: str,
     models_dir: str,
@@ -45,9 +59,10 @@ def _render_inference_script(
     mlflow_version: str = "",
     thumb_mode: str = "default",
     param_specs: dict | None = None,
-    umap_dir: str = "",
+    umap: str | None = None,
 ) -> str:
     """Render the batch inference template with concrete values."""
+    umap_mode, umap_name = _umap_mode_and_name(umap)
     return _TEMPLATE.format(
         model_name=model_name,
         models_dir=models_dir,
@@ -59,7 +74,8 @@ def _render_inference_script(
         mlflow_version=mlflow_version,
         thumb_mode=thumb_mode,
         param_specs_json=json.dumps(param_specs or {}),
-        umap_dir=umap_dir,
+        umap_mode=umap_mode,
+        umap_name=umap_name,
     )
 
 
@@ -74,9 +90,10 @@ def _render_streaming_inference_script(
     image_key: str = "pil900KW_image",
     ws_max_size: int = 64 * 1024 * 1024,
     param_specs: dict | None = None,
-    umap_dir: str = "",
+    umap: str | None = None,
 ) -> str:
     """Render the streaming inference template with concrete values."""
+    umap_mode, umap_name = _umap_mode_and_name(umap)
     return _STREAMING_TEMPLATE.format(
         model_name=model_name,
         models_dir=models_dir,
@@ -88,7 +105,8 @@ def _render_streaming_inference_script(
         image_key=image_key,
         ws_max_size=ws_max_size,
         param_specs_json=json.dumps(param_specs or {}),
-        umap_dir=umap_dir,
+        umap_mode=umap_mode,
+        umap_name=umap_name,
     )
 
 
@@ -295,7 +313,6 @@ class OrionBackend(ComputeBackend):
         client: OrionClient | None = None,
         working_dir: str | None = None,
         models_dir: str | None = None,
-        umap_dir: str | None = None,
         project_dir: str | None = None,
         home: str | None = None,
         account: str | None = None,
@@ -304,7 +321,6 @@ class OrionBackend(ComputeBackend):
         self.client = client or OrionClient()
         self.working_dir = working_dir or settings.orion_working_dir
         self.models_dir = models_dir or settings.orion_models_dir
-        self.umap_dir = umap_dir or settings.orion_umap_dir
         self.project_dir = project_dir or settings.orion_project_dir
         self.home = home or settings.orion_home
         self.account = account or settings.orion_account
@@ -351,7 +367,7 @@ class OrionBackend(ComputeBackend):
         mlflow_version: str = "",
         thumb_mode: str = "default",
         param_specs: dict | None = None,
-        umap_dir: str = "",
+        umap: str | None = None,
         **kwargs: Any,
     ) -> str:
         """Submit a batch inference job.
@@ -367,6 +383,12 @@ class OrionBackend(ComputeBackend):
         Output:
           - ``output``: Tiled path to write embeddings into. If omitted, results are
             saved as ``output.npy`` in the job working directory only.
+
+        UMAP behaviour (``umap`` argument):
+          - ``None`` (default): fit UMAP from scratch over all embeddings after encoding.
+          - ``"<name>"``: resolve a saved UMAP approximator by name — check
+            ``models_dir/<name>`` on the node, then fall back to MLflow.
+          - ``"false"`` / ``"0"``: skip projections entirely; write NaN.
         """
         py_script = _render_inference_script(
             model_name=model_name,
@@ -379,7 +401,7 @@ class OrionBackend(ComputeBackend):
             mlflow_version=mlflow_version,
             thumb_mode=thumb_mode,
             param_specs=param_specs,
-            umap_dir=umap_dir or self.umap_dir,
+            umap=umap,
         )
 
         if images is not None:
@@ -485,7 +507,7 @@ class OrionBackend(ComputeBackend):
         ws_max_size: int = 64 * 1024 * 1024,
         mem: str = "32G",
         param_specs: dict | None = None,
-        umap_dir: str = "",
+        umap: str | None = None,
         **kwargs: Any,
     ) -> str:
         """Submit a streaming inference job that subscribes to a BlueskyRun on Orion.
@@ -496,6 +518,13 @@ class OrionBackend(ComputeBackend):
             Tiled path to the BlueskyRun container (e.g. ``smi/.../inputs_copy/run_xyz``).
         output:
             Tiled path to write embeddings into (e.g. ``smi/.../results/run_xyz``).
+        umap:
+            UMAP behaviour:
+            - ``None`` (default): fit UMAP from scratch over all accumulated embeddings
+              after the run completes.
+            - ``"<name>"``: resolve a saved UMAP approximator by name — check
+              ``models_dir/<name>`` on the node, then fall back to MLflow.
+            - ``"false"`` / ``"0"``: skip projections entirely; write NaN.
         param_specs:
             Optional dict mapping parameter names to ParamSpec dicts.  Each spec
             must include a ``source`` key of the form ``"primary.<array_key>"``
@@ -522,7 +551,7 @@ class OrionBackend(ComputeBackend):
             image_key=image_key,
             ws_max_size=ws_max_size,
             param_specs=param_specs,
-            umap_dir=umap_dir or self.umap_dir,
+            umap=umap,
         )
 
         script = _build_sbatch_script(

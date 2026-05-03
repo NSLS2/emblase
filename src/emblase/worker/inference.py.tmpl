@@ -16,7 +16,15 @@ Filled by _render_inference_script():
     {thumb_mode}        — thumbnail mode ("default" or "logroi")
     {param_specs_json}  — JSON dict mapping param name → ParamSpec
                           (source must be "primary.<array_key>")
-    {umap_dir}          — path to umap_approx dir; empty string → no projections
+    {umap_mode}         — one of: "name" | "scratch" | "false"
+    {umap_name}         — UMAP model name when umap_mode=="name", else ""
+
+UMAP behaviour:
+    umap_mode="name"    — resolve saved approximator: check models_dir/<umap_name>,
+                          then fall back to MLflow.  Apply per-batch after encoding.
+    umap_mode="scratch" — fit a fresh UMAP (umap-learn) over all embeddings at the end;
+                          projections written as a second pass via write_output.
+    umap_mode="false"   — skip entirely; write NaN projections.
 
 job_dir is read from the JOB_DIR environment variable (set by the sbatch script
 to working_dir/job_$SLURM_JOB_ID), so the folder name always matches slurm-<id>.out.
@@ -51,7 +59,8 @@ output         = "{output}"
 mlflow_version = "{mlflow_version}" or None
 thumb_mode     = "{thumb_mode}"
 param_specs    = json.loads('{param_specs_json}')
-umap_dir       = "{umap_dir}"
+umap_mode      = "{umap_mode}"   # "name" | "scratch" | "false"
+umap_name      = "{umap_name}"   # non-empty only when umap_mode=="name"
 
 _raw_tags = os.environ.get("EMBLASE_TILED_ACCESS_TAGS", "").strip()
 access_tags: list[str] | None = [t.strip() for t in _raw_tags.split(",") if t.strip()] or None
@@ -68,7 +77,8 @@ log.info("inputs     : %s", inputs or "(none)")
 log.info("output     : %s", output or "(none — saving output.npy)")
 log.info("access_tags: %s", access_tags or "(none)")
 log.info("param_specs: %s", list(param_specs.keys()))
-log.info("umap_dir   : %s", umap_dir or "(none)")
+log.info("umap_mode  : %s", umap_mode)
+log.info("umap_name  : %s", umap_name or "(n/a)")
 
 models_dir = "{models_dir}"
 if models_dir not in sys.path:
@@ -92,18 +102,41 @@ model = load_model(
 log.info("Model loaded in %.1f s", time.perf_counter() - t0)
 
 # ---------------------------------------------------------------------------
-# Optional UMAP approximator
+# UMAP approximator — resolved by name (local dir or MLflow)
 # ---------------------------------------------------------------------------
 _umap_model = None
 _umap_scaler = None
 
-if umap_dir:
+if umap_mode == "name":
     try:
         import joblib
         from pathlib import Path as _Path
-        _ud = _Path(umap_dir)
-        if str(_ud) not in sys.path:
-            sys.path.insert(0, str(_ud))
+        _ud = _Path(models_dir) / umap_name
+        if not _ud.is_dir():
+            # Fall back to MLflow — download to the same cache as the main model
+            log.info("UMAP model %r not found locally — pulling from MLflow", umap_name)
+            from emblase import mlflow_registry
+            import os as _os
+            _cache_root = _Path(
+                _os.environ.get("EMBLASE_MODEL_CACHE_DIR", "")
+                or _Path.home() / ".cache" / "emblase" / "models"
+            )
+            _version = mlflow_registry.resolve_version(
+                umap_name,
+                tracking_uri=_os.environ.get("EMBLASE_MLFLOW_TRACKING_URI") or None,
+                api_key=_os.environ.get("EMBLASE_MLFLOW_API_KEY") or None,
+            )
+            _ud = _cache_root / umap_name / f"v{{_version}}" / "model"
+            if not (_ud / "umap_approximator.pth").exists():
+                mlflow_registry.download_model_weights(
+                    model_name=umap_name, version=_version,
+                    dest_dir=_ud.parent,
+                    tracking_uri=_os.environ.get("EMBLASE_MLFLOW_TRACKING_URI") or None,
+                    api_key=_os.environ.get("EMBLASE_MLFLOW_API_KEY") or None,
+                )
+        _ud_str = str(_ud)
+        if _ud_str not in sys.path:
+            sys.path.insert(0, _ud_str)
         from neural_dimred_wrapper import SimpleDimRedApproximator
         _scaler_path = _ud / "scaler.pkl"
         _umap_scaler = joblib.load(_scaler_path) if _scaler_path.exists() else None
@@ -111,15 +144,18 @@ if umap_dir:
         _umap_model = SimpleDimRedApproximator(input_dim=_sd["network.0.weight"].shape[1])
         _umap_model.load_state_dict(_sd)
         _umap_model.eval().to(device)
-        log.info("UMAP approximator loaded from %s", umap_dir)
+        log.info("UMAP approximator loaded from %s", _ud)
     except Exception as _exc:
         log.warning("UMAP approximator not loaded — projections will be NaN: %s", _exc)
         _umap_model = None
 
 
 def _compute_projections(embeddings: np.ndarray) -> np.ndarray | None:
-    if _umap_model is None:
+    """Return (N, 2) projections, or None to signal 'write NaN'."""
+    if umap_mode == "false":
         return None
+    if _umap_model is None:
+        return None   # name mode but load failed — caller writes NaN
     X = embeddings.astype("float32")
     if _umap_scaler is not None:
         X = _umap_scaler.transform(X)
@@ -217,9 +253,24 @@ log.info("Encoded in %.1f s  →  shape: %s", time.perf_counter() - t0, embeddin
 # ---------------------------------------------------------------------------
 # UMAP projections
 # ---------------------------------------------------------------------------
-projections = _compute_projections(embeddings)
-if projections is not None:
-    log.info("Projections: %s", projections.shape)
+if umap_mode == "scratch":
+    log.info("Fitting UMAP from scratch over %d embeddings ...", len(embeddings))
+    try:
+        import umap as _umap_lib
+        _reducer = _umap_lib.UMAP(n_components=2, random_state=42)
+        projections = _reducer.fit_transform(embeddings.astype("float32"))
+        projections = projections.astype("float32")
+        log.info("Scratch UMAP done: %s", projections.shape)
+    except Exception as _exc:
+        log.warning("Scratch UMAP failed — projections will be NaN: %s", _exc)
+        projections = None
+elif umap_mode == "false":
+    log.info("UMAP disabled — projections will be NaN")
+    projections = None
+else:
+    projections = _compute_projections(embeddings)
+    if projections is not None:
+        log.info("Projections: %s", projections.shape)
 
 # ---------------------------------------------------------------------------
 # Save output.npy (always)

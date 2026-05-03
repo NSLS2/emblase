@@ -43,16 +43,21 @@ python scripts/submit_orion.py infer \
     --batch-size 1 \
     --thumb-mode logroi \
     --param      temperature:primary.LinkamThermal_temperature_current:float:°C \
-    --param      piezo_x:primary.piezo_x:float:μm \
-    --umap-dir   /nsls2/users/ymatviych/code/emblase/models/umap_approx
+    --param      piezo_x:primary.piezo_x:float:μm
 ```
 
 `--run` points at the BlueskyRun container; frames are read from
 `run/primary/<image_key>` (default `pil900KW_image`).
 `--param` stores scalar streams from the same primary event stream alongside
 each embedding in the `_index` table.
-`--umap-dir` triggers on-node UMAP projection — omit if not yet trained.
-`--umap-dir` defaults to `EMBLASE_ORION_UMAP_DIR` if set.
+
+**`--umap` controls UMAP projection behaviour:**
+
+| `--umap` value | Effect |
+|---|---|
+| *(omitted)* | Fit UMAP from scratch over all embeddings after encoding (default) |
+| `umap_approx` | Load saved approximator by name (`models_dir/umap_approx` → MLflow) |
+| `false` | Skip projections entirely — write NaN |
 
 The script polls every 5 s and prints progress. Check the full Slurm log:
 
@@ -113,7 +118,7 @@ env + model load), well before the copy finishes
 |---|---|---|
 | **When to use** | Complete runs, model iteration | Live acquisition |
 | **Params** | ✓ (`--param`) | ✓ (`--param`) |
-| **UMAP** | ✓ (`--umap-dir`) | ✓ (auto via `EMBLASE_ORION_UMAP_DIR`) |
+| **UMAP** | `--umap` (name / scratch / false) | `--umap` (name / scratch / false) |
 | **Latency** | All frames at once | Incremental, per batch |
 | **Setup** | Single command | Watcher must start before data arrives |
 
@@ -219,7 +224,6 @@ values.
 | `EMBLASE_TILED_API_KEY` | Tiled API key (write access) |
 | `EMBLASE_TILED_ACCESS_TAGS` | Comma-separated access tags applied to all written nodes |
 | `EMBLASE_ORION_API_KEY` | Orion REST API key |
-| `EMBLASE_ORION_UMAP_DIR` | Path to `umap_approx/` on Orion |
 | `EMBLASE_MLFLOW_TRACKING_URI` | MLflow tracking server URI |
 | `EMBLASE_MLFLOW_API_KEY` | MLflow API key |
 | `EMBLASE_MODEL_CACHE_DIR` | Local cache for downloaded MLflow model weights |

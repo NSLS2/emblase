@@ -1,17 +1,25 @@
 """Streaming inference script — runs on the compute node inside `pixi run python`.
 
 Filled by _render_streaming_inference_script():
-    {{models_dir}}     — absolute path to the models directory on the compute node
-    {{model_name}}     — short name ("vae", "vit") or MLflow registry name
-    {{batch_size}}     — number of frames per encode call
-    {{run_path}}       — Tiled path to the BlueskyRun to watch (e.g. smi/.../run_xyz)
-    {{output}}         — Tiled container path to write embeddings
-    {{mlflow_version}} — MLflow model version, or "" for latest
-    {{thumb_mode}}     — thumbnail mode ("default" or "logroi")
-    {{image_key}}      — key of the image array within the primary stream
-    {{ws_max_size}}    — WebSocket max message size in bytes
+    {{models_dir}}       — absolute path to the models directory on the compute node
+    {{model_name}}       — short name ("vae", "vit") or MLflow registry name
+    {{batch_size}}       — number of frames per encode call
+    {{run_path}}         — Tiled path to the BlueskyRun to watch (e.g. smi/.../run_xyz)
+    {{output}}           — Tiled container path to write embeddings
+    {{mlflow_version}}   — MLflow model version, or "" for latest
+    {{thumb_mode}}       — thumbnail mode ("default" or "logroi")
+    {{image_key}}        — key of the image array within the primary stream
+    {{ws_max_size}}      — WebSocket max message size in bytes
     {{param_specs_json}} — JSON dict mapping param name → ParamSpec (source: "primary.<key>")
-    {{umap_dir}}       — path to umap_approx dir; empty string → no on-the-fly projections
+    {{umap_mode}}        — one of: "name" | "scratch" | "false"
+    {{umap_name}}        — UMAP model name when umap_mode=="name", else ""
+
+UMAP behaviour:
+    umap_mode="name"    — resolve saved approximator: check models_dir/<umap_name>,
+                          then fall back to MLflow.  Apply per-batch in the writer thread.
+    umap_mode="scratch" — accumulate ALL embeddings; after stop-doc flush, fit a fresh
+                          UMAP (umap-learn) and rewrite projections in a second pass.
+    umap_mode="false"   — skip entirely; write NaN projections.
 
 Flow:
   1. Load model and connect to Tiled.
@@ -22,6 +30,8 @@ Flow:
   5. Subscribe to parent container (replay) → detect stop document.
   6. On stop doc: poll until _next_frame_idx stabilises (image WS has gone quiet),
      flush remaining frames, send sentinel to writer thread, wait for it to exit.
+  7. If umap_mode=="scratch": fit UMAP over all collected embeddings and update
+     projections in the output container.
 """
 
 import json
@@ -55,7 +65,8 @@ thumb_mode     = "{thumb_mode}"
 image_key      = "{image_key}"
 ws_max_size    = {ws_max_size}
 param_specs    = json.loads('{param_specs_json}')
-umap_dir       = "{umap_dir}"
+umap_mode      = "{umap_mode}"   # "name" | "scratch" | "false"
+umap_name      = "{umap_name}"   # non-empty only when umap_mode=="name"
 
 _raw_tags = os.environ.get("EMBLASE_TILED_ACCESS_TAGS", "").strip()
 access_tags: list[str] | None = [t.strip() for t in _raw_tags.split(",") if t.strip()] or None
@@ -70,7 +81,8 @@ log.info("thumb_mode : %s", thumb_mode)
 log.info("image_key  : %s", image_key)
 log.info("access_tags: %s", access_tags)
 log.info("param_specs: %s", list(param_specs.keys()))
-log.info("umap_dir   : %s", umap_dir or "(none)")
+log.info("umap_mode  : %s", umap_mode)
+log.info("umap_name  : %s", umap_name or "(n/a)")
 
 models_dir = "{models_dir}"
 if models_dir not in sys.path:
@@ -94,18 +106,41 @@ model = load_model(
 log.info("Model loaded in %.1f s", time.perf_counter() - t0)
 
 # ---------------------------------------------------------------------------
-# Optional UMAP approximator — loaded once at startup, applied per batch.
+# UMAP approximator — resolved by name (local dir or MLflow).
+# Only used when umap_mode == "name".
 # ---------------------------------------------------------------------------
 _umap_model = None
 _umap_scaler = None
 
-if umap_dir:
+if umap_mode == "name":
     try:
         import joblib
         from pathlib import Path as _Path
-        _ud = _Path(umap_dir)
-        if str(_ud) not in sys.path:
-            sys.path.insert(0, str(_ud))
+        _ud = _Path(models_dir) / umap_name
+        if not _ud.is_dir():
+            log.info("UMAP model %r not found locally — pulling from MLflow", umap_name)
+            from emblase import mlflow_registry
+            import os as _os
+            _cache_root = _Path(
+                _os.environ.get("EMBLASE_MODEL_CACHE_DIR", "")
+                or _Path.home() / ".cache" / "emblase" / "models"
+            )
+            _version = mlflow_registry.resolve_version(
+                umap_name,
+                tracking_uri=_os.environ.get("EMBLASE_MLFLOW_TRACKING_URI") or None,
+                api_key=_os.environ.get("EMBLASE_MLFLOW_API_KEY") or None,
+            )
+            _ud = _cache_root / umap_name / f"v{{_version}}" / "model"
+            if not (_ud / "umap_approximator.pth").exists():
+                mlflow_registry.download_model_weights(
+                    model_name=umap_name, version=_version,
+                    dest_dir=_ud.parent,
+                    tracking_uri=_os.environ.get("EMBLASE_MLFLOW_TRACKING_URI") or None,
+                    api_key=_os.environ.get("EMBLASE_MLFLOW_API_KEY") or None,
+                )
+        _ud_str = str(_ud)
+        if _ud_str not in sys.path:
+            sys.path.insert(0, _ud_str)
         from neural_dimred_wrapper import SimpleDimRedApproximator
         _scaler_path = _ud / "scaler.pkl"
         _umap_scaler = joblib.load(_scaler_path) if _scaler_path.exists() else None
@@ -113,13 +148,14 @@ if umap_dir:
         _umap_model = SimpleDimRedApproximator(input_dim=_sd["network.0.weight"].shape[1])
         _umap_model.load_state_dict(_sd)
         _umap_model.eval().to(device)
-        log.info("UMAP approximator loaded from %s", umap_dir)
+        log.info("UMAP approximator loaded from %s", _ud)
     except Exception as _exc:
         log.warning("UMAP approximator not loaded — projections will be NaN: %s", _exc)
         _umap_model = None
 
 
 def _compute_projections(embeddings):
+    """Apply named UMAP approximator.  Returns (N,2) or None."""
     if _umap_model is None:
         return None
     X = embeddings.astype("float32")
@@ -169,6 +205,13 @@ def _load_param_arrays() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Scratch-UMAP accumulator — collects all embeddings for a post-run fit.
+# Only populated when umap_mode == "scratch".
+# ---------------------------------------------------------------------------
+_all_embeddings: list[np.ndarray] = []  # each entry is (N, latent_dim)
+_all_embeddings_lock = threading.Lock()
+
+# ---------------------------------------------------------------------------
 # Writer thread — serialises all encode+write work through a queue.
 # Items: (frames, entries, frame_indices) or None (sentinel).
 # ---------------------------------------------------------------------------
@@ -192,9 +235,18 @@ def _writer_loop() -> None:
                 log.info("Encoded %d frame(s) in %.1f s → shape %s",
                          len(frames), time.perf_counter() - t0, embeddings.shape)
 
-                projections = _compute_projections(embeddings)
-                if projections is not None:
-                    log.info("Projections: %s", projections.shape)
+                # Accumulate for scratch UMAP
+                if umap_mode == "scratch":
+                    with _all_embeddings_lock:
+                        _all_embeddings.append(embeddings.copy())
+
+                # Per-batch projections: only for named approximator
+                if umap_mode == "name":
+                    projections = _compute_projections(embeddings)
+                    if projections is not None:
+                        log.info("Projections: %s", projections.shape)
+                else:
+                    projections = None  # scratch: fill later; false: stay NaN
 
                 batch_params = None
                 if param_specs:
@@ -343,6 +395,32 @@ for sub in _all_subs:
         sub.disconnect()
     except Exception:
         pass
+
+# ---------------------------------------------------------------------------
+# Scratch UMAP — fit over all embeddings and update projections in Tiled.
+# ---------------------------------------------------------------------------
+if umap_mode == "scratch" and not _writer_error:
+    with _all_embeddings_lock:
+        _collected = _all_embeddings[:]
+    if _collected:
+        _all_emb = np.vstack(_collected)
+        log.info("Fitting scratch UMAP over %d embeddings ...", len(_all_emb))
+        try:
+            import umap as _umap_lib
+            from emblase.tiled.client import _embedding_container_cache  # noqa
+            _reducer = _umap_lib.UMAP(n_components=2, random_state=42)
+            _proj = _reducer.fit_transform(_all_emb.astype("float32")).astype("float32")
+            log.info("Scratch UMAP done: %s", _proj.shape)
+            # Write projections back: locate the existing container and update.
+            _out_segs = [s for s in output.split("/") if s]
+            _out_node = tiled_client[tuple(_out_segs)]
+            _proj_node = _out_node["projections"]
+            _proj_node.write(_proj)
+            log.info("Projections written to %s/projections", output)
+        except Exception as _exc:
+            log.warning("Scratch UMAP failed — projections remain NaN: %s", _exc)
+    else:
+        log.warning("No embeddings collected — scratch UMAP skipped")
 
 log.info("=== Streaming inference done ===")
 

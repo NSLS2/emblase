@@ -28,16 +28,18 @@ The job reads all frames from ``run_path/primary/<image_key>``, encodes them,
 writes a ``LatentSpaceEmbedding`` container to ``--output``, and stores the
 requested scalar params in the ``_index`` table alongside each embedding.
 
-Add ``--umap-dir`` to also compute on-node UMAP projections::
+``--umap`` controls UMAP projection behaviour::
 
-    python scripts/submit_orion.py infer \\
-        --model   bnl-nsls2-smi-vit \\
-        --run     smi/sandbox/confab26_demo/inputs/run_1086139 \\
-        --output  smi/sandbox/confab26_demo/results/run_1086139_vit \\
-        --batch-size 1 \\
-        --thumb-mode logroi \\
-        --param temperature:primary.LinkamThermal_temperature_current:float:°C \\
-        --umap-dir /nsls2/users/ymatviych/code/emblase/models/umap_approx
+    # fit from scratch over all embeddings (default when --umap is omitted)
+    python scripts/submit_orion.py infer --model bnl-nsls2-smi-vit ...
+
+    # use a saved approximator by name (checks models_dir/<name> → MLflow)
+    python scripts/submit_orion.py infer --model bnl-nsls2-smi-vit \\
+        --umap umap_approx ...
+
+    # disable projections entirely (write NaN)
+    python scripts/submit_orion.py infer --model bnl-nsls2-smi-vit \\
+        --umap false ...
 
 Check the job log::
 
@@ -110,7 +112,7 @@ async def _infer(args):
     print(f"Models dir  : {backend.models_dir}")
 
     param_specs = _parse_param_specs(args.params)
-    umap_dir = args.umap_dir
+    umap = args.umap  # None | "false" | "<name>"
 
     submit_kwargs = dict(
         model_name=args.model,
@@ -119,7 +121,7 @@ async def _infer(args):
         thumb_mode=args.thumb_mode,
         mlflow_version=args.mlflow_version,
         param_specs=param_specs,
-        umap_dir=umap_dir,
+        umap=umap,
     )
 
     if args.run:
@@ -283,15 +285,15 @@ def main():
         ),
     )
     infer_p.add_argument(
-        "--umap-dir",
-        default="",
-        metavar="DIR",
+        "--umap",
+        default=None,
+        metavar="NAME|false",
         help=(
-            "Path to the umap_approx directory on Orion "
-            "(neural_dimred_wrapper.py + umap_approximator.pth + scaler.pkl). "
-            "When set, UMAP projections are computed on-node and written to the "
-            "projections array. Defaults to EMBLASE_ORION_UMAP_DIR env var / "
-            "OrionBackend.umap_dir."
+            "UMAP projection behaviour. "
+            "Omit (default): fit UMAP from scratch over all embeddings after encoding. "
+            "NAME: resolve a saved approximator by name — checks models_dir/<NAME> on the "
+            "node, then falls back to MLflow (e.g. --umap umap_approx). "
+            "'false' or '0': skip projections entirely and write NaN."
         ),
     )
 
