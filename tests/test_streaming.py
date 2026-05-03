@@ -2,6 +2,7 @@
 
 import asyncio
 import threading
+import time
 import types
 from unittest.mock import AsyncMock, MagicMock
 
@@ -43,7 +44,7 @@ def test_single_child_created_submits_once():
     watcher._on_child_created(_make_event("run_abc"))
 
     # Give the coroutine time to run
-    import time; time.sleep(0.2)
+    time.sleep(0.2)
 
     assert submit_mock.call_count == 1
 
@@ -56,7 +57,7 @@ def test_duplicate_child_created_submits_once():
     watcher._on_child_created(_make_event("run_abc"))
     watcher._on_child_created(_make_event("run_abc"))
 
-    import time; time.sleep(0.2)
+    time.sleep(0.2)
 
     assert submit_mock.call_count == 1
 
@@ -84,7 +85,7 @@ def test_concurrent_duplicate_child_created_submits_once():
     for t in threads:
         t.join()
 
-    import time; time.sleep(0.3)
+    time.sleep(0.3)
 
     assert submit_mock.call_count == 1
 
@@ -97,6 +98,6 @@ def test_different_runs_each_submit_once():
     watcher._on_child_created(_make_event("run_a"))
     watcher._on_child_created(_make_event("run_b"))
 
-    import time; time.sleep(0.2)
+    time.sleep(0.2)
 
     assert submit_mock.call_count == 2

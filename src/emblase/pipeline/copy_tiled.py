@@ -1,4 +1,4 @@
-"""Tiled deepcopy helpers.
+"""Tiled copy helpers.
 
 The ``deepcopy`` function copies a Tiled node into a destination container,
 mirroring its structure.  When *batch_delay* > 0, image arrays are written
@@ -170,4 +170,127 @@ def copy_table(src, dst, key, access_tags=None, batch_size=None, batch_delay: fl
         specs=src.specs,
         access_tags=access_tags or src.access_blob.get("tags", None),
     )
+
+
+# ---------------------------------------------------------------------------
+# LatentSpaceEmbedding copy
+# ---------------------------------------------------------------------------
+
+def copy_embedding(
+    src,
+    dst_parent,
+    rename: str | None = None,
+    batch_size: int = 16,
+    batch_delay: float = 0.0,
+    access_tags: list[str] | None = None,
+) -> "LatentSpaceEmbedding":
+    """Copy a ``LatentSpaceEmbedding`` container into *dst_parent*, batch by batch.
+
+    *src* and *dst_parent* may point to different Tiled servers — the function
+    only calls the public Python API on each client.
+
+    All arrays (embeddings, thumbnails, projections) and the ``_index`` table
+    are read from *src* in one shot, sorted by ``indx`` (or ``slice`` for older
+    containers without an ``indx`` column), then written to a new container
+    under *dst_parent* in batches of *batch_size* rows with *batch_delay*
+    seconds between batches.
+
+    ``notes`` and ``user_labels`` are intentionally skipped — they are
+    user-edited fields that do not exist during a live acquisition.
+
+    Parameters
+    ----------
+    src:
+        A ``LatentSpaceEmbedding`` client (source).
+    dst_parent:
+        The destination parent Tiled container (may be on a different server).
+    rename:
+        Base name for the new container key.  A Unix timestamp is appended
+        automatically (``<rename>_<ts>``).  Defaults to the source key.
+    batch_size:
+        Number of embeddings written per ``append()`` call.  Default 16.
+    batch_delay:
+        Seconds to sleep between batches.  0 means copy as fast as possible.
+    access_tags:
+        Tiled access tags applied to the new container and its children.
+
+    Returns
+    -------
+    LatentSpaceEmbedding
+        Client for the newly created destination container.
+    """
+    import numpy as np
+    from ..tiled.client import LatentSpaceEmbedding, create_embedding_container
+
+    if not isinstance(src, LatentSpaceEmbedding):
+        raise TypeError(
+            f"src must be a LatentSpaceEmbedding, got {type(src).__name__!r}"
+        )
+
+    src_meta = src.metadata
+    param_specs = src_meta.get("param_specs") or {}
+    embedding_dim = src_meta.get("embedding_dim", 512)
+    thumb_shape = tuple(src_meta.get("thumb_shape", [64, 64]))
+    model_name = src_meta.get("model_name", "")
+    model_version = src_meta.get("model_version", "")
+
+    base_name = rename or src.item["id"]
+    dst_key = f"{base_name}_{int(time.time())}"
+
+    # Read all source data up front
+    embeddings = src["embeddings"].read()    # (N, D)
+    thumbnails = src["thumbnails"].read()    # (N, *thumb_shape)
+    projections = src["projections"].read()  # (N, P)
+    idx_df = src.base["_index"].read()
+
+    # Sort by indx (stable join key) or fall back to slice for older containers
+    sort_col = "indx" if "indx" in idx_df.columns else "slice"
+    idx_df = idx_df.sort_values(sort_col, key=lambda s: s.astype(int)).reset_index(drop=True)
+    order = idx_df.index.tolist()
+    embeddings = embeddings[order]
+    thumbnails = thumbnails[order]
+    projections = projections[order]
+
+    n_total = len(embeddings)
+    param_names = list(param_specs.keys())
+
+    dst = create_embedding_container(
+        dst_parent,
+        dst_key,
+        embedding_dim=embedding_dim,
+        thumb_shape=thumb_shape,
+        model_name=model_name,
+        model_version=model_version,
+        params=param_specs,
+        access_tags=access_tags,
+    )
+
+    for start in range(0, n_total, batch_size):
+        end = min(start + batch_size, n_total)
+        rows = idx_df.iloc[start:end]
+
+        params = None
+        if param_names:
+            params = {
+                name: rows[f"param_{name}"].tolist()
+                for name in param_names
+                if f"param_{name}" in rows.columns
+            }
+
+        dst.append(
+            embeddings[start:end].astype(np.float32),
+            thumbnails[start:end].astype(np.float32),
+            paths=rows["path"].tolist(),
+            slices=rows["slice"].tolist(),
+            model_version=model_version or None,
+            timestamps=rows["timestamp"].tolist(),
+            projections=projections[start:end].astype(np.float32),
+            params=params,
+            access_tags=access_tags,
+        )
+
+        if batch_delay > 0 and end < n_total:
+            time.sleep(batch_delay)
+
+    return dst
 

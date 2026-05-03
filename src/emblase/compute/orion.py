@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import io
+import json
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -67,7 +69,6 @@ def _render_streaming_inference_script(
     umap_dir: str = "",
 ) -> str:
     """Render the streaming inference template with concrete values."""
-    import json
     return _STREAMING_TEMPLATE.format(
         model_name=model_name,
         models_dir=models_dir,
@@ -262,19 +263,13 @@ class OrionClient:
         Uses wall-clock time (monotonic) so sleep jitter doesn't accumulate.
         Default timeout is 30 minutes — enough for any normal inference job.
         """
-        import time
-
         deadline = time.monotonic() + timeout
         info = None
         while time.monotonic() < deadline:
             info = await self.get_job(job_id)
-            if info.state in (
-                "COMPLETED",
-                "FAILED",
-                "CANCELLED",
-                "TIMEOUT",
-                "NODE_FAIL",
-                "OUT_OF_MEMORY",
+            if info.state in _SLURM_STATE_MAP and _SLURM_STATE_MAP[info.state] in (
+                JobStatus.completed,
+                JobStatus.failed,
             ):
                 return info
             await asyncio.sleep(poll_interval)

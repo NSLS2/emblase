@@ -7,7 +7,6 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import Union
 
 import numpy as np
 import torch
@@ -149,7 +148,7 @@ def _load_from_mlflow(model_name: str, **kwargs) -> torch.nn.Module:
 
 def encode(
     model: torch.nn.Module,
-    images: Union[torch.Tensor, list[np.ndarray]],
+    images: torch.Tensor | list[np.ndarray],
     batch_size: int = 1,
 ) -> np.ndarray:
     """Run the encoder and return output as a ``(B, latent_dim)`` numpy array.

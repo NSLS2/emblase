@@ -129,23 +129,13 @@ def _parse_param_specs(param_strs: list[str]) -> dict | None:
         return None
     specs: dict = {}
     for s in param_strs:
-        parts = s.split(":", 3)
+        parts = s.split(":")
         if len(parts) < 2:
             sys.exit(f"Invalid --param spec {s!r}: expected name:source[:dtype[:units]]")
         name = parts[0]
         source = parts[1]
-        if len(parts) > 2:
-            source = f"{parts[1]}:{parts[2]}" if ":" not in parts[1] else parts[1]
-            # re-split properly: name source dtype units
-        # Re-parse cleanly
-        parts2 = s.split(":")
-        name = parts2[0]
-        # source may be "primary.key" — no colon, so safe to rejoin from idx 1
-        # Format: name : stream . key : dtype : units
-        # Since source contains a dot (not colon), parts[1] is always the source
-        source = parts2[1]
-        dtype = parts2[2] if len(parts2) > 2 else "float"
-        units = parts2[3] if len(parts2) > 3 else ""
+        dtype = parts[2] if len(parts) > 2 else "float"
+        units = parts[3] if len(parts) > 3 else ""
         specs[name] = {"source": source, "dtype": dtype, "units": units}
     return specs
 

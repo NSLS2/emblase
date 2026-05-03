@@ -1,16 +1,29 @@
 """Simulate incremental arrival of Orion inference results into a local Tiled server.
 
 Reads an existing ``LatentSpaceEmbedding`` container from a remote Tiled server
-and re-writes it row-by-row into a local Tiled server, with an optional delay
+and re-writes it batch-by-batch into a local Tiled server with an optional delay
 between batches.  This lets you develop and test the WebUI against a realistic
 live-updating data stream without running Orion.
 
-The destination container is created fresh on the local server with the same
-metadata (model_name, param_specs, embedding_dim, etc.) as the source.
+The core logic lives in ``emblase.pipeline.copy_tiled.copy_embedding`` and can
+be called directly from IPython with already-initialised clients::
 
-Example
--------
-Stream results from the remote sandbox into a local Tiled instance::
+    from tiled.client import from_uri
+    from emblase.pipeline.copy_tiled import copy_embedding
+
+    remote = from_uri("https://tiled.nsls2.bnl.gov", api_key="...")
+    local  = from_uri("http://localhost:8000", api_key="secret")
+
+    src = remote["smi", "sandbox", "confab26_demo", "results", "run_live_1086139_1777770235"]
+    dst_parent = local["results"]
+
+    dst = copy_embedding(src, dst_parent, rename="run_live_1086139",
+                         batch_size=16, batch_delay=2.0)
+    print(dst)
+
+CLI example
+-----------
+::
 
     python scripts/simulate_results.py \\
         --src  smi/sandbox/confab26_demo/results/run_live_1086139_1777770235 \\
@@ -27,10 +40,10 @@ The script connects to two Tiled servers:
 
 Notes
 -----
-- ``_index`` rows are sorted by ``slice`` (source frame index) before replay,
-  so batches arrive in acquisition order regardless of SQL row ordering.
-- ``projections`` are written per-batch if present and non-NaN; NaN rows are
-  written as NaN (i.e. not yet computed) to faithfully simulate the pipeline.
+- ``_index`` rows are sorted by ``indx`` (or ``slice`` for older containers)
+  before replay, so batches arrive in acquisition order regardless of SQL row
+  ordering.
+- ``projections`` are written per-batch (NaN rows are preserved as-is).
 - ``notes`` and ``user_labels`` are intentionally skipped — they are user edits
   that would not exist yet during a live acquisition.
 """
@@ -40,7 +53,6 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
@@ -51,11 +63,11 @@ try:
 except ImportError:
     pass
 
-import numpy as np
 from tiled.client import from_uri
 
 from emblase.config import settings
-from emblase.tiled.client import LatentSpaceEmbedding, create_embedding_container
+from emblase.pipeline.copy_tiled import copy_embedding
+from emblase.tiled.client import LatentSpaceEmbedding
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -72,7 +84,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--dst",
         required=True,
         metavar="TILED_PATH",
-        help="Destination container path on the local Tiled server (parent of the new run node).",
+        help="Destination parent path on the local Tiled server.",
     )
     p.add_argument(
         "--rename",
@@ -143,104 +155,22 @@ def main() -> None:
     except KeyError:
         sys.exit(f"Destination parent not found: {args.dst}")
 
-    base_name = args.rename or src_segments[-1]
-    ts = int(time.time())
-    dst_key = f"{base_name}_{ts}"
-
     access_tags = [t.strip() for t in args.access_tags.split(",") if t.strip()] or None
 
-    # --- read source metadata ---
-    src_meta = src_node.metadata
-    param_specs = src_meta.get("param_specs") or {}
-    embedding_dim = src_meta.get("embedding_dim", 512)
-    thumb_shape = tuple(src_meta.get("thumb_shape", [64, 64]))
-    model_name = src_meta.get("model_name", "")
-    model_version = src_meta.get("model_version", "")
-
-    # --- read and sort source data by slice (frame index) ---
-    print(f"Reading source: {args.src}")
-    embeddings  = src_node["embeddings"].read()   # (N, D)
-    thumbnails  = src_node["thumbnails"].read()   # (N, H, W)
-    projections = src_node["projections"].read()  # (N, 2)
-    idx_df      = src_node.base["_index"].read()
-
-    # Sort by indx (row offset in embeddings/projections arrays) if present,
-    # falling back to slice (source frame index) for older containers.
-    sort_col = "indx" if "indx" in idx_df.columns else "slice"
-    idx_df = idx_df.sort_values(sort_col, key=lambda s: s.astype(int)).reset_index(drop=True)
-    sort_order = idx_df.index.tolist()
-
-    # Re-order arrays to match sorted index
-    embeddings  = embeddings[sort_order]
-    thumbnails  = thumbnails[sort_order]
-    projections = projections[sort_order]
-
-    n_total = len(embeddings)
-    print(f"Source has {n_total} embeddings, embedding_dim={embedding_dim}")
-    print(f"Destination: {args.dst}/{dst_key}")
+    n_total = src_node.num_embeddings
+    print(f"Source: {args.src}  ({n_total} embeddings, dim={src_node.embedding_dim})")
+    print(f"Destination parent: {args.dst}  (local: {args.local_uri})")
     print(f"batch_size={args.batch_size}, batch_delay={args.batch_delay} s")
 
-    # --- create destination container ---
-    dst_container = create_embedding_container(
+    dst = copy_embedding(
+        src_node,
         dst_parent,
-        dst_key,
-        embedding_dim=embedding_dim,
-        thumb_shape=thumb_shape,
-        model_name=model_name,
-        model_version=model_version,
-        params=param_specs,
+        rename=args.rename,
+        batch_size=args.batch_size,
+        batch_delay=args.batch_delay,
         access_tags=access_tags,
     )
-    print(f"Created destination container: {args.dst}/{dst_key}")
-
-    # --- stream batches ---
-    param_names = list(param_specs.keys())
-
-    for start in range(0, n_total, args.batch_size):
-        end = min(start + args.batch_size, n_total)
-        batch_slice = slice(start, end)
-        n = end - start
-
-        emb_batch  = embeddings[batch_slice]
-        thumb_batch = thumbnails[batch_slice]
-        proj_batch  = projections[batch_slice]
-        rows        = idx_df.iloc[batch_slice]
-
-        # source_entries: (path, slice_str) per embedding
-        source_entries = [
-            (str(rows["path"].iloc[i]), str(rows["slice"].iloc[i]))
-            for i in range(n)
-        ]
-
-        # params dict
-        params = None
-        if param_names:
-            params = {
-                name: rows[f"param_{name}"].tolist()
-                for name in param_names
-                if f"param_{name}" in rows.columns
-            }
-
-        dst_container.append(
-            emb_batch.astype(np.float32),
-            thumb_batch.astype(np.float32),
-            paths=[e[0] for e in source_entries],
-            slices=[e[1] for e in source_entries],
-            model_version=model_version or None,
-            timestamps=rows["timestamp"].tolist(),
-            projections=proj_batch.astype(np.float32),
-            params=params,
-            access_tags=access_tags,
-        )
-        print(
-            f"  [{end:>4}/{n_total}] wrote indx "
-            f"{rows[sort_col].iloc[0]}–{rows[sort_col].iloc[-1]}"
-        )
-
-        if args.batch_delay > 0 and end < n_total:
-            time.sleep(args.batch_delay)
-
-    print(f"Done. {n_total} embeddings written to {args.dst}/{dst_key}")
+    print(f"Done. {n_total} embeddings written → {dst}")
 
 
 if __name__ == "__main__":

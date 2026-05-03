@@ -26,6 +26,7 @@ import asyncio
 import logging
 import os
 import threading
+import urllib.parse
 from typing import Any
 
 # websockets uses ssl.create_default_context() which on some systems may not
@@ -46,12 +47,11 @@ logger = logging.getLogger(__name__)
 
 def _tiled_path(node: Any) -> str:
     """Return the slash-joined Tiled path for a node."""
-    uri = str(node.uri)
+    parsed = urllib.parse.urlparse(str(node.uri))
     marker = "/api/v1/metadata/"
-    idx = uri.find(marker)
-    if idx == -1:
-        raise ValueError(f"Cannot parse path from URI: {uri}")
-    return uri[idx + len(marker):].strip("/")
+    if marker not in parsed.path:
+        raise ValueError(f"Cannot parse path from URI: {node.uri}")
+    return parsed.path[parsed.path.index(marker) + len(marker):].strip("/")
 
 
 # ---------------------------------------------------------------------------
@@ -109,20 +109,22 @@ class InputsWatcher:
         self._seen_runs_lock = threading.Lock()
         self._sub: Any = None
 
-    def start(self, replay_existing: bool = True) -> None:
-        """Start watching. Blocks until ``stop()`` is called."""
+    def _subscribe(self, replay_existing: bool):
+        """Create subscription and attach callback; return (sub, start_seq)."""
         start_seq = 1 if replay_existing else None
         logger.info("InputsWatcher watching %s", _tiled_path(self.inputs_node))
-        self._sub = self.inputs_node.subscribe()
-        self._sub.child_created.add_callback(self._on_child_created)
+        sub = self.inputs_node.subscribe()
+        sub.child_created.add_callback(self._on_child_created)
+        return sub, start_seq
+
+    def start(self, replay_existing: bool = True) -> None:
+        """Start watching. Blocks until ``stop()`` is called."""
+        self._sub, start_seq = self._subscribe(replay_existing)
         self._sub.start(start=start_seq)  # blocks
 
     def start_in_thread(self, replay_existing: bool = True) -> "InputsWatcher":
         """Start in a background thread; returns once WS is connected."""
-        start_seq = 1 if replay_existing else None
-        logger.info("InputsWatcher watching %s (background)", _tiled_path(self.inputs_node))
-        self._sub = self.inputs_node.subscribe()
-        self._sub.child_created.add_callback(self._on_child_created)
+        self._sub, start_seq = self._subscribe(replay_existing)
         self._sub.start_in_thread(start=start_seq)
         return self
 
