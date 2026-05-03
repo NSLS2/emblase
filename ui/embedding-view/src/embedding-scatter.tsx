@@ -850,14 +850,17 @@ function EmbeddingScatter({
 
     const dpr = window.devicePixelRatio || 1;
     const w = Math.round(canvas.getBoundingClientRect().width) || canvasWidthRef.current;
-    if (w === 0) return; // not yet laid out — next render will pick it up
+    if (w === 0) return;
     canvasWidthRef.current = w;
-    // Lock CSS size to logical pixels so the browser never stretches the buffer.
-    canvas.width = w * dpr;
-    canvas.height = CANVAS_HEIGHT * dpr;
-    canvas.style.width = `${w}px`;
-    canvas.style.height = `${CANVAS_HEIGHT}px`;
-    ctx.scale(dpr, dpr);
+    const targetW = w * dpr;
+    const targetH = CANVAS_HEIGHT * dpr;
+    if (canvas.width !== targetW || canvas.height !== targetH) {
+      canvas.width = targetW;
+      canvas.height = targetH;
+      canvas.style.width = `${w}px`;
+      canvas.style.height = `${CANVAS_HEIGHT}px`;
+    }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
     ctx.fillStyle = "#fafafa";
     ctx.fillRect(0, 0, w, CANVAS_HEIGHT);
