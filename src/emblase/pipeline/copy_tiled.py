@@ -197,6 +197,7 @@ def copy_embedding(
 
     ``notes`` and ``user_labels`` are intentionally skipped — they are
     user-edited fields that do not exist during a live acquisition.
+    ``label`` (classifier-assigned) is preserved if present.
 
     Parameters
     ----------
@@ -277,6 +278,13 @@ def copy_embedding(
                 if f"param_{name}" in rows.columns
             }
 
+        labels = None
+        if "label" in rows.columns:
+            raw = rows["label"].tolist()
+            # Only pass labels if at least one is non-null
+            if any(v is not None and str(v) != "" for v in raw):
+                labels = [v if (v is not None and str(v) != "") else "" for v in raw]
+
         dst.append(
             embeddings[start:end].astype(np.float32),
             thumbnails[start:end].astype(np.float32),
@@ -286,6 +294,7 @@ def copy_embedding(
             timestamps=rows["timestamp"].tolist(),
             projections=projections[start:end].astype(np.float32),
             params=params,
+            labels=labels,
             access_tags=access_tags,
         )
 
