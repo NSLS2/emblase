@@ -32,6 +32,20 @@ log = logging.getLogger(__name__)
 # Internal helpers
 # ---------------------------------------------------------------------------
 
+def _hidden_dims_from_state_dict(state_dict: dict) -> list[int]:
+    """Infer hidden layer sizes from a SimpleDimRedApproximator state dict.
+
+    The network is a Sequential of (Linear, ReLU, ..., Linear).
+    Weight keys are network.0.weight, network.2.weight, ... network.{2n}.weight.
+    All but the last Linear are hidden layers; their output sizes are hidden_dims.
+    """
+    weight_keys = sorted(
+        k for k in state_dict if k.startswith("network.") and k.endswith(".weight")
+    )
+    # All except the last are hidden layers
+    return [state_dict[k].shape[0] for k in weight_keys[:-1]]
+
+
 def _load_approximator(umap_dir: str | Path):
     """Load scaler + MLP from the umap_approx directory.
 
@@ -69,11 +83,12 @@ def _load_approximator(umap_dir: str | Path):
     if first_weight is None:
         raise ValueError("Unexpected state_dict format — 'network.0.weight' not found")
     input_dim = first_weight.shape[1]
+    hidden_dims = _hidden_dims_from_state_dict(state_dict)
 
-    model = SimpleDimRedApproximator(input_dim=input_dim)
+    model = SimpleDimRedApproximator(input_dim=input_dim, hidden_dims=hidden_dims)
     model.load_state_dict(state_dict)
     model.eval().to(device)
-    log.info("MLP loaded: input_dim=%d → 2", input_dim)
+    log.info("MLP loaded: input_dim=%d hidden=%s → 2", input_dim, hidden_dims)
 
     return model, scaler, device
 

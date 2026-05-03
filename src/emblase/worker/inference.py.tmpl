@@ -141,7 +141,11 @@ if umap_mode == "name":
         _scaler_path = _ud / "scaler.pkl"
         _umap_scaler = joblib.load(_scaler_path) if _scaler_path.exists() else None
         _sd = torch.load(_ud / "umap_approximator.pth", map_location=device, weights_only=True)
-        _umap_model = SimpleDimRedApproximator(input_dim=_sd["network.0.weight"].shape[1])
+        _weight_keys = sorted(k for k in _sd if k.startswith("network.") and k.endswith(".weight"))
+        _hidden_dims = [_sd[k].shape[0] for k in _weight_keys[:-1]]
+        _umap_model = SimpleDimRedApproximator(
+            input_dim=_sd["network.0.weight"].shape[1], hidden_dims=_hidden_dims
+        )
         _umap_model.load_state_dict(_sd)
         _umap_model.eval().to(device)
         log.info("UMAP approximator loaded from %s", _ud)
