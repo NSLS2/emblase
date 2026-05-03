@@ -6,6 +6,13 @@ declare global {
   }
 }
 
+interface WsConn {
+  ws: WebSocket | null;
+  timer: ReturnType<typeof setTimeout> | null;
+  connected: boolean;
+  schemaReceived: boolean;
+}
+
 /** Return auth headers if a token is available (works with or without auth). */
 function authHeaders(extra?: Record<string, string>): Record<string, string> {
   const h: Record<string, string> = { ...extra };
@@ -18,7 +25,7 @@ function authHeaders(extra?: Record<string, string>): Record<string, string> {
 function useAuthBlobUrl(url: string | null): string | null {
   const [blobUrl, setBlobUrl] = React.useState<string | null>(null);
   React.useEffect(() => {
-    if (!url) { setBlobUrl(null); return; }
+    if (!url) { setBlobUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return null; }); return; }
     let objectUrl: string | null = null;
     let cancelled = false;
     fetch(url, { headers: authHeaders() })
@@ -26,11 +33,13 @@ function useAuthBlobUrl(url: string | null): string | null {
       .then((blob) => {
         if (cancelled) return;
         objectUrl = URL.createObjectURL(blob);
-        setBlobUrl(objectUrl);
+        setBlobUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return objectUrl; });
       })
-      .catch(() => { if (!cancelled) setBlobUrl(null); });
+      .catch(() => { if (!cancelled) setBlobUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return null; }); });
     return () => {
       cancelled = true;
+      // objectUrl may not be assigned yet if fetch is still in-flight;
+      // the setBlobUrl functional updater above handles that case on resolve.
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
   }, [url]);
@@ -39,10 +48,14 @@ function useAuthBlobUrl(url: string | null): string | null {
 
 /** <img> that fetches via auth headers (works with and without auth). */
 function AuthImg(props: React.ImgHTMLAttributes<HTMLImageElement>) {
-  const { src, ...rest } = props;
+  const { src, style, ...rest } = props;
   const blobUrl = useAuthBlobUrl(src ?? null);
-  if (!blobUrl) return null;
-  return React.createElement("img", { ...rest, src: blobUrl });
+  if (!blobUrl)
+    return React.createElement("div", {
+      style: { background: "#e0e0e0", ...style },
+      ...rest,
+    });
+  return React.createElement("img", { ...rest, src: blobUrl, style });
 }
 
 interface EmbeddingPoint {
@@ -170,8 +183,11 @@ function resolvePointColor(
 function encodeUtf32LE(str: string, maxLen: number): ArrayBuffer {
   const buf = new ArrayBuffer(maxLen * 4);
   const view = new Uint32Array(buf);
-  for (let i = 0; i < Math.min(str.length, maxLen); i++) {
-    view[i] = str.codePointAt(i) || 0;
+  let out = 0;
+  for (let i = 0; i < str.length && out < maxLen; ) {
+    const cp = str.codePointAt(i) ?? 0;
+    view[out++] = cp;
+    i += cp > 0xffff ? 2 : 1; // surrogate pairs occupy 2 UTF-16 code units
   }
   return buf;
 }
@@ -214,12 +230,11 @@ function fitViewToPoints(
   height: number,
 ): ViewState {
   if (pts.length === 0) return { offsetX: 0, offsetY: 0, scale: 1 };
-  const xs = pts.map((p) => p.x);
-  const ys = pts.map((p) => p.y);
-  const minX = Math.min(...xs);
-  const maxX = Math.max(...xs);
-  const minY = Math.min(...ys);
-  const maxY = Math.max(...ys);
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const { x, y } of pts) {
+    if (x < minX) minX = x; if (x > maxX) maxX = x;
+    if (y < minY) minY = y; if (y > maxY) maxY = y;
+  }
   const rangeX = maxX - minX || 1;
   const rangeY = maxY - minY || 1;
   const padding = 0.1;
@@ -275,6 +290,13 @@ function RangeSlider({
   const dragging = React.useRef<"lo" | "hi" | null>(null);
   const fmt = (v: number) => v.toFixed(precision ?? 2);
   const span = max - min || 1;
+  // Keep mutable refs so the stable effect closure always sees fresh values
+  const valueRef = React.useRef(value);
+  valueRef.current = value;
+  const onChangeRef = React.useRef(onChange);
+  onChangeRef.current = onChange;
+  const spanRef = React.useRef(span);
+  spanRef.current = span;
 
   const loFrac = (value[0] - min) / span;
   const hiFrac = (value[1] - min) / span;
@@ -290,11 +312,13 @@ function RangeSlider({
     function onMove(e: MouseEvent) {
       if (!dragging.current) return;
       const frac = fracFromEvent(e.clientX);
-      const v = min + frac * span;
+      const v = min + frac * spanRef.current;
+      const cur = valueRef.current;
+      const sp = spanRef.current;
       if (dragging.current === "lo") {
-        onChange(Math.min(v, value[1] - span / 200), value[1]);
+        onChangeRef.current(Math.min(v, cur[1] - sp / 200), cur[1]);
       } else {
-        onChange(value[0], Math.max(v, value[0] + span / 200));
+        onChangeRef.current(cur[0], Math.max(v, cur[0] + sp / 200));
       }
     }
     function onUp() { dragging.current = null; }
@@ -304,7 +328,7 @@ function RangeSlider({
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
-  }, [min, max, value, onChange, span]);
+  }, [min]); // only re-attach if min changes (needed for fracFromEvent calc)
 
   const BAR_HEIGHT = 14;
   const gradientStops = Array.from({ length: 10 }, (_, i) => viridis(i / 9)).join(", ");
@@ -528,7 +552,7 @@ function EmbeddingScatter({
     } catch {
       return undefined;
     }
-  }, [apiUrl, nodePath]);
+  }, [apiUrl, nodePath, paramNames]);
 
   const fitView = React.useCallback(() => {
     if (points.length === 0) return;
@@ -590,13 +614,6 @@ function EmbeddingScatter({
 
     const wsScheme = window.location.protocol === "https:" ? "wss:" : "ws:";
     const wsBase = `${wsScheme}//${window.location.host}/api/v1/stream/single/${nodePath}`;
-
-    interface WsConn {
-      ws: WebSocket | null;
-      timer: ReturnType<typeof setTimeout> | null;
-      connected: boolean;
-      schemaReceived: boolean;
-    }
 
     const proj: WsConn = { ws: null, timer: null, connected: false, schemaReceived: false };
     const idx: WsConn = { ws: null, timer: null, connected: false, schemaReceived: false };
@@ -756,13 +773,13 @@ function EmbeddingScatter({
               return p;
             });
           }
-          // Points don't exist yet; buffer metadata
-          pendingMeta.set(pointCountRef.current, { labels, paths, params });
+          // Points don't exist yet; buffer under startIdx so applyMeta can find it
+          pendingMeta.set(startIdx, { labels, paths, params });
           return prev;
         });
       } else {
-        // Projection event hasn't arrived yet; buffer metadata
-        pendingMeta.set(pointCountRef.current, { labels, paths, params });
+        // Projection event hasn't arrived yet; buffer under startIdx (will be >= 0 when it does)
+        pendingMeta.set(Math.max(0, startIdx), { labels, paths, params });
       }
     }
 
@@ -817,13 +834,11 @@ function EmbeddingScatter({
     return { paramMin: mn, paramMax: mx };
   }, [points, colorBy, paramNames]);
 
-  // When new live data extends the param range, if the existing paramRange
-  // now covers the full extent, clear it (equivalent to no filter).
+  // When new live data extends the param range past the current filter, clear it.
   React.useEffect(() => {
-    if (!paramRange) return;
-    if (paramRange[0] <= paramMin && paramRange[1] >= paramMax) {
-      setParamRange(null);
-    }
+    setParamRange((prev) =>
+      prev && prev[0] <= paramMin && prev[1] >= paramMax ? null : prev,
+    );
   }, [paramMin, paramMax]);
 
   // Draw canvas
@@ -846,19 +861,13 @@ function EmbeddingScatter({
     ctx.lineWidth = 1;
     const gridStep = 50 * view.scale;
     if (gridStep > 10) {
-      const startX = view.offsetX % gridStep;
+      const startX = ((view.offsetX % gridStep) + gridStep) % gridStep; // always positive
       for (let x = startX; x < canvasWidth; x += gridStep) {
-        ctx.beginPath();
-        ctx.moveTo(x, 0);
-        ctx.lineTo(x, CANVAS_HEIGHT);
-        ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, CANVAS_HEIGHT); ctx.stroke();
       }
-      const startY = view.offsetY % gridStep;
+      const startY = ((view.offsetY % gridStep) + gridStep) % gridStep;
       for (let y = startY; y < CANVAS_HEIGHT; y += gridStep) {
-        ctx.beginPath();
-        ctx.moveTo(0, y);
-        ctx.lineTo(canvasWidth, y);
-        ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvasWidth, y); ctx.stroke();
       }
     }
 
@@ -958,13 +967,13 @@ function EmbeddingScatter({
   const findPoint = React.useCallback(
     (mx: number, my: number): EmbeddingPoint | null => {
       let closest: EmbeddingPoint | null = null;
-      let minDist = Infinity;
+      let minDist2 = (HOVER_RADIUS * 2) ** 2;
       for (const p of points) {
         const sx = p.x * view.scale + view.offsetX;
         const sy = -p.y * view.scale + view.offsetY;
-        const d = Math.sqrt((mx - sx) ** 2 + (my - sy) ** 2);
-        if (d < HOVER_RADIUS * 2 && d < minDist) {
-          minDist = d;
+        const d2 = (mx - sx) ** 2 + (my - sy) ** 2;
+        if (d2 < minDist2) {
+          minDist2 = d2;
           closest = p;
         }
       }
@@ -1093,17 +1102,48 @@ function EmbeddingScatter({
     setDragging(false);
   }, [toolMode, lassoPath]);
 
-  // Attach mouseup to window so drag release is always caught
+  // Attach mouseup to window so drag/lasso release is always caught outside canvas
   React.useEffect(() => {
     const onUp = () => {
       if (dragRef.current) {
         dragRef.current = null;
         setDragging(false);
       }
+      // Ensure lassoDrawing is reset even if mouseup fires outside the canvas
+      lassoDrawing.current = false;
     };
     window.addEventListener("mouseup", onUp);
     return () => window.removeEventListener("mouseup", onUp);
   }, []);
+
+  /** Open the detail panel for a point, fetching its note and user_label. */
+  const openPoint = React.useCallback(
+    (p: EmbeddingPoint) => {
+      setChatOpen(false);
+      setSaveError(null);
+      const thumbUrl = `${apiUrl}/array/full/${nodePath}/thumbnails?format=image/png&slice=${p.index}`;
+      setSelected({
+        point: p,
+        thumbnailUrl: thumbUrl,
+        note: "",
+        userLabel: "",
+        originalNote: "",
+        originalUserLabel: "",
+        saving: false,
+      });
+      Promise.all([
+        fetchStringValue(apiUrl, nodePath, "notes", p.index),
+        fetchStringValue(apiUrl, nodePath, "user_labels", p.index),
+      ]).then(([note, userLabel]) => {
+        setSelected((prev) =>
+          prev && prev.point.index === p.index
+            ? { ...prev, note, userLabel, originalNote: note, originalUserLabel: userLabel }
+            : prev,
+        );
+      });
+    },
+    [apiUrl, nodePath],
+  );
 
   const handleClick = React.useCallback(
     (e: React.MouseEvent) => {
@@ -1117,32 +1157,9 @@ function EmbeddingScatter({
         // Don't clear lasso on empty click — user must explicitly clear
         return;
       }
-      // Close chat when selecting a point (mutual exclusion)
-      setChatOpen(false);
-      const thumbUrl = `${apiUrl}/array/full/${nodePath}/thumbnails?format=image/png&slice=${p.index}`;
-      setSelected({
-        point: p,
-        thumbnailUrl: thumbUrl,
-        note: "",
-        userLabel: "",
-        originalNote: "",
-        originalUserLabel: "",
-        saving: false,
-      });
-      // Fetch current note and user_label
-      Promise.all([
-        fetchStringValue(apiUrl, nodePath, "notes", p.index),
-        fetchStringValue(apiUrl, nodePath, "user_labels", p.index),
-      ]).then(([note, userLabel]) => {
-        setSelected((prev) =>
-          prev && prev.point.index === p.index
-            ? { ...prev, note, userLabel, originalNote: note, originalUserLabel: userLabel }
-            : prev,
-        );
-      });
-      setSaveError(null);
+      openPoint(p);
     },
-    [toDataCoords, findPoint, apiUrl, nodePath, toolMode],
+    [toDataCoords, findPoint, openPoint, toolMode],
   );
 
   const handleWheel = React.useCallback(
@@ -2143,29 +2160,8 @@ function EmbeddingScatter({
                   {
                     key: p.index,
                     onClick: () => {
-                      // Switch to pan mode and open detail panel for this point
                       setToolMode("pan");
-                      setChatOpen(false);
-                      const thumbUrl = `${apiUrl}/array/full/${nodePath}/thumbnails?format=image/png&slice=${p.index}`;
-                      setSelected({
-                        point: p,
-                        thumbnailUrl: thumbUrl,
-                        note: "",
-                        userLabel: "",
-                        originalNote: "",
-                        originalUserLabel: "",
-                        saving: false,
-                      });
-                      Promise.all([
-                        fetchStringValue(apiUrl, nodePath, "notes", p.index),
-                        fetchStringValue(apiUrl, nodePath, "user_labels", p.index),
-                      ]).then(([note, userLabel]) => {
-                        setSelected((prev) =>
-                          prev && prev.point.index === p.index
-                            ? { ...prev, note, userLabel, originalNote: note, originalUserLabel: userLabel }
-                            : prev,
-                        );
-                      });
+                      openPoint(p);
                     },
                     style: {
                       display: "flex",
