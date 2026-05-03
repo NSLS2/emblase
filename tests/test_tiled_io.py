@@ -800,3 +800,85 @@ def test_write_output_uses_explicit_param_specs(mock_lse_cls, mock_create):
 
     _, kwargs = mock_create.call_args
     assert kwargs["params"] == explicit_specs
+
+
+# ---------------------------------------------------------------------------
+# write_output — labels forwarded correctly
+# ---------------------------------------------------------------------------
+
+@patch("emblase.tiled.client.create_embedding_container")
+@patch("emblase.tiled.client.LatentSpaceEmbedding")
+def test_write_output_passes_labels_to_append(mock_lse_cls, mock_create):
+    """labels list is forwarded to container.append()."""
+    from emblase.tiled.client import _clear_embedding_container_cache
+    _clear_embedding_container_cache()
+
+    embeddings = np.zeros((3, 4), dtype=np.float32)
+    container = MagicMock()
+    container.metadata = {"embedding_dim": 4, "thumb_shape": [64, 64]}
+    mock_create.return_value = container
+
+    root = MagicMock()
+    root.__getitem__ = MagicMock(side_effect=KeyError)
+
+    labels = ["cluster_0", "cluster_1", "cluster_0"]
+    write_output(root, "results_labels", embeddings, labels=labels)
+
+    call = container.append.call_args
+    assert call.kwargs["labels"] == labels
+
+
+@patch("emblase.tiled.client.create_embedding_container")
+@patch("emblase.tiled.client.LatentSpaceEmbedding")
+def test_write_output_no_labels_passes_none(mock_lse_cls, mock_create):
+    """When labels is omitted, None is forwarded to container.append()."""
+    from emblase.tiled.client import _clear_embedding_container_cache
+    _clear_embedding_container_cache()
+
+    embeddings = np.zeros((2, 4), dtype=np.float32)
+    container = MagicMock()
+    container.metadata = {"embedding_dim": 4, "thumb_shape": [64, 64]}
+    mock_create.return_value = container
+
+    root = MagicMock()
+    root.__getitem__ = MagicMock(side_effect=KeyError)
+
+    write_output(root, "results_no_labels", embeddings)
+
+    call = container.append.call_args
+    assert call.kwargs["labels"] is None
+
+
+# ---------------------------------------------------------------------------
+# LatentSpaceEmbedding.append — label column written correctly
+# ---------------------------------------------------------------------------
+
+def test_append_labels_stored_in_index_table():
+    """Labels end up in the 'label' column of the PyArrow table."""
+    lse = _FakeLSEWithParams({})
+    embeddings = np.zeros((3, 4), dtype=np.float32)
+    thumbnails = np.zeros((3, 8, 8), dtype=np.float32)
+
+    LatentSpaceEmbedding.append(
+        lse, embeddings, thumbnails,
+        paths=["a", "b", "c"],
+        labels=["cls_0", "cls_1", "cls_0"],
+    )
+
+    table = lse._appended[0]
+    assert "label" in table.schema.names
+    assert table.column("label").to_pylist() == ["cls_0", "cls_1", "cls_0"]
+
+
+def test_append_no_labels_stored_as_null():
+    """When labels is omitted, the 'label' column is all-None."""
+    lse = _FakeLSEWithParams({})
+    embeddings = np.zeros((2, 4), dtype=np.float32)
+    thumbnails = np.zeros((2, 8, 8), dtype=np.float32)
+
+    LatentSpaceEmbedding.append(
+        lse, embeddings, thumbnails, paths=["a", "b"],
+    )
+
+    table = lse._appended[0]
+    assert table.column("label").to_pylist() == [None, None]

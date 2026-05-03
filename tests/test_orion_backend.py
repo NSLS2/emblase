@@ -395,3 +395,68 @@ async def test_orion_backend_wait_returns_failed():
     status = await backend.wait("5", poll_interval=0, timeout=10)
     from emblase.compute.base import JobStatus
     assert status == JobStatus.failed
+
+
+# ---------------------------------------------------------------------------
+# _projector_mode_and_name
+# ---------------------------------------------------------------------------
+
+def test_projector_mode_none_gives_scratch():
+    from emblase.compute.orion import _projector_mode_and_name
+    mode, name = _projector_mode_and_name(None)
+    assert mode == "scratch"
+    assert name == ""
+
+
+def test_projector_mode_false_variants():
+    from emblase.compute.orion import _projector_mode_and_name
+    for val in ("false", "False", "FALSE", "0", "no", "none", "No"):
+        mode, name = _projector_mode_and_name(val)
+        assert mode == "false", f"failed for {val!r}"
+        assert name == ""
+
+
+def test_projector_mode_name():
+    from emblase.compute.orion import _projector_mode_and_name
+    mode, name = _projector_mode_and_name("umap_approx")
+    assert mode == "name"
+    assert name == "umap_approx"
+
+
+def test_render_inference_script_contains_classifier_name():
+    script = _render_inference_script(
+        model_name="vit",
+        models_dir="/models",
+        classifier="my_cls",
+    )
+    assert 'classifier_name = "my_cls"' in script
+
+
+def test_render_inference_script_classifier_empty_by_default():
+    script = _render_inference_script(
+        model_name="vit",
+        models_dir="/models",
+    )
+    assert 'classifier_name = ""' in script
+
+
+def test_render_streaming_inference_script_contains_classifier_name():
+    script = _render_streaming_inference_script(
+        model_name="vit",
+        models_dir="/models",
+        run_path="smi/run_xyz",
+        output="smi/results/run_xyz",
+        classifier="my_cls",
+    )
+    assert 'classifier_name = "my_cls"' in script
+
+
+def test_render_inference_script_compiles():
+    """The rendered batch inference script must compile without syntax errors."""
+    script = _render_inference_script(
+        model_name="noop",
+        models_dir="/models",
+        inputs=[],
+        output="",
+    )
+    compile(script, "<inference>", "exec")

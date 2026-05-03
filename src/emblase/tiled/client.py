@@ -208,6 +208,16 @@ def _infer_param_specs(params: dict[str, list]) -> dict[str, "ParamSpec"]:
 _embedding_container_cache: dict[tuple, "LatentSpaceEmbedding"] = {}
 
 
+def _clear_embedding_container_cache() -> None:
+    """Clear the module-level embedding container cache.
+
+    Call this in tests that create containers with the same path across
+    multiple test functions, to prevent stale container objects leaking
+    between tests.
+    """
+    _embedding_container_cache.clear()
+
+
 def write_output(
     client,
     path: str,
@@ -269,8 +279,8 @@ def write_output(
         ``params`` is provided, minimal specs (``{"dtype": "float"}``) are
         inferred from the value types.
     projections : np.ndarray, optional
-        Shape (N, P) pre-computed projection coordinates (e.g. from the UMAP
-        approximator).  When provided, stored directly instead of NaN placeholders.
+        Shape (N, P) pre-computed projection coordinates (e.g. from the projector
+        approximator or UMAP).  When provided, stored directly instead of NaN placeholders.
     labels : list[str], optional
         Classifier-assigned label strings, one per embedding.  Stored in the
         ``label`` column of ``_index``.  When omitted, the column is NULL.
@@ -763,7 +773,7 @@ class LatentSpaceEmbedding(CompositeClient):
         )
 
     def update_projections(self, projections: np.ndarray, access_tags: Optional[list[str]] = None) -> None:
-        """Replace all projection vectors (e.g. after re-running UMAP/t-SNE).
+        """Replace all projection vectors (e.g. after re-running the projector approximator).
 
         Parameters
         ----------

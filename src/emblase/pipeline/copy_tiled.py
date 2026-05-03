@@ -190,10 +190,11 @@ def copy_embedding(
     only calls the public Python API on each client.
 
     All arrays (embeddings, thumbnails, projections) and the ``_index`` table
-    are read from *src* in one shot, sorted by ``indx`` (or ``slice`` for older
-    containers without an ``indx`` column), then written to a new container
-    under *dst_parent* in batches of *batch_size* rows with *batch_delay*
-    seconds between batches.
+    are read from *src* in one shot.  The ``_index`` table is sorted by ``indx``
+    (the stable join key that equals the row offset in the arrays), then the
+    arrays are reordered accordingly.  This ensures row *i* of the destination
+    container always corresponds to ``indx=i``, even if the source wrote rows
+    in a non-sequential order.
 
     ``notes`` and ``user_labels`` are intentionally skipped — they are
     user-edited fields that do not exist during a live acquisition.
@@ -247,7 +248,11 @@ def copy_embedding(
     # Sort by indx (stable join key) or fall back to slice for older containers
     sort_col = "indx" if "indx" in idx_df.columns else "slice"
     idx_df = idx_df.sort_values(sort_col, key=lambda s: s.astype(int)).reset_index(drop=True)
-    order = idx_df.index.tolist()
+    # Use the indx values to reorder the arrays (indx is the row offset into the arrays)
+    if "indx" in idx_df.columns:
+        order = idx_df["indx"].tolist()
+    else:
+        order = idx_df["slice"].astype(int).tolist()
     embeddings = embeddings[order]
     thumbnails = thumbnails[order]
     projections = projections[order]

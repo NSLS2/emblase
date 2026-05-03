@@ -126,9 +126,8 @@ def _cluster_embeddings(
     # Map back to full-length array; fill unclustered rows with modal cluster
     full_labels = np.zeros(len(X), dtype=np.int64)
     full_labels[valid_mask] = cluster_ids
-    if (~valid_mask).any():
-        modal = int(np.bincount(cluster_ids).argmax())
-        full_labels[~valid_mask] = modal
+    modal = int(np.bincount(cluster_ids).argmax())
+    full_labels[~valid_mask] = modal
     return full_labels
 
 
