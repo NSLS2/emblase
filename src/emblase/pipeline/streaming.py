@@ -106,6 +106,7 @@ class InputsWatcher:
         self.param_specs = param_specs
         self.loop = loop
         self._seen_runs: set[str] = set()
+        self._seen_runs_lock = threading.Lock()
         self._sub: Any = None
 
     def start(self, replay_existing: bool = True) -> None:
@@ -137,10 +138,11 @@ class InputsWatcher:
 
     def _on_child_created(self, event: Any) -> None:
         run_key = event.key
-        if run_key in self._seen_runs:
-            logger.debug("Already submitted job for run %s — skipping", run_key)
-            return
-        self._seen_runs.add(run_key)
+        with self._seen_runs_lock:
+            if run_key in self._seen_runs:
+                logger.debug("Already submitted job for run %s — skipping", run_key)
+                return
+            self._seen_runs.add(run_key)
 
         run_path = _tiled_path(self.inputs_node) + f"/{run_key}"
         output_path = f"{self.output_root}/{run_key}"
