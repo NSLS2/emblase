@@ -115,11 +115,20 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument(
-        "--umap",
+        "--classifier",
+        default=None,
+        metavar="NAME",
+        help=(
+            "Classifier model name. Checks models_dir/<NAME> on the node, "
+            "then falls back to MLflow. Omit to skip classification (label column is NULL)."
+        ),
+    )
+    p.add_argument(
+        "--projector",
         default=None,
         metavar="NAME|false",
         help=(
-            "UMAP projection behaviour. "
+            "Projector (UMAP) projection behaviour. "
             "Omit (default): fit from scratch over all embeddings after the run completes. "
             "NAME: use a saved approximator (checks models_dir/<NAME> → MLflow). "
             "'false'/'0': skip projections entirely and write NaN."
@@ -202,7 +211,8 @@ def main() -> None:
         mlflow_version=args.mlflow_version,
         access_tags=access_tags,
         param_specs=param_specs,
-        umap=args.umap,
+        projector=args.projector,
+        classifier=args.classifier,
         loop=loop,
     )
 

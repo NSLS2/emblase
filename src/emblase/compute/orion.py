@@ -34,18 +34,18 @@ _SLURM_STATE_MAP = {
 }
 
 
-def _umap_mode_and_name(umap: str | None) -> tuple[str, str]:
-    """Translate the ``--umap`` CLI value into (umap_mode, umap_name).
+def _projector_mode_and_name(projector: str | None) -> tuple[str, str]:
+    """Translate the ``--projector`` CLI value into (projector_mode, projector_name).
 
-    umap=None        → ("scratch", "")   — fit UMAP from scratch after encoding
-    umap="false"/0   → ("false",  "")   — write NaN projections, skip UMAP entirely
-    umap="<name>"    → ("name",   name) — resolve saved model by name
+    projector=None        → ("scratch", "")   — fit UMAP from scratch after encoding
+    projector="false"/0   → ("false",  "")   — write NaN projections, skip projector entirely
+    projector="<name>"    → ("name",   name) — resolve saved model by name
     """
-    if umap is None:
+    if projector is None:
         return "scratch", ""
-    if umap.lower() in ("false", "0", "no", "none"):
+    if projector.lower() in ("false", "0", "no", "none"):
         return "false", ""
-    return "name", umap
+    return "name", projector
 
 
 def _render_inference_script(
@@ -59,10 +59,11 @@ def _render_inference_script(
     mlflow_version: str = "",
     thumb_mode: str = "default",
     param_specs: dict | None = None,
-    umap: str | None = None,
+    projector: str | None = None,
+    classifier: str | None = None,
 ) -> str:
     """Render the batch inference template with concrete values."""
-    umap_mode, umap_name = _umap_mode_and_name(umap)
+    projector_mode, projector_name = _projector_mode_and_name(projector)
     return _TEMPLATE.format(
         model_name=model_name,
         models_dir=models_dir,
@@ -74,8 +75,9 @@ def _render_inference_script(
         mlflow_version=mlflow_version,
         thumb_mode=thumb_mode,
         param_specs_json=json.dumps(param_specs or {}),
-        umap_mode=umap_mode,
-        umap_name=umap_name,
+        projector_mode=projector_mode,
+        projector_name=projector_name,
+        classifier_name=classifier or "",
     )
 
 
@@ -90,10 +92,11 @@ def _render_streaming_inference_script(
     image_key: str = "pil900KW_image",
     ws_max_size: int = 64 * 1024 * 1024,
     param_specs: dict | None = None,
-    umap: str | None = None,
+    projector: str | None = None,
+    classifier: str | None = None,
 ) -> str:
     """Render the streaming inference template with concrete values."""
-    umap_mode, umap_name = _umap_mode_and_name(umap)
+    projector_mode, projector_name = _projector_mode_and_name(projector)
     return _STREAMING_TEMPLATE.format(
         model_name=model_name,
         models_dir=models_dir,
@@ -105,8 +108,9 @@ def _render_streaming_inference_script(
         image_key=image_key,
         ws_max_size=ws_max_size,
         param_specs_json=json.dumps(param_specs or {}),
-        umap_mode=umap_mode,
-        umap_name=umap_name,
+        projector_mode=projector_mode,
+        projector_name=projector_name,
+        classifier_name=classifier or "",
     )
 
 
@@ -367,7 +371,8 @@ class OrionBackend(ComputeBackend):
         mlflow_version: str = "",
         thumb_mode: str = "default",
         param_specs: dict | None = None,
-        umap: str | None = None,
+        projector: str | None = None,
+        classifier: str | None = None,
         **kwargs: Any,
     ) -> str:
         """Submit a batch inference job.
@@ -384,11 +389,16 @@ class OrionBackend(ComputeBackend):
           - ``output``: Tiled path to write embeddings into. If omitted, results are
             saved as ``output.npy`` in the job working directory only.
 
-        UMAP behaviour (``umap`` argument):
+        Projector behaviour (``projector`` argument):
           - ``None`` (default): fit UMAP from scratch over all embeddings after encoding.
-          - ``"<name>"``: resolve a saved UMAP approximator by name — check
+          - ``"<name>"``: resolve a saved projector approximator by name — check
             ``models_dir/<name>`` on the node, then fall back to MLflow.
           - ``"false"`` / ``"0"``: skip projections entirely; write NaN.
+
+        Classifier (``classifier`` argument):
+          - ``None`` (default): no classification; ``label`` column is NULL.
+          - ``"<name>"``: resolve a saved classifier by name — check
+            ``models_dir/<name>`` on the node, then fall back to MLflow.
         """
         py_script = _render_inference_script(
             model_name=model_name,
@@ -401,7 +411,8 @@ class OrionBackend(ComputeBackend):
             mlflow_version=mlflow_version,
             thumb_mode=thumb_mode,
             param_specs=param_specs,
-            umap=umap,
+            projector=projector,
+            classifier=classifier,
         )
 
         if images is not None:
@@ -507,7 +518,8 @@ class OrionBackend(ComputeBackend):
         ws_max_size: int = 64 * 1024 * 1024,
         mem: str = "32G",
         param_specs: dict | None = None,
-        umap: str | None = None,
+        projector: str | None = None,
+        classifier: str | None = None,
         **kwargs: Any,
     ) -> str:
         """Submit a streaming inference job that subscribes to a BlueskyRun on Orion.
@@ -518,27 +530,19 @@ class OrionBackend(ComputeBackend):
             Tiled path to the BlueskyRun container (e.g. ``smi/.../inputs_copy/run_xyz``).
         output:
             Tiled path to write embeddings into (e.g. ``smi/.../results/run_xyz``).
-        umap:
-            UMAP behaviour:
+        projector:
+            Projector behaviour:
             - ``None`` (default): fit UMAP from scratch over all accumulated embeddings
               after the run completes.
-            - ``"<name>"``: resolve a saved UMAP approximator by name — check
+            - ``"<name>"``: resolve a saved projector approximator by name — check
               ``models_dir/<name>`` on the node, then fall back to MLflow.
             - ``"false"`` / ``"0"``: skip projections entirely; write NaN.
+        classifier:
+            - ``None`` (default): no classification; ``label`` column is NULL.
+            - ``"<name>"``: resolve a saved classifier by name — check
+              ``models_dir/<name>`` on the node, then fall back to MLflow.
         param_specs:
-            Optional dict mapping parameter names to ParamSpec dicts.  Each spec
-            must include a ``source`` key of the form ``"primary.<array_key>"``
-            pointing to a scalar array in the run's primary stream that is
-            aligned 1-to-1 with frames.
-
-            Example::
-
-                param_specs={
-                    "temperature": {"dtype": "float", "units": "°C",
-                                    "source": "primary.LinkamThermal_temperature_current"},
-                    "piezo_x":     {"dtype": "float", "units": "μm",
-                                    "source": "primary.piezo_x"},
-                }
+            Optional dict mapping parameter names to ParamSpec dicts.
         """
         py_script = _render_streaming_inference_script(
             model_name=model_name,
@@ -551,7 +555,8 @@ class OrionBackend(ComputeBackend):
             image_key=image_key,
             ws_max_size=ws_max_size,
             param_specs=param_specs,
-            umap=umap,
+            projector=projector,
+            classifier=classifier,
         )
 
         script = _build_sbatch_script(

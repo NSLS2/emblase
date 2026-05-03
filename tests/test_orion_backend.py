@@ -29,8 +29,8 @@ def test_render_inference_script_substitutes_all_placeholders():
     assert 'output         = ""' in script
     assert 'os.environ["JOB_DIR"]' in script
     assert 'param_specs    = ' in script
-    assert 'umap_mode      = ' in script
-    assert 'umap_name      = ' in script
+    assert 'projector_mode = ' in script
+    assert 'projector_name = ' in script
 
 
 def test_render_inference_script_with_output():

@@ -76,10 +76,13 @@ class InputsWatcher:
     param_specs:
         Optional dict mapping parameter names to ParamSpec dicts.  Forwarded
         verbatim to ``submit_streaming`` (and hence to the Orion job).
-    umap:
-        UMAP behaviour forwarded to the Orion job.  ``None`` (default) = fit
+    projector:
+        Projector behaviour forwarded to the Orion job.  ``None`` (default) = fit
         from scratch after the run completes; ``"<name>"`` = use saved
         approximator; ``"false"``/``"0"`` = NaN projections.
+    classifier:
+        Classifier name forwarded to the Orion job.  ``None`` (default) = no
+        classification; ``"<name>"`` = use saved classifier from ``models_dir``.
     loop:
         asyncio event loop for scheduling ``submit_streaming`` coroutines.
     """
@@ -96,7 +99,8 @@ class InputsWatcher:
         mlflow_version: str = "",
         access_tags: list[str] | None = None,
         param_specs: dict | None = None,
-        umap: str | None = None,
+        projector: str | None = None,
+        classifier: str | None = None,
         loop: asyncio.AbstractEventLoop | None = None,
     ) -> None:
         self.inputs_node = inputs_node
@@ -109,7 +113,8 @@ class InputsWatcher:
         self.mlflow_version = mlflow_version
         self.access_tags = access_tags
         self.param_specs = param_specs
-        self.umap = umap
+        self.projector = projector
+        self.classifier = classifier
         self.loop = loop
         self._seen_runs: set[str] = set()
         self._seen_runs_lock = threading.Lock()
@@ -177,7 +182,8 @@ class InputsWatcher:
                 mlflow_version=self.mlflow_version,
                 access_tags=self.access_tags,
                 param_specs=self.param_specs,
-                umap=self.umap,
+                projector=self.projector,
+                classifier=self.classifier,
             )
             logger.info("Submitted Orion streaming job %s for run %s", job_id, run_path)
         except Exception:

@@ -11,15 +11,16 @@ Filled by _render_streaming_inference_script():
     {{image_key}}        — key of the image array within the primary stream
     {{ws_max_size}}      — WebSocket max message size in bytes
     {{param_specs_json}} — JSON dict mapping param name → ParamSpec (source: "primary.<key>")
-    {{umap_mode}}        — one of: "name" | "scratch" | "false"
-    {{umap_name}}        — UMAP model name when umap_mode=="name", else ""
+    {{projector_mode}}   — one of: "name" | "scratch" | "false"
+    {{projector_name}}   — projector model name when projector_mode=="name", else ""
+    {{classifier_name}}  — classifier model name, or "" to skip classification
 
-UMAP behaviour:
-    umap_mode="name"    — resolve saved approximator: check models_dir/<umap_name>,
-                          then fall back to MLflow.  Apply per-batch in the writer thread.
-    umap_mode="scratch" — accumulate ALL embeddings; after stop-doc flush, fit a fresh
-                          UMAP (umap-learn) and rewrite projections in a second pass.
-    umap_mode="false"   — skip entirely; write NaN projections.
+Projector behaviour:
+    projector_mode="name"    — resolve saved approximator: check models_dir/<projector_name>,
+                               then fall back to MLflow.  Apply per-batch in the writer thread.
+    projector_mode="scratch" — accumulate ALL embeddings; after stop-doc flush, fit a fresh
+                               UMAP (umap-learn) and rewrite projections in a second pass.
+    projector_mode="false"   — skip entirely; write NaN projections.
 
 Flow:
   1. Load model and connect to Tiled.
@@ -65,8 +66,9 @@ thumb_mode     = "{thumb_mode}"
 image_key      = "{image_key}"
 ws_max_size    = {ws_max_size}
 param_specs    = json.loads('{param_specs_json}')
-umap_mode      = "{umap_mode}"   # "name" | "scratch" | "false"
-umap_name      = "{umap_name}"   # non-empty only when umap_mode=="name"
+projector_mode = "{projector_mode}"   # "name" | "scratch" | "false"
+projector_name = "{projector_name}"   # non-empty only when projector_mode=="name"
+classifier_name = "{classifier_name}" # non-empty to apply classifier after encoding
 
 _raw_tags = os.environ.get("EMBLASE_TILED_ACCESS_TAGS", "").strip()
 access_tags: list[str] | None = [t.strip() for t in _raw_tags.split(",") if t.strip()] or None
@@ -81,8 +83,9 @@ log.info("thumb_mode : %s", thumb_mode)
 log.info("image_key  : %s", image_key)
 log.info("access_tags: %s", access_tags)
 log.info("param_specs: %s", list(param_specs.keys()))
-log.info("umap_mode  : %s", umap_mode)
-log.info("umap_name  : %s", umap_name or "(n/a)")
+log.info("projector_mode: %s", projector_mode)
+log.info("projector_name: %s", projector_name or "(n/a)")
+log.info("classifier   : %s", classifier_name or "(none)")
 
 models_dir = "{models_dir}"
 if models_dir not in sys.path:
@@ -106,19 +109,19 @@ model = load_model(
 log.info("Model loaded in %.1f s", time.perf_counter() - t0)
 
 # ---------------------------------------------------------------------------
-# UMAP approximator — resolved by name (local dir or MLflow).
-# Only used when umap_mode == "name".
+# Projector approximator — resolved by name (local dir or MLflow).
+# Only used when projector_mode == "name".
 # ---------------------------------------------------------------------------
-_umap_model = None
-_umap_scaler = None
+_projector_model = None
+_projector_scaler = None
 
-if umap_mode == "name":
+if projector_mode == "name":
     try:
         import joblib
         from pathlib import Path as _Path
-        _ud = _Path(models_dir) / umap_name
+        _ud = _Path(models_dir) / projector_name
         if not _ud.is_dir():
-            log.info("UMAP model %r not found locally — pulling from MLflow", umap_name)
+            log.info("Projector model %r not found locally — pulling from MLflow", projector_name)
             from emblase import mlflow_registry
             import os as _os
             _cache_root = _Path(
@@ -126,14 +129,14 @@ if umap_mode == "name":
                 or _Path.home() / ".cache" / "emblase" / "models"
             )
             _version = mlflow_registry.resolve_version(
-                umap_name,
+                projector_name,
                 tracking_uri=_os.environ.get("EMBLASE_MLFLOW_TRACKING_URI") or None,
                 api_key=_os.environ.get("EMBLASE_MLFLOW_API_KEY") or None,
             )
-            _ud = _cache_root / umap_name / f"v{{_version}}" / "model"
+            _ud = _cache_root / projector_name / f"v{{_version}}" / "model"
             if not (_ud / "umap_approximator.pth").exists():
                 mlflow_registry.download_model_weights(
-                    model_name=umap_name, version=_version,
+                    model_name=projector_name, version=_version,
                     dest_dir=_ud.parent,
                     tracking_uri=_os.environ.get("EMBLASE_MLFLOW_TRACKING_URI") or None,
                     api_key=_os.environ.get("EMBLASE_MLFLOW_API_KEY") or None,
@@ -143,33 +146,71 @@ if umap_mode == "name":
             sys.path.insert(0, _ud_str)
         from neural_dimred_wrapper import SimpleDimRedApproximator
         _scaler_path = _ud / "scaler.pkl"
-        _umap_scaler = joblib.load(_scaler_path) if _scaler_path.exists() else None
+        _projector_scaler = joblib.load(_scaler_path) if _scaler_path.exists() else None
         _sd = torch.load(_ud / "umap_approximator.pth", map_location=device, weights_only=True)
         _weight_keys = sorted(k for k in _sd if k.startswith("network.") and k.endswith(".weight"))
         _hidden_dims = [_sd[k].shape[0] for k in _weight_keys[:-1]]
-        _umap_model = SimpleDimRedApproximator(
+        _projector_model = SimpleDimRedApproximator(
             input_dim=_sd["network.0.weight"].shape[1], hidden_dims=_hidden_dims
         )
-        _umap_model.load_state_dict(_sd)
-        _umap_model.eval().to(device)
-        log.info("UMAP approximator loaded from %s", _ud)
+        _projector_model.load_state_dict(_sd)
+        _projector_model.eval().to(device)
+        log.info("Projector approximator loaded from %s", _ud)
     except Exception as _exc:
-        log.warning("UMAP approximator not loaded — projections will be NaN: %s", _exc)
-        _umap_model = None
+        log.warning("Projector approximator not loaded — projections will be NaN: %s", _exc)
+        _projector_model = None
 
 
 def _compute_projections(embeddings):
-    """Apply named UMAP approximator.  Returns (N,2) or None."""
-    if _umap_model is None:
+    """Apply named projector approximator.  Returns (N,2) or None."""
+    if _projector_model is None:
         return None
     X = embeddings.astype("float32")
-    if _umap_scaler is not None:
-        X = _umap_scaler.transform(X)
+    if _projector_scaler is not None:
+        X = _projector_scaler.transform(X)
     with torch.no_grad():
-        coords = _umap_model(torch.tensor(X, dtype=torch.float32, device=device)).cpu().numpy()
+        coords = _projector_model(torch.tensor(X, dtype=torch.float32, device=device)).cpu().numpy()
     return coords.astype("float32")
 
 from tiled.client import from_uri  # noqa: E402
+
+# ---------------------------------------------------------------------------
+# Classifier — resolved by name (local dir or MLflow), applied per-batch.
+# Only loaded when classifier_name is set.
+# ---------------------------------------------------------------------------
+_classifier_dir = None
+
+if classifier_name:
+    try:
+        from pathlib import Path as _CPath
+        _cd = _CPath(models_dir) / classifier_name
+        if not _cd.is_dir():
+            log.info("Classifier %r not found locally — pulling from MLflow", classifier_name)
+            from emblase import mlflow_registry
+            import os as _os
+            _cache_root = _CPath(
+                _os.environ.get("EMBLASE_MODEL_CACHE_DIR", "")
+                or _CPath.home() / ".cache" / "emblase" / "models"
+            )
+            _version = mlflow_registry.resolve_version(
+                classifier_name,
+                tracking_uri=_os.environ.get("EMBLASE_MLFLOW_TRACKING_URI") or None,
+                api_key=_os.environ.get("EMBLASE_MLFLOW_API_KEY") or None,
+            )
+            _cd = _cache_root / classifier_name / f"v{{_version}}" / "model"
+            if not (_cd / "classifier.pth").exists():
+                mlflow_registry.download_model_weights(
+                    model_name=classifier_name, version=_version,
+                    dest_dir=_cd.parent,
+                    tracking_uri=_os.environ.get("EMBLASE_MLFLOW_TRACKING_URI") or None,
+                    api_key=_os.environ.get("EMBLASE_MLFLOW_API_KEY") or None,
+                )
+        _classifier_dir = _cd
+        log.info("Classifier artefacts at %s", _classifier_dir)
+    except Exception as _exc:
+        log.warning("Classifier not loaded — labels will be null: %s", _exc)
+        _classifier_dir = None
+
 from emblase.tiled.client import write_output  # noqa: E402
 
 tiled_server = os.environ["EMBLASE_TILED_SERVER_URI"]
@@ -239,18 +280,27 @@ def _writer_loop() -> None:
                 log.info("Encoded %d frame(s) in %.1f s → shape %s",
                          len(frames), time.perf_counter() - t0, embeddings.shape)
 
-                # Accumulate for scratch UMAP
-                if umap_mode == "scratch":
+                # Accumulate for scratch projector
+                if projector_mode == "scratch":
                     with _all_embeddings_lock:
                         _all_embeddings.append(embeddings.copy())
 
                 # Per-batch projections: only for named approximator
-                if umap_mode == "name":
+                if projector_mode == "name":
                     projections = _compute_projections(embeddings)
                     if projections is not None:
                         log.info("Projections: %s", projections.shape)
                 else:
                     projections = None  # scratch: fill later; false: stay NaN
+
+                # Classifier labels
+                batch_labels = None
+                if _classifier_dir is not None:
+                    try:
+                        from emblase.classifier import apply_classifier
+                        batch_labels = list(apply_classifier(embeddings, classifier_dir=_classifier_dir))
+                    except Exception as _exc:
+                        log.warning("Classifier failed for batch — labels will be null: %s", _exc)
 
                 batch_params = None
                 if param_specs:
@@ -271,6 +321,7 @@ def _writer_loop() -> None:
                     params=batch_params,
                     param_specs=param_specs if batch_params is not None else None,
                     projections=projections,
+                    labels=batch_labels,
                 )
                 log.info("Written to Tiled: %s", output)
             finally:
@@ -401,20 +452,20 @@ for sub in _all_subs:
         pass
 
 # ---------------------------------------------------------------------------
-# Scratch UMAP — fit over all embeddings and update projections in Tiled.
+# Scratch projector (UMAP) — fit over all embeddings and update projections in Tiled.
 # ---------------------------------------------------------------------------
-if umap_mode == "scratch" and not _writer_error:
+if projector_mode == "scratch" and not _writer_error:
     with _all_embeddings_lock:
         _collected = _all_embeddings[:]
     if _collected:
         _all_emb = np.vstack(_collected)
-        log.info("Fitting scratch UMAP over %d embeddings ...", len(_all_emb))
+        log.info("Fitting scratch projector (UMAP) over %d embeddings ...", len(_all_emb))
         try:
             import umap as _umap_lib
             from emblase.tiled.client import _embedding_container_cache  # noqa
             _reducer = _umap_lib.UMAP(n_components=2, random_state=42)
             _proj = _reducer.fit_transform(_all_emb.astype("float32")).astype("float32")
-            log.info("Scratch UMAP done: %s", _proj.shape)
+            log.info("Scratch projector done: %s", _proj.shape)
             # Write projections back: locate the existing container and update.
             _out_segs = [s for s in output.split("/") if s]
             _out_node = tiled_client[tuple(_out_segs)]
@@ -422,9 +473,9 @@ if umap_mode == "scratch" and not _writer_error:
             _proj_node.write(_proj)
             log.info("Projections written to %s/projections", output)
         except Exception as _exc:
-            log.warning("Scratch UMAP failed — projections remain NaN: %s", _exc)
+            log.warning("Scratch projector failed — projections remain NaN: %s", _exc)
     else:
-        log.warning("No embeddings collected — scratch UMAP skipped")
+        log.warning("No embeddings collected — scratch projector skipped")
 
 log.info("=== Streaming inference done ===")
 

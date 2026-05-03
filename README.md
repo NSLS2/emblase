@@ -51,13 +51,20 @@ python scripts/submit_orion.py infer \
 `--param` stores scalar streams from the same primary event stream alongside
 each embedding in the `_index` table.
 
-**`--umap` controls UMAP projection behaviour:**
+**`--projector` controls projector (UMAP) behaviour:**
 
-| `--umap` value | Effect |
+| `--projector` value | Effect |
 |---|---|
 | *(omitted)* | Fit UMAP from scratch over all embeddings after encoding (default) |
 | `umap_approx` | Load saved approximator by name (`models_dir/umap_approx` → MLflow) |
 | `false` | Skip projections entirely — write NaN |
+
+**`--classifier` controls per-embedding label assignment:**
+
+| `--classifier` value | Effect |
+|---|---|
+| *(omitted)* | No classification — `label` column is NULL (default) |
+| `classifier` | Load saved classifier by name (`models_dir/classifier` → MLflow) and assign labels |
 
 The script polls every 5 s and prints progress. Check the full Slurm log:
 
@@ -118,7 +125,8 @@ env + model load), well before the copy finishes
 |---|---|---|
 | **When to use** | Complete runs, model iteration | Live acquisition |
 | **Params** | ✓ (`--param`) | ✓ (`--param`) |
-| **UMAP** | `--umap` (name / scratch / false) | `--umap` (name / scratch / false) |
+| **Projector** | `--projector` (name / scratch / false) | `--projector` (name / scratch / false) |
+| **Classifier** | `--classifier NAME` (omit = no labels) | `--classifier NAME` (omit = no labels) |
 | **Latency** | All frames at once | Incremental, per batch |
 | **Setup** | Single command | Watcher must start before data arrives |
 
@@ -139,32 +147,32 @@ replay all existing runs.
 
 ---
 
-## UMAP Projections
+## Projector (UMAP)
 
-The core logic lives in `emblase.umap` and can be called from IPython with an
+The core logic lives in `emblase.projector` and can be called from IPython with an
 already-initialised Tiled node — no CLI required:
 
 ```python
-from emblase.umap import train_umap, apply_umap
+from emblase.projector import train_projector, apply_projector
 
 node = client["smi/sandbox/confab26_demo/results/run_xyz"]
 
 # Fit a new approximator and write projections back to Tiled:
-train_umap(node, umap_dir="models/umap_approx")
+train_projector(node, projector_dir="models/umap_approx")
 
 # Apply an existing approximator and write projections back to Tiled:
-apply_umap(node, umap_dir="models/umap_approx")
+apply_projector(node, projector_dir="models/umap_approx")
 ```
 
 Or via the CLI scripts (thin wrappers over the same functions):
 
 ```bash
 # apply existing approximator
-pixi run python scripts/compute_umap.py \
+pixi run python scripts/compute_projector.py \
   --dataset smi/sandbox/confab26_demo/results/run_live_1086139_<timestamp>
 
 # retrain approximator then write projections
-pixi run python scripts/train_umap.py \
+pixi run python scripts/train_projector.py \
   --dataset smi/sandbox/confab26_demo/results/run_live_1086139_<timestamp>
 ```
 
@@ -262,7 +270,9 @@ src/emblase/
 ├── config.py               # Settings (pydantic-settings, EMBLASE_ prefix)
 ├── models.py               # load_model(), encode()
 ├── mlflow_registry.py      # MLflow push/pull/list
-├── umap.py                 # train_umap(), apply_umap() — callable from IPython
+├── umap.py                 # (legacy) — use projector.py instead
+├── projector.py            # train_projector(), apply_projector() — callable from IPython
+├── classifier.py           # train_classifier(), apply_classifier() — unsupervised labelling
 ├── compute/
 │   ├── base.py             # ComputeBackend ABC, JobStatus, JobResult
 │   ├── orion.py            # OrionBackend, OrionClient, script rendering
@@ -273,19 +283,20 @@ src/emblase/
 ├── tiled/
 │   └── client.py           # read_images, write_output, LatentSpaceEmbedding, THUMB_MODES
 └── worker/
-    ├── inference.py.tmpl           # batch inference node script (params + UMAP)
-    └── streaming_inference.py.tmpl # streaming inference node script (params + UMAP)
+    ├── inference.py.tmpl           # batch inference node script (params + projector)
+    └── streaming_inference.py.tmpl # streaming inference node script (params + projector)
 scripts/
 ├── stream_pipeline.py      # CLI: watch inputs_copy → submit streaming jobs
 ├── simulate_acquisition.py # CLI: copy a run into inputs_copy frame-by-frame
 ├── simulate_results.py     # CLI/lib: replay a LSE container into a local Tiled (WebUI dev)
 ├── submit_orion.py         # CLI: submit batch jobs (infer / status / cancel)
-├── compute_umap.py         # post-process: apply UMAP approximator → write projections
-└── train_umap.py           # fit UMAP + train MLP approximator on existing embeddings
+├── compute_projector.py    # post-process: apply projector approximator → write projections
+├── train_projector.py      # fit UMAP + train MLP projector approximator on existing embeddings
+└── train_classifier.py     # fit clustering → MLP classifier on existing embeddings
 models/
 ├── noop/                   # NoopEncoder (seeded random, for testing)
 ├── vit/                    # ViT weights + loader.py (optional local override)
-└── umap_approx/            # neural_dimred_wrapper.py, scaler.pkl, umap_approximator.pth
+└── umap_approx/            # neural_dimred_wrapper.py, scaler.pkl, umap_approximator.pth (projector model layout)
 tests/                      # pytest suite (mocked, no hardware required)
 ```
 

@@ -28,18 +28,18 @@ The job reads all frames from ``run_path/primary/<image_key>``, encodes them,
 writes a ``LatentSpaceEmbedding`` container to ``--output``, and stores the
 requested scalar params in the ``_index`` table alongside each embedding.
 
-``--umap`` controls UMAP projection behaviour::
+``--projector`` controls projector (UMAP) projection behaviour::
 
-    # fit from scratch over all embeddings (default when --umap is omitted)
+    # fit from scratch over all embeddings (default when --projector is omitted)
     python scripts/submit_orion.py infer --model bnl-nsls2-smi-vit ...
 
     # use a saved approximator by name (checks models_dir/<name> → MLflow)
     python scripts/submit_orion.py infer --model bnl-nsls2-smi-vit \\
-        --umap umap_approx ...
+        --projector umap_approx ...
 
     # disable projections entirely (write NaN)
     python scripts/submit_orion.py infer --model bnl-nsls2-smi-vit \\
-        --umap false ...
+        --projector false ...
 
 Check the job log::
 
@@ -112,7 +112,8 @@ async def _infer(args):
     print(f"Models dir  : {backend.models_dir}")
 
     param_specs = _parse_param_specs(args.params)
-    umap = args.umap  # None | "false" | "<name>"
+    projector = args.projector
+    classifier = args.classifier
 
     submit_kwargs = dict(
         model_name=args.model,
@@ -121,7 +122,8 @@ async def _infer(args):
         thumb_mode=args.thumb_mode,
         mlflow_version=args.mlflow_version,
         param_specs=param_specs,
-        umap=umap,
+        projector=projector,
+        classifier=classifier,
     )
 
     if args.run:
@@ -285,14 +287,14 @@ def main():
         ),
     )
     infer_p.add_argument(
-        "--umap",
+        "--projector",
         default=None,
         metavar="NAME|false",
         help=(
-            "UMAP projection behaviour. "
+            "Projector (UMAP) projection behaviour. "
             "Omit (default): fit UMAP from scratch over all embeddings after encoding. "
             "NAME: resolve a saved approximator by name — checks models_dir/<NAME> on the "
-            "node, then falls back to MLflow (e.g. --umap umap_approx). "
+            "node, then falls back to MLflow (e.g. --projector umap_approx). "
             "'false' or '0': skip projections entirely and write NaN."
         ),
     )

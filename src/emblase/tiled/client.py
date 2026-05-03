@@ -224,6 +224,7 @@ def write_output(
     params: Optional[dict[str, list]] = None,
     param_specs: Optional[dict[str, "ParamSpec"]] = None,
     projections: Optional[np.ndarray] = None,
+    labels: Optional[list[str]] = None,
     metadata: Optional[dict] = None,
     access_tags: Optional[list[str]] = None,
 ) -> None:
@@ -270,6 +271,9 @@ def write_output(
     projections : np.ndarray, optional
         Shape (N, P) pre-computed projection coordinates (e.g. from the UMAP
         approximator).  When provided, stored directly instead of NaN placeholders.
+    labels : list[str], optional
+        Classifier-assigned label strings, one per embedding.  Stored in the
+        ``label`` column of ``_index``.  When omitted, the column is NULL.
     metadata:
         Extra key/value pairs merged into container metadata on creation.
     access_tags:
@@ -346,6 +350,7 @@ def write_output(
         model_version=model_version or None,
         timestamps=list(time.time() + np.arange(n) * 1e-6),
         projections=projections,
+        labels=labels,
         params=params,
         access_tags=access_tags,
     )
