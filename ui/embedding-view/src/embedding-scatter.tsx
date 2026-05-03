@@ -101,21 +101,19 @@ const USER_LABEL_MAX_LEN = 64;
 const CANVAS_HEIGHT = 500;
 const PANEL_WIDTH = 280;
 const PANEL_INSET = 70;
-const LABEL_COLORS: Record<string, string> = {};
 const COLOR_PALETTE = [
   "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
   "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf",
   "#aec7e8", "#ffbb78", "#98df8a", "#ff9896", "#c5b0d5",
 ];
-let colorIdx = 0;
 
-function getLabelColor(label: string): string {
+/** Assign a palette color to a label deterministically by its rank in the
+ *  sorted list of all known labels.  Passing the sorted list ensures the
+ *  same label always gets the same color regardless of arrival order. */
+function getLabelColor(label: string, sortedLabels: string[]): string {
   if (!label) return "#888888";
-  if (!LABEL_COLORS[label]) {
-    LABEL_COLORS[label] = COLOR_PALETTE[colorIdx % COLOR_PALETTE.length];
-    colorIdx++;
-  }
-  return LABEL_COLORS[label];
+  const idx = sortedLabels.indexOf(label);
+  return COLOR_PALETTE[(idx < 0 ? 0 : idx) % COLOR_PALETTE.length];
 }
 
 // Viridis colormap (sampled at 10 stops) — t ∈ [0, 1]
@@ -149,11 +147,12 @@ function resolvePointColor(
   paramRange: [number, number] | null,
   paramMin: number,
   paramMax: number,
+  sortedLabels: string[],
 ): { color: string; active: boolean } {
   if (colorBy === "label") {
     const lbl = p.label || "";
     const active = lbl === "" || !hiddenLabels.has(lbl);
-    return { color: getLabelColor(lbl || "(none)"), active };
+    return { color: getLabelColor(lbl, sortedLabels), active };
   }
   // Continuous param
   const val = p.params?.[colorBy] ?? null;
@@ -781,6 +780,14 @@ function EmbeddingScatter({
   }, []);
 
   // Compute min/max for the currently selected continuous param (must be before canvas draw effect)
+  const uniqueLabels = React.useMemo(() => {
+    const labels = new Set<string>();
+    for (const p of points) {
+      if (p.label) labels.add(p.label);
+    }
+    return Array.from(labels).sort();
+  }, [points]);
+
   const { paramMin, paramMax } = React.useMemo(() => {
     if (colorBy === "label" || !paramNames.includes(colorBy)) return { paramMin: 0, paramMax: 1 };
     let mn = Infinity, mx = -Infinity;
@@ -856,7 +863,7 @@ function EmbeddingScatter({
       const isHovered = tooltip?.point.index === p.index;
       const isSelected = selected?.point.index === p.index;
       const isLassoed = hasLasso && lassoSelected.has(p.index);
-      const { color, active } = resolvePointColor(p, colorBy, hiddenLabels, paramRange, paramMin, paramMax);
+      const { color, active } = resolvePointColor(p, colorBy, hiddenLabels, paramRange, paramMin, paramMax, uniqueLabels);
       const radius = isHovered || isSelected ? HOVER_RADIUS : POINT_RADIUS;
       ctx.beginPath();
       ctx.arc(sx, sy, radius, 0, Math.PI * 2);
@@ -912,7 +919,7 @@ function EmbeddingScatter({
         ctx.fill();
       }
     }
-  }, [points, view, canvasWidth, tooltip, selected, lassoPath, lassoSelected, colorBy, hiddenLabels, paramRange, paramMin, paramMax]);
+  }, [points, view, canvasWidth, tooltip, selected, lassoPath, lassoSelected, colorBy, hiddenLabels, paramRange, paramMin, paramMax, uniqueLabels]);
 
   // Mouse handlers
   const toDataCoords = React.useCallback(
@@ -1009,6 +1016,8 @@ function EmbeddingScatter({
   paramMinRef.current = paramMin;
   const paramMaxRef = React.useRef(paramMax);
   paramMaxRef.current = paramMax;
+  const uniqueLabelsRef = React.useRef(uniqueLabels);
+  uniqueLabelsRef.current = uniqueLabels;
 
   const handleMouseDown = React.useCallback(
     (e: React.MouseEvent) => {
@@ -1052,6 +1061,7 @@ function EmbeddingScatter({
           paramRangeRef.current,
           paramMinRef.current,
           paramMaxRef.current,
+          uniqueLabelsRef.current,
         );
         if (active) sel.add(p.index);
       }
@@ -1244,14 +1254,6 @@ function EmbeddingScatter({
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [lassoSelected]);
-
-  const uniqueLabels = React.useMemo(() => {
-    const labels = new Set<string>();
-    for (const p of points) {
-      if (p.label) labels.add(p.label);
-    }
-    return Array.from(labels).sort();
-  }, [points]);
 
   // Lasso selection summary
   const lassoSummary = React.useMemo(() => {
@@ -1660,7 +1662,7 @@ function EmbeddingScatter({
               selected.point.label
                 ? React.createElement(
                     "span",
-                    { style: { color: getLabelColor(selected.point.label), fontWeight: 500 } },
+                    { style: { color: getLabelColor(selected.point.label, uniqueLabels), fontWeight: 500 } },
                     selected.point.label,
                   )
                 : null,
@@ -2097,7 +2099,7 @@ function EmbeddingScatter({
                         width: 8,
                         height: 8,
                         borderRadius: "50%",
-                        backgroundColor: label === "(unlabeled)" ? "#888" : getLabelColor(label),
+                        backgroundColor: label === "(unlabeled)" ? "#888" : getLabelColor(label, uniqueLabels),
                         flexShrink: 0,
                       },
                     }),
@@ -2172,7 +2174,7 @@ function EmbeddingScatter({
                   p.label
                     ? React.createElement(
                         "span",
-                        { style: { color: getLabelColor(p.label), fontSize: 11 } },
+                        { style: { color: getLabelColor(p.label, uniqueLabels), fontSize: 11 } },
                         p.label,
                       )
                     : null,
@@ -2233,7 +2235,7 @@ function EmbeddingScatter({
                       width: 9,
                       height: 9,
                       borderRadius: "50%",
-                      backgroundColor: getLabelColor(label),
+                      backgroundColor: getLabelColor(label, uniqueLabels),
                       flexShrink: 0,
                     },
                   }),
