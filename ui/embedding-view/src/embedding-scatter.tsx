@@ -475,9 +475,13 @@ function EmbeddingScatter({
   const skipCatchupRef = React.useRef(false);
 
   // Coloring state
-  const meta = item?.data?.attributes?.metadata || {};
-  const paramSpecs: Record<string, ParamSpec> = meta.param_specs || {};
-  const paramNames = Object.keys(paramSpecs); // e.g. ["piezo_x", "temperature"]
+  const rawParamSpecs: Record<string, ParamSpec> = item?.data?.attributes?.metadata?.param_specs || {};
+  const paramSpecs = React.useMemo(
+    () => rawParamSpecs,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [JSON.stringify(rawParamSpecs)],
+  );
+  const paramNames = React.useMemo(() => Object.keys(paramSpecs), [paramSpecs]);
   const [colorBy, setColorBy] = React.useState<string>("label");
   // Categorical filter: set of labels hidden from view
   const [hiddenLabels, setHiddenLabels] = React.useState<Set<string>>(new Set());
