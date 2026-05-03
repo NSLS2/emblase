@@ -1309,9 +1309,11 @@ function EmbeddingScatter({
     (selected.note !== selected.originalNote ||
       selected.userLabel !== selected.originalUserLabel);
 
+  const panelOpen = !!(selected || chatOpen || (lassoSummary && !selected && !chatOpen));
+
   return React.createElement(
     "div",
-    { ref: containerRef },
+    { ref: containerRef, style: { width: "100%" } },
     // Header (full width, always above canvas + panel)
     React.createElement(
       "div",
@@ -1541,25 +1543,21 @@ function EmbeddingScatter({
     ),
     React.createElement(
       "div",
-      { style: { display: "flex", alignItems: "flex-start", gap: 0 } },
-      // Canvas + tooltip wrapper (flex: 1, shrinks when panel opens)
-      React.createElement(
-        "div",
-        { style: { flex: 1, minWidth: 0, position: "relative" } },
-      // Canvas
-      React.createElement("canvas", {
-        ref: canvasRef,
+      { style: { position: "relative" as const } },
+    // Canvas
+    React.createElement("canvas", {
+      ref: canvasRef,
+      height: CANVAS_HEIGHT,
+      style: {
+        display: "block",
+        width: panelOpen ? `calc(100% - ${PANEL_WIDTH}px)` : "100%",
         height: CANVAS_HEIGHT,
-        style: {
-          width: "100%",
-          height: CANVAS_HEIGHT,
-          cursor: toolMode === "lasso" ? "crosshair" : dragging ? "grabbing" : tooltip ? "pointer" : "grab",
-          border: "1px solid #ddd",
-          borderRadius: selected || chatOpen || (lassoSummary && !selected && !chatOpen) ? "4px 0 0 4px" : 4,
-          display: "block",
-        },
-        onMouseMove: handleMouseMove,
-        onMouseDown: handleMouseDown,
+        cursor: toolMode === "lasso" ? "crosshair" : dragging ? "grabbing" : tooltip ? "pointer" : "grab",
+        border: "1px solid #ddd",
+        borderRadius: panelOpen ? "4px 0 0 4px" : 4,
+      },
+      onMouseMove: handleMouseMove,
+      onMouseDown: handleMouseDown,
         onMouseUp: handleMouseUp,
         onMouseLeave: () => {
           dragRef.current = null;
@@ -1609,29 +1607,28 @@ function EmbeddingScatter({
                   `Label: ${tooltip.point.label}`,
                 )
               : null,
-
           )
         : null,
-      ),
-      // Detail panel — flex sibling of canvas
+      // Detail panel — position:absolute right of canvas
       selected
         ? React.createElement(
             "div",
             {
               style: {
+                position: "absolute" as const,
+                right: 0,
+                top: 0,
                 width: PANEL_WIDTH,
-                flexShrink: 0,
                 height: CANVAS_HEIGHT,
                 background: "white",
                 border: "1px solid #ccc",
                 borderLeft: "none",
                 borderRadius: "0 4px 4px 0",
                 padding: "12px 16px",
-                boxShadow: "2px 0 8px rgba(0,0,0,0.08)",
+                boxShadow: "2px 2px 8px rgba(0,0,0,0.08)",
                 overflowY: "auto" as const,
                 fontSize: 13,
                 boxSizing: "border-box" as const,
-                position: "relative" as const,
               },
             },
             // Close button
@@ -1794,20 +1791,22 @@ function EmbeddingScatter({
               : null,
           )
         : null,
-      // Chat panel — flex sibling of canvas (mutual exclusion with detail panel)
+      // Chat panel — position:absolute right of canvas (mutual exclusion with detail panel)
       chatOpen && !selected
         ? React.createElement(
             "div",
             {
               style: {
+                position: "absolute" as const,
+                right: 0,
+                top: 0,
                 width: PANEL_WIDTH,
-                flexShrink: 0,
                 height: CANVAS_HEIGHT,
                 background: "white",
                 border: "1px solid #ccc",
                 borderLeft: "none",
                 borderRadius: "0 4px 4px 0",
-                boxShadow: "2px 0 8px rgba(0,0,0,0.08)",
+                boxShadow: "2px 2px 8px rgba(0,0,0,0.08)",
                 fontSize: 13,
                 boxSizing: "border-box" as const,
                 display: "flex",
@@ -2036,14 +2035,16 @@ function EmbeddingScatter({
             "div",
             {
               style: {
+                position: "absolute" as const,
+                right: 0,
+                top: 0,
                 width: PANEL_WIDTH,
-                flexShrink: 0,
                 height: CANVAS_HEIGHT,
                 background: "white",
                 border: "1px solid #ccc",
                 borderLeft: "none",
                 borderRadius: "0 4px 4px 0",
-                boxShadow: "2px 0 8px rgba(0,0,0,0.08)",
+                boxShadow: "2px 2px 8px rgba(0,0,0,0.08)",
                 fontSize: 13,
                 boxSizing: "border-box" as const,
                 display: "flex",
