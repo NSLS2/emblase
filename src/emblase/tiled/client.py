@@ -374,7 +374,7 @@ def _make_index_schema(
     ``dtype``.
     """
     fields = list(_INDEX_BASE_FIELDS)
-    for name, spec in (param_specs or {}).items():
+    for name, spec in sorted((param_specs or {}).items()):
         pa_type = _PARAM_DTYPE_TO_PA.get(spec["dtype"])
         if pa_type is None:
             raise ValueError(
@@ -728,7 +728,7 @@ class LatentSpaceEmbedding(CompositeClient):
             "mlflow_run_id": [mlflow_run_id or self.metadata.get("mlflow_run_id", "")] * batch_size,
             "timestamp": timestamps or list(time.time() + np.arange(batch_size) * 1e-6),
         }
-        for name in self._param_specs:
+        for name in sorted(self._param_specs):
             col = f"param_{name}"
             table_data[col] = params.get(name, [None] * batch_size)
 
