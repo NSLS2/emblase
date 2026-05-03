@@ -11,8 +11,9 @@ Typical workflow — quick iteration on a complete run
 -----------------------------------------------------
 Push commits, pull on Orion, then submit::
 
-    git push
-    ssh orion-staging.nsls2.bnl.gov "cd /nsls2/users/ymatviych/code/emblase && git pull"
+    BRANCH=$(git branch --show-current)
+    git push origin $BRANCH
+    ssh orion-staging.nsls2.bnl.gov "cd /nsls2/users/ymatviych/code/emblase && git fetch && git checkout $BRANCH && git pull"
 
     python scripts/submit_orion.py infer \\
         --model   bnl-nsls2-smi-vit \\
