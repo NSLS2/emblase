@@ -176,9 +176,10 @@ def read_images(
             raise ValueError(
                 f"Array at {path!r} has fewer than 2 dimensions: {arr.shape}"
             )
-        for frame in arr.reshape(-1, arr.shape[-2], arr.shape[-1]):
+        flat = arr.reshape(-1, arr.shape[-2], arr.shape[-1])
+        for i, frame in enumerate(flat):
             frames.append(frame)
-            frame_entries.append(entry)
+            frame_entries.append((path, str(i)))
     return frames, frame_entries
 
 

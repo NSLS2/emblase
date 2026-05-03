@@ -55,11 +55,11 @@ def test_read_images_2d():
     assert len(frames) == 1
     np.testing.assert_array_equal(frames[0], arr)
     assert frames[0].dtype == np.float32
-    assert frame_entries == ["scan"]
+    assert frame_entries == [("scan", "0")]
 
 
 def test_read_images_3d_stack():
-    """A (N, H, W) array yields N frames, each pointing to the same entry."""
+    """A (N, H, W) array yields N frames with per-frame index in provenance."""
     arr = np.arange(3 * 4 * 5, dtype=np.float32).reshape(3, 4, 5)
     client = _make_client({"stack": _make_array_node(arr)})
 
@@ -69,11 +69,11 @@ def test_read_images_3d_stack():
     for i, frame in enumerate(frames):
         assert frame.shape == (4, 5)
         np.testing.assert_array_equal(frame, arr[i])
-    assert frame_entries == ["stack"] * 3
+    assert frame_entries == [("stack", "0"), ("stack", "1"), ("stack", "2")]
 
 
 def test_read_images_4d_stack():
-    """A (A, B, H, W) array yields A*B frames all pointing to the same entry."""
+    """A (A, B, H, W) array yields A*B frames with sequential indices."""
     arr = np.zeros((2, 3, 8, 8), dtype=np.float32)
     client = _make_client({"nd": _make_array_node(arr)})
 
@@ -81,11 +81,11 @@ def test_read_images_4d_stack():
 
     assert len(frames) == 6
     assert all(f.shape == (8, 8) for f in frames)
-    assert frame_entries == ["nd"] * 6
+    assert frame_entries == [("nd", str(i)) for i in range(6)]
 
 
 def test_read_images_mixed_paths():
-    """frame_entries tracks which entry each frame came from."""
+    """frame_entries records (path, index) for each frame."""
     arr_2d = np.ones((10, 20), dtype=np.float32)
     arr_3d = np.zeros((4, 6, 7), dtype=np.float32)
     client = _make_client({"a": _make_array_node(arr_2d), "b": _make_array_node(arr_3d)})
@@ -95,7 +95,7 @@ def test_read_images_mixed_paths():
     assert len(frames) == 5  # 1 + 4
     assert frames[0].shape == (10, 20)
     assert frames[1].shape == (6, 7)
-    assert frame_entries == ["a"] + ["b"] * 4
+    assert frame_entries == [("a", "0")] + [("b", str(i)) for i in range(4)]
 
 
 def test_read_images_1d_raises():
@@ -123,7 +123,7 @@ def test_read_images_with_slice():
     node.read.assert_called_once()  # called with an NDSlice, not bare string
     assert len(frames) == 2
     assert frames[0].shape == (32, 32)
-    assert frame_entries == [("scan", "1:3")] * 2
+    assert frame_entries == [("scan", "0"), ("scan", "1")]
 
 
 def test_read_images_mixed_str_and_tuple():
@@ -139,7 +139,7 @@ def test_read_images_mixed_str_and_tuple():
     assert len(frames) == 5  # 4 from "a", 1 from ("b", "0:1")
     node_a.read.assert_called_once()
     node_b.read.assert_called_once()
-    assert frame_entries == ["a"] * 4 + [("b", "0:1")]
+    assert frame_entries == [("a", str(i)) for i in range(4)] + [("b", "0")]
 
 
 # ---------------------------------------------------------------------------
