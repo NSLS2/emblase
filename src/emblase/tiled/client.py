@@ -354,6 +354,7 @@ USER_LABEL_MAX_LEN = 64
 
 # Base fields present in every _index table (param columns are appended after)
 _INDEX_BASE_FIELDS = [
+    pa.field("indx", pa.int64()),
     pa.field("path", pa.string()),
     pa.field("slice", pa.string(), nullable=True),
     pa.field("label", pa.string(), nullable=True),
@@ -497,9 +498,11 @@ class LatentSpaceEmbedding(CompositeClient):
         user_labels  : (N,) <U64 — mutable user-assigned labels
 
     SQL table (append-only, immutable after write):
-        _index : [path, slice, label, model_version, mlflow_run_id, timestamp,
+        _index : [indx, path, slice, label, model_version, mlflow_run_id, timestamp,
                   param_<name>, ...]
-            ``label`` is the immutable model-assigned label.
+            ``indx`` is the 0-based row offset in the ``embeddings`` and
+            ``projections`` arrays, making it the stable join key between the
+            table and the arrays regardless of SQL row ordering.
             ``param_*`` columns hold per-embedding parameter values declared
             in ``param_specs`` container metadata.
             Rows ordered by timestamp on read.
@@ -717,6 +720,7 @@ class LatentSpaceEmbedding(CompositeClient):
 
         # Build the _index table row, including param columns
         table_data: dict[str, Any] = {
+            "indx": list(range(current_n, current_n + batch_size)),
             "path": paths,
             "slice": [None] * batch_size if slices is None else slices,
             "label": [None] * batch_size if labels is None else labels,

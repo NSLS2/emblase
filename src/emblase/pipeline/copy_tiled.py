@@ -6,9 +6,18 @@ in batches with a sleep between each batch, simulating a live acquisition.
 
 ``batch_size`` controls how many rows are written per Tiled PATCH call:
 - ``batch_size=1`` (default) — one row at a time, maximum granularity for
-  streaming consumers.
+  streaming consumers.  **Required for the streaming pipeline** — see below.
 - ``batch_size=None`` or ``batch_size=0`` — write the entire array in one
   call (no incremental patching).
+
+.. warning::
+    **Do not use** ``batch_size=None`` with the streaming pipeline.  When the
+    entire array is written in one call, Tiled stores it using its own internal
+    spatial chunking (e.g. ``(294, 294, 31)`` along H).  The WS subscription
+    replays one event *per physical chunk*, so ``event.data()`` contains a
+    partial spatial tile (e.g. ``(288, 1, 31, 5)``) rather than a full frame.
+    The Orion job will receive malformed frames and fail.  Always use
+    ``batch_size=1`` when copying data for streaming inference.
 
 The stop document is always written *after* all frames, so a streaming
 Orion job subscribing with ``start=1`` will see each frame arrive and will

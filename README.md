@@ -52,27 +52,16 @@ Wait until the watcher prints `Watching … for new runs` before proceeding.
 
 **Terminal 2 — copy a run into the watched container (only after watcher is up):**
 
-```python
-import os, certifi, sys, time
-os.environ.setdefault('SSL_CERT_FILE', certifi.where())
-sys.path.insert(0, 'src')
-from emblase.config import settings
-from tiled.client import from_uri
-from emblase.pipeline.copy_tiled import deepcopy
-
-c = from_uri(settings.tiled_server_uri, api_key=settings.tiled_api_key)
-src = c['smi']['sandbox']['confab26_demo']['inputs']['run_1086139']
-dst = c['smi']['sandbox']['confab26_demo']['inputs_copy']
-
-ts = int(time.time())
-deepcopy(src, dst,
-         rename=f'run_live_1086139_{ts}',
-         access_tags=['smi_sandbox'],
-         batch_size=1,
-         batch_delay=0.5)   # 0.5 s/frame → ~144 s for 288 frames
+```bash
+pixi run python scripts/simulate_acquisition.py \
+  --src  smi/sandbox/confab26_demo/inputs/run_1086139 \
+  --dst  smi/sandbox/confab26_demo/inputs_copy \
+  --rename run_live_1086139 \
+  --access-tags smi_sandbox \
+  --batch-delay 0.5
 ```
 
-`deepcopy` creates the run container first (triggering the watcher), then writes frames one at a time to simulate live acquisition. The Orion job starts ~25–30 s after submission (pixi + model load), well before deepcopy finishes.
+`simulate_acquisition.py` creates the run container first (triggering the watcher), then writes frames one at a time to simulate live acquisition. A Unix timestamp is appended to `--rename` automatically. The Orion job starts ~25–30 s after submission (pixi + model load), well before the copy finishes at `0.5 s/frame × 288 frames ≈ 144 s`.
 
 ### `--param` syntax
 
@@ -178,6 +167,8 @@ src/emblase/
     └── streaming_inference.py.tmpl # streaming inference node script
 scripts/
 ├── stream_pipeline.py      # CLI: watch inputs_copy → submit streaming jobs
+├── simulate_acquisition.py # CLI: copy a run into inputs_copy frame-by-frame
+├── simulate_results.py     # CLI: stream a results container into a local Tiled (for WebUI dev)
 ├── submit_orion.py         # CLI: submit one-off batch jobs
 ├── compute_umap.py         # apply UMAP approximator → write projections
 └── train_umap.py           # fit UMAP + train MLP approximator

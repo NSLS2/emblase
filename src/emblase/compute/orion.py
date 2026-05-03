@@ -62,7 +62,7 @@ def _render_streaming_inference_script(
     mlflow_version: str = "",
     thumb_mode: str = "logroi",
     image_key: str = "pil900KW_image",
-    ws_max_size: int = 16 * 1024 * 1024,
+    ws_max_size: int = 64 * 1024 * 1024,
     param_specs: dict | None = None,
     umap_dir: str = "",
 ) -> str:
@@ -473,7 +473,7 @@ class OrionBackend(ComputeBackend):
         mlflow_version: str = "",
         thumb_mode: str = "logroi",
         image_key: str = "pil900KW_image",
-        ws_max_size: int = 16 * 1024 * 1024,
+        ws_max_size: int = 64 * 1024 * 1024,
         mem: str = "32G",
         param_specs: dict | None = None,
         umap_dir: str = "",

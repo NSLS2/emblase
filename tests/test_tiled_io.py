@@ -611,8 +611,11 @@ class _FakeLSEWithParams:
 
     append = LatentSpaceEmbedding.append
     _write_arrays = MagicMock()
-    num_embeddings = 0
     _num_embeddings = 0
+
+    @property
+    def num_embeddings(self):
+        return self._num_embeddings
 
     def __init__(self, param_specs=None):
         import pyarrow as pa
@@ -712,6 +715,24 @@ def test_append_no_params_ok_when_none_declared():
 
     table = lse._appended[0]
     assert not any(n.startswith("param_") for n in table.schema.names)
+
+
+def test_append_indx_matches_array_row_offset():
+    """indx column contains sequential row offsets into the embeddings array."""
+    lse = _FakeLSEWithParams({})
+    embeddings = np.zeros((3, 4), dtype=np.float32)
+    thumbnails = np.zeros((3, 8, 8), dtype=np.float32)
+
+    # First append: rows 0-2
+    LatentSpaceEmbedding.append(lse, embeddings, thumbnails, paths=["a", "b", "c"])
+    table1 = lse._appended[0]
+    assert "indx" in table1.schema.names
+    assert table1["indx"].to_pylist() == [0, 1, 2]
+
+    # Second append: rows 3-5
+    LatentSpaceEmbedding.append(lse, embeddings, thumbnails, paths=["d", "e", "f"])
+    table2 = lse._appended[1]
+    assert table2["indx"].to_pylist() == [3, 4, 5]
 
 
 # ---------------------------------------------------------------------------
