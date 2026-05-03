@@ -51,6 +51,14 @@ interface EmbeddingPoint {
   index: number;
   label?: string;
   path?: string;
+  params?: Record<string, number | null>;
+}
+
+interface ParamSpec {
+  dtype: "float" | "integer" | "string" | "boolean";
+  units?: string;
+  display_name?: string;
+  precision?: number;
 }
 
 interface TooltipInfo {
@@ -108,6 +116,53 @@ function getLabelColor(label: string): string {
     colorIdx++;
   }
   return LABEL_COLORS[label];
+}
+
+// Viridis colormap (sampled at 10 stops) — t ∈ [0, 1]
+const VIRIDIS: [number, number, number][] = [
+  [68, 1, 84], [72, 40, 120], [62, 74, 137], [49, 104, 142],
+  [38, 130, 142], [31, 158, 137], [53, 183, 121], [110, 206, 88],
+  [181, 222, 43], [253, 231, 37],
+];
+function viridis(t: number): string {
+  const clamped = Math.max(0, Math.min(1, t));
+  const scaled = clamped * (VIRIDIS.length - 1);
+  const lo = Math.floor(scaled);
+  const hi = Math.min(lo + 1, VIRIDIS.length - 1);
+  const frac = scaled - lo;
+  const r = Math.round(VIRIDIS[lo][0] + (VIRIDIS[hi][0] - VIRIDIS[lo][0]) * frac);
+  const g = Math.round(VIRIDIS[lo][1] + (VIRIDIS[hi][1] - VIRIDIS[lo][1]) * frac);
+  const b = Math.round(VIRIDIS[lo][2] + (VIRIDIS[hi][2] - VIRIDIS[lo][2]) * frac);
+  return `rgb(${r},${g},${b})`;
+}
+
+const GREY_OUT = "#cccccc";
+
+/**
+ * Determine a point's fill color and whether it is "active" (within filter).
+ * Returns { color, active } where active=false means grey it out.
+ */
+function resolvePointColor(
+  p: EmbeddingPoint,
+  colorBy: string,
+  hiddenLabels: Set<string>,
+  paramRange: [number, number] | null,
+  paramMin: number,
+  paramMax: number,
+): { color: string; active: boolean } {
+  if (colorBy === "label") {
+    const lbl = p.label || "";
+    const active = lbl === "" || !hiddenLabels.has(lbl);
+    return { color: getLabelColor(lbl || "(none)"), active };
+  }
+  // Continuous param
+  const val = p.params?.[colorBy] ?? null;
+  if (val === null) return { color: GREY_OUT, active: false };
+  const range = paramRange ?? [paramMin, paramMax];
+  const active = val >= range[0] && val <= range[1];
+  const span = paramMax - paramMin || 1;
+  const t = (val - paramMin) / span;
+  return { color: viridis(t), active };
 }
 
 function encodeUtf32LE(str: string, maxLen: number): ArrayBuffer {
@@ -197,6 +252,156 @@ const STATUS_COLORS: Record<WsStatus, string> = {
   connected: "#5cb85c",
 };
 
+const THUMB_R = 7; // thumb radius in px — half of the visual handle diameter
+
+/**
+ * Dual-handle range slider drawn directly on top of the viridis colorbar.
+ * Faded overlay covers the out-of-range portions.
+ * Labels sit below the bar; thumbs sit on the bar.
+ */
+function RangeSlider({
+  min, max, value, onChange, units, precision,
+}: {
+  min: number;
+  max: number;
+  value: [number, number];
+  onChange: (lo: number, hi: number) => void;
+  units?: string;
+  precision?: number;
+}) {
+  const trackRef = React.useRef<HTMLDivElement>(null);
+  const dragging = React.useRef<"lo" | "hi" | null>(null);
+  const fmt = (v: number) => v.toFixed(precision ?? 2);
+  const span = max - min || 1;
+
+  const loFrac = (value[0] - min) / span;
+  const hiFrac = (value[1] - min) / span;
+
+  function fracFromEvent(clientX: number): number {
+    const track = trackRef.current;
+    if (!track) return 0;
+    const rect = track.getBoundingClientRect();
+    return Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+  }
+
+  React.useEffect(() => {
+    function onMove(e: MouseEvent) {
+      if (!dragging.current) return;
+      const frac = fracFromEvent(e.clientX);
+      const v = min + frac * span;
+      if (dragging.current === "lo") {
+        onChange(Math.min(v, value[1] - span / 200), value[1]);
+      } else {
+        onChange(value[0], Math.max(v, value[0] + span / 200));
+      }
+    }
+    function onUp() { dragging.current = null; }
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, [min, max, value, onChange, span]);
+
+  const BAR_HEIGHT = 14;
+  const gradientStops = Array.from({ length: 10 }, (_, i) => viridis(i / 9)).join(", ");
+
+  return React.createElement(
+    "div",
+    { style: { fontSize: 11, userSelect: "none" as const } },
+    // ── Combined colorbar + thumb track ─────────────────────────────────────
+    React.createElement(
+      "div",
+      {
+        ref: trackRef,
+        style: {
+          position: "relative" as const,
+          height: BAR_HEIGHT,
+          borderRadius: BAR_HEIGHT / 2,
+          background: `linear-gradient(to right, ${gradientStops})`,
+          cursor: "default",
+        },
+      },
+      // Left fade overlay (out-of-range)
+      loFrac > 0.001
+        ? React.createElement("div", {
+            style: {
+              position: "absolute" as const,
+              top: 0, left: 0, bottom: 0,
+              width: `${loFrac * 100}%`,
+              borderRadius: `${BAR_HEIGHT / 2}px 0 0 ${BAR_HEIGHT / 2}px`,
+              background: "rgba(250,250,250,0.72)",
+              pointerEvents: "none" as const,
+            },
+          })
+        : null,
+      // Right fade overlay (out-of-range)
+      hiFrac < 0.999
+        ? React.createElement("div", {
+            style: {
+              position: "absolute" as const,
+              top: 0, right: 0, bottom: 0,
+              width: `${(1 - hiFrac) * 100}%`,
+              borderRadius: `0 ${BAR_HEIGHT / 2}px ${BAR_HEIGHT / 2}px 0`,
+              background: "rgba(250,250,250,0.72)",
+              pointerEvents: "none" as const,
+            },
+          })
+        : null,
+      // Lo thumb
+      React.createElement("div", {
+        onMouseDown: (e: React.MouseEvent) => { e.preventDefault(); dragging.current = "lo"; },
+        style: {
+          position: "absolute" as const,
+          top: "50%",
+          left: `${loFrac * 100}%`,
+          transform: "translate(-50%, -50%)",
+          width: THUMB_R * 2,
+          height: THUMB_R * 2,
+          borderRadius: "50%",
+          background: "white",
+          border: "2px solid rgba(0,0,0,0.35)",
+          boxShadow: "0 1px 3px rgba(0,0,0,0.25)",
+          cursor: "ew-resize",
+          boxSizing: "border-box" as const,
+          zIndex: 3,
+        },
+      }),
+      // Hi thumb
+      React.createElement("div", {
+        onMouseDown: (e: React.MouseEvent) => { e.preventDefault(); dragging.current = "hi"; },
+        style: {
+          position: "absolute" as const,
+          top: "50%",
+          left: `${hiFrac * 100}%`,
+          transform: "translate(-50%, -50%)",
+          width: THUMB_R * 2,
+          height: THUMB_R * 2,
+          borderRadius: "50%",
+          background: "white",
+          border: "2px solid rgba(0,0,0,0.35)",
+          boxShadow: "0 1px 3px rgba(0,0,0,0.25)",
+          cursor: "ew-resize",
+          boxSizing: "border-box" as const,
+          zIndex: 3,
+        },
+      }),
+    ),
+    // ── Labels row (below the bar) ──────────────────────────────────────────
+    React.createElement(
+      "div",
+      { style: { display: "flex", justifyContent: "space-between", marginTop: 3, color: "#888" } },
+      React.createElement("span", null, fmt(value[0])),
+      React.createElement(
+        "span",
+        null,
+        fmt(value[1]) + (units ? `\u2009${units}` : ""),
+      ),
+    ),
+  );
+}
+
 function EmbeddingScatter({
   segments,
   item,
@@ -243,6 +448,22 @@ function EmbeddingScatter({
   // Skip the catch-up refreshAll on the first live-effect run after initial load
   const skipCatchupRef = React.useRef(false);
 
+  // Coloring state
+  const meta = item?.data?.attributes?.metadata || {};
+  const paramSpecs: Record<string, ParamSpec> = meta.param_specs || {};
+  const paramNames = Object.keys(paramSpecs); // e.g. ["piezo_x", "temperature"]
+  const [colorBy, setColorBy] = React.useState<string>("label");
+  // Categorical filter: set of labels hidden from view
+  const [hiddenLabels, setHiddenLabels] = React.useState<Set<string>>(new Set());
+  // Continuous filter: [lo, hi] in data units (null = full range)
+  const [paramRange, setParamRange] = React.useState<[number, number] | null>(null);
+
+  // Reset filters when color dimension changes
+  React.useEffect(() => {
+    setHiddenLabels(new Set());
+    setParamRange(null);
+  }, [colorBy]);
+
   const apiUrl = `${window.location.origin}/api/v1`;
 
   const nodePath = segments.join("/");
@@ -275,13 +496,21 @@ function EmbeddingScatter({
       const paths: string[] = indexData.path || [];
 
       const pts: EmbeddingPoint[] = projData.map(
-        (coords: number[], i: number) => ({
-          x: coords[0],
-          y: coords[1],
-          index: i,
-          label: labels[i] || "",
-          path: paths[i] || "",
-        }),
+        (coords: number[], i: number) => {
+          const params: Record<string, number | null> = {};
+          for (const name of paramNames) {
+            const col: (number | null)[] = indexData[`param_${name}`] || [];
+            params[name] = col[i] ?? null;
+          }
+          return {
+            x: coords[0],
+            y: coords[1],
+            index: i,
+            label: labels[i] || "",
+            path: paths[i] || "",
+            params,
+          };
+        },
       );
       pointCountRef.current = pts.length;
       setPoints(pts);
@@ -355,7 +584,7 @@ function EmbeddingScatter({
     let disposed = false;
 
     // Buffer for table metadata that arrived before projections
-    const pendingMeta = new Map<number, { labels: string[]; paths: string[] }>();
+    const pendingMeta = new Map<number, { labels: string[]; paths: string[]; params: Record<string, (number | null)[]> }>();
 
     function updateStatus() {
       if (proj.connected && idx.connected) setWsStatus("connected");
@@ -416,10 +645,15 @@ function EmbeddingScatter({
         prev.map((p) => {
           const rel = p.index - startIdx;
           if (rel >= 0 && rel < count) {
+            const newParams: Record<string, number | null> = { ...(p.params || {}) };
+            for (const name of Object.keys(meta.params)) {
+              newParams[name] = meta.params[name][rel] ?? null;
+            }
             return {
               ...p,
               label: meta.labels[rel] || p.label,
               path: meta.paths[rel] || p.path,
+              params: newParams,
             };
           }
           return p;
@@ -469,6 +703,12 @@ function EmbeddingScatter({
       const count = labels.length;
       if (count === 0) return;
 
+      // Extract param columns from payload
+      const params: Record<string, (number | null)[]> = {};
+      for (const name of paramNames) {
+        params[name] = payload[`param_${name}`] || [];
+      }
+
       // Determine which indices these rows correspond to.
       // If projections already arrived, pointCountRef is updated and the
       // points exist — apply metadata directly. Otherwise buffer it.
@@ -480,22 +720,27 @@ function EmbeddingScatter({
             return prev.map((p) => {
               const rel = p.index - startIdx;
               if (rel >= 0 && rel < count) {
+                const newParams: Record<string, number | null> = { ...(p.params || {}) };
+                for (const name of paramNames) {
+                  newParams[name] = params[name]?.[rel] ?? null;
+                }
                 return {
                   ...p,
                   label: labels[rel] || p.label,
                   path: paths[rel] || p.path,
+                  params: newParams,
                 };
               }
               return p;
             });
           }
           // Points don't exist yet; buffer metadata
-          pendingMeta.set(pointCountRef.current, { labels, paths });
+          pendingMeta.set(pointCountRef.current, { labels, paths, params });
           return prev;
         });
       } else {
         // Projection event hasn't arrived yet; buffer metadata
-        pendingMeta.set(pointCountRef.current, { labels, paths });
+        pendingMeta.set(pointCountRef.current, { labels, paths, params });
       }
     }
 
@@ -525,6 +770,22 @@ function EmbeddingScatter({
     observer.observe(container);
     return () => observer.disconnect();
   }, []);
+
+  // Compute min/max for the currently selected continuous param (must be before canvas draw effect)
+  const { paramMin, paramMax } = React.useMemo(() => {
+    if (colorBy === "label" || !paramNames.includes(colorBy)) return { paramMin: 0, paramMax: 1 };
+    let mn = Infinity, mx = -Infinity;
+    for (const p of points) {
+      const v = p.params?.[colorBy];
+      if (v !== null && v !== undefined) {
+        if (v < mn) mn = v;
+        if (v > mx) mx = v;
+      }
+    }
+    if (!isFinite(mn)) { mn = 0; mx = 1; }
+    if (mn === mx) { mn -= 0.5; mx += 0.5; }
+    return { paramMin: mn, paramMax: mx };
+  }, [points, colorBy, paramNames]);
 
   // Draw canvas
   React.useEffect(() => {
@@ -577,13 +838,21 @@ function EmbeddingScatter({
       const isHovered = tooltip?.point.index === p.index;
       const isSelected = selected?.point.index === p.index;
       const isLassoed = hasLasso && lassoSelected.has(p.index);
+      const { color, active } = resolvePointColor(p, colorBy, hiddenLabels, paramRange, paramMin, paramMax);
       const radius = isHovered || isSelected ? HOVER_RADIUS : POINT_RADIUS;
       ctx.beginPath();
       ctx.arc(sx, sy, radius, 0, Math.PI * 2);
-      ctx.fillStyle = getLabelColor(p.label || "");
-      ctx.globalAlpha = hasLasso && !isLassoed && !isHovered && !isSelected ? 0.15 : (isHovered || isSelected ? 1.0 : 0.7);
+      // Grey out inactive points; dim lasso-unselected points
+      if (!active && !isHovered && !isSelected) {
+        ctx.fillStyle = GREY_OUT;
+        ctx.globalAlpha = hasLasso && !isLassoed ? 0.08 : 0.25;
+      } else {
+        ctx.fillStyle = color;
+        ctx.globalAlpha = hasLasso && !isLassoed && !isHovered && !isSelected ? 0.15 : (isHovered || isSelected ? 1.0 : 0.75);
+      }
       ctx.fill();
       if (isSelected) {
+        ctx.globalAlpha = 1.0;
         ctx.strokeStyle = "#1976d2";
         ctx.lineWidth = 2.5;
         ctx.stroke();
@@ -593,6 +862,7 @@ function EmbeddingScatter({
         ctx.lineWidth = 1.5;
         ctx.stroke();
       } else if (isHovered) {
+        ctx.globalAlpha = 1.0;
         ctx.strokeStyle = "#000";
         ctx.lineWidth = 2;
         ctx.stroke();
@@ -624,7 +894,7 @@ function EmbeddingScatter({
         ctx.fill();
       }
     }
-  }, [points, view, canvasWidth, tooltip, selected, lassoPath, lassoSelected]);
+  }, [points, view, canvasWidth, tooltip, selected, lassoPath, lassoSelected, colorBy, hiddenLabels, paramRange, paramMin, paramMax]);
 
   // Mouse handlers
   const toDataCoords = React.useCallback(
@@ -957,8 +1227,6 @@ function EmbeddingScatter({
     return { count: selectedPts.length, labelCounts, points: selectedPts };
   }, [lassoSelected, points]);
 
-  const meta = item?.data?.attributes?.metadata || {};
-
   if (loading) {
     return React.createElement(
       "div",
@@ -1003,6 +1271,34 @@ function EmbeddingScatter({
       meta.embedding_dim
         ? React.createElement("span", null, `Dim: ${meta.embedding_dim}`)
         : null,
+      // Color-by dropdown
+      React.createElement(
+        "div",
+        { style: { display: "flex", alignItems: "center", gap: 6, fontSize: 12 } },
+        React.createElement("span", { style: { color: "#777" } }, "Color by:"),
+        React.createElement(
+          "select",
+          {
+            value: colorBy,
+            onChange: (e: React.ChangeEvent<HTMLSelectElement>) => setColorBy(e.target.value),
+            style: {
+              fontSize: 12,
+              padding: "2px 6px",
+              border: "1px solid #ccc",
+              borderRadius: 6,
+              background: "#fff",
+              cursor: "pointer",
+            },
+          },
+          React.createElement("option", { value: "label" }, "label"),
+          ...paramNames.map((name) => {
+            const spec = paramSpecs[name];
+            const display = spec.display_name || name;
+            const units = spec.units ? ` (${spec.units})` : "";
+            return React.createElement("option", { key: name, value: name }, `${display}${units}`);
+          }),
+        ),
+      ),
       // Tool mode toggle (Pan / Lasso)
       React.createElement(
         "div",
@@ -1827,38 +2123,100 @@ function EmbeddingScatter({
           )
         : null,
     ),
-    uniqueLabels.length > 0
-      ? React.createElement(
-          "div",
-          {
-            style: {
-              marginTop: 8,
-              display: "flex",
-              flexWrap: "wrap",
-              gap: 12,
-              fontSize: 12,
-            },
-          },
-          ...uniqueLabels.map((label) =>
-            React.createElement(
+    // ── Color legend / filter controls ─────────────────────────────────────
+    colorBy === "label"
+      ? // Categorical legend: clickable swatches
+        uniqueLabels.length > 0
+          ? React.createElement(
               "div",
               {
-                key: label,
-                style: { display: "flex", alignItems: "center", gap: 4 },
-              },
-              React.createElement("div", {
                 style: {
-                  width: 10,
-                  height: 10,
-                  borderRadius: "50%",
-                  backgroundColor: getLabelColor(label),
+                  marginTop: 10,
+                  display: "flex",
+                  flexWrap: "wrap" as const,
+                  gap: 8,
+                  fontSize: 12,
+                  alignItems: "center",
                 },
+              },
+              React.createElement("span", { style: { color: "#777", fontSize: 11 } }, "Toggle:"),
+              ...uniqueLabels.map((label) => {
+                const hidden = hiddenLabels.has(label);
+                return React.createElement(
+                  "button",
+                  {
+                    key: label,
+                    onClick: () => {
+                      setHiddenLabels((prev) => {
+                        const next = new Set(prev);
+                        if (next.has(label)) next.delete(label);
+                        else next.add(label);
+                        return next;
+                      });
+                    },
+                    title: hidden ? `Show ${label}` : `Hide ${label}`,
+                    style: {
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 5,
+                      padding: "3px 8px",
+                      border: "1px solid #ccc",
+                      borderRadius: 12,
+                      background: hidden ? "#f5f5f5" : "white",
+                      cursor: "pointer",
+                      fontSize: 12,
+                      opacity: hidden ? 0.45 : 1,
+                      transition: "opacity 0.15s",
+                    },
+                  },
+                  React.createElement("div", {
+                    style: {
+                      width: 9,
+                      height: 9,
+                      borderRadius: "50%",
+                      backgroundColor: getLabelColor(label),
+                      flexShrink: 0,
+                    },
+                  }),
+                  React.createElement("span", null, label),
+                );
               }),
-              React.createElement("span", null, label),
-            ),
-          ),
-        )
-      : null,
+              hiddenLabels.size > 0
+                ? React.createElement(
+                    "button",
+                    {
+                      onClick: () => setHiddenLabels(new Set()),
+                      style: {
+                        fontSize: 11,
+                        color: "#1976d2",
+                        background: "none",
+                        border: "none",
+                        cursor: "pointer",
+                        padding: "0 4px",
+                        textDecoration: "underline",
+                      },
+                    },
+                    "Show all",
+                  )
+                : null,
+            )
+          : null
+      : // Continuous param: colorbar + dual-handle range slider
+        React.createElement(
+          "div",
+          { style: { marginTop: 10, width: canvasWidth } },
+          React.createElement(RangeSlider, {
+            min: paramMin,
+            max: paramMax,
+            value: paramRange ?? [paramMin, paramMax],
+            onChange: (lo: number, hi: number) => {
+              if (lo <= paramMin + 1e-9 && hi >= paramMax - 1e-9) setParamRange(null);
+              else setParamRange([lo, hi]);
+            },
+            units: paramSpecs[colorBy]?.units,
+            precision: paramSpecs[colorBy]?.precision ?? 2,
+          }),
+        ),
     // Instructions
     React.createElement(
       "div",
