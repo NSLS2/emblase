@@ -39,6 +39,7 @@ class Settings(BaseSettings):
     orion_project_dir: str = "/nsls2/users/ymatviych/code/emblase"
     orion_working_dir: str = "/nsls2/users/ymatviych/code/emblase/jobs"
     orion_models_dir: str = "/nsls2/users/ymatviych/code/emblase/models"
+    orion_umap_dir: str = "/nsls2/users/ymatviych/code/emblase/models/umap_approx"
     orion_home: str = "/nsls2/users/ymatviych"
     orion_account: str = "staff"
     orion_path: str = "/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/usr/local/cuda/bin:/nsls2/software/bin"

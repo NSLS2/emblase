@@ -222,6 +222,7 @@ def write_output(
     embedding_dim: Optional[int] = None,
     params: Optional[dict[str, list]] = None,
     param_specs: Optional[dict[str, "ParamSpec"]] = None,
+    projections: Optional[np.ndarray] = None,
     metadata: Optional[dict] = None,
     access_tags: Optional[list[str]] = None,
 ) -> None:
@@ -265,6 +266,9 @@ def write_output(
         time.  Ignored if the container already exists.  If omitted but
         ``params`` is provided, minimal specs (``{"dtype": "float"}``) are
         inferred from the value types.
+    projections : np.ndarray, optional
+        Shape (N, P) pre-computed projection coordinates (e.g. from the UMAP
+        approximator).  When provided, stored directly instead of NaN placeholders.
     metadata:
         Extra key/value pairs merged into container metadata on creation.
     access_tags:
@@ -340,6 +344,7 @@ def write_output(
         slices=slices,
         model_version=model_version or None,
         timestamps=list(time.time() + np.arange(n) * 1e-6),
+        projections=projections,
         params=params,
         access_tags=access_tags,
     )

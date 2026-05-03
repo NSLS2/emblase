@@ -73,6 +73,9 @@ class InputsWatcher:
         ``OrionBackend`` instance with a ``submit_streaming`` coroutine.
     model_name, batch_size, image_key, thumb_mode, mlflow_version:
         Forwarded to the Orion streaming job.
+    param_specs:
+        Optional dict mapping parameter names to ParamSpec dicts.  Forwarded
+        verbatim to ``submit_streaming`` (and hence to the Orion job).
     loop:
         asyncio event loop for scheduling ``submit_streaming`` coroutines.
     """
@@ -88,6 +91,7 @@ class InputsWatcher:
         thumb_mode: str = "logroi",
         mlflow_version: str = "",
         access_tags: list[str] | None = None,
+        param_specs: dict | None = None,
         loop: asyncio.AbstractEventLoop | None = None,
     ) -> None:
         self.inputs_node = inputs_node
@@ -99,6 +103,7 @@ class InputsWatcher:
         self.thumb_mode = thumb_mode
         self.mlflow_version = mlflow_version
         self.access_tags = access_tags
+        self.param_specs = param_specs
         self.loop = loop
         self._seen_runs: set[str] = set()
         self._sub: Any = None
@@ -161,6 +166,7 @@ class InputsWatcher:
                 thumb_mode=self.thumb_mode,
                 mlflow_version=self.mlflow_version,
                 access_tags=self.access_tags,
+                param_specs=self.param_specs,
             )
             logger.info("Submitted Orion streaming job %s for run %s", job_id, run_path)
         except Exception:

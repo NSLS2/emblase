@@ -101,12 +101,53 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Do not replay existing runs in the inputs container on startup.",
     )
     p.add_argument(
+        "--param",
+        action="append",
+        default=[],
+        dest="params",
+        metavar="name:source[:dtype[:units]]",
+        help=(
+            "Scalar parameter to store alongside embeddings.  source must be of "
+            "the form 'primary.<array_key>'.  dtype defaults to 'float', units to ''.  "
+            "Repeat for multiple params, e.g.: "
+            "--param temperature:primary.LinkamThermal_temperature_current:float:°C "
+            "--param piezo_x:primary.piezo_x:float:μm"
+        ),
+    )
+    p.add_argument(
         "--log-level",
         default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
         help="Logging level (default: INFO).",
     )
     return p
+
+
+def _parse_param_specs(param_strs: list[str]) -> dict | None:
+    """Parse --param name:source[:dtype[:units]] entries into a ParamSpec dict."""
+    if not param_strs:
+        return None
+    specs: dict = {}
+    for s in param_strs:
+        parts = s.split(":", 3)
+        if len(parts) < 2:
+            sys.exit(f"Invalid --param spec {s!r}: expected name:source[:dtype[:units]]")
+        name = parts[0]
+        source = parts[1]
+        if len(parts) > 2:
+            source = f"{parts[1]}:{parts[2]}" if ":" not in parts[1] else parts[1]
+            # re-split properly: name source dtype units
+        # Re-parse cleanly
+        parts2 = s.split(":")
+        name = parts2[0]
+        # source may be "primary.key" — no colon, so safe to rejoin from idx 1
+        # Format: name : stream . key : dtype : units
+        # Since source contains a dot (not colon), parts[1] is always the source
+        source = parts2[1]
+        dtype = parts2[2] if len(parts2) > 2 else "float"
+        units = parts2[3] if len(parts2) > 3 else ""
+        specs[name] = {"source": source, "dtype": dtype, "units": units}
+    return specs
 
 
 def main() -> None:
@@ -133,6 +174,7 @@ def main() -> None:
         sys.exit(f"Inputs container not found: {args.inputs}")
 
     access_tags = [t.strip() for t in args.access_tags.split(",") if t.strip()]
+    param_specs = _parse_param_specs(args.params)
 
     # Build Orion backend
     backend = OrionBackend()
@@ -158,6 +200,7 @@ def main() -> None:
         thumb_mode=args.thumb_mode,
         mlflow_version=args.mlflow_version,
         access_tags=access_tags,
+        param_specs=param_specs,
         loop=loop,
     )
 

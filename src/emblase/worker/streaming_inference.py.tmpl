@@ -10,6 +10,8 @@ Filled by _render_streaming_inference_script():
     {{thumb_mode}}     — thumbnail mode ("default" or "logroi")
     {{image_key}}      — key of the image array within the primary stream
     {{ws_max_size}}    — WebSocket max message size in bytes
+    {{param_specs_json}} — JSON dict mapping param name → ParamSpec (source: "primary.<key>")
+    {{umap_dir}}       — path to umap_approx dir; empty string → no on-the-fly projections
 
 Flow:
   1. Load model and connect to Tiled.
@@ -22,6 +24,7 @@ Flow:
      flush remaining frames, send sentinel to writer thread, wait for it to exit.
 """
 
+import json
 import logging
 import os
 import queue
@@ -51,6 +54,8 @@ mlflow_version = "{mlflow_version}" or None
 thumb_mode     = "{thumb_mode}"
 image_key      = "{image_key}"
 ws_max_size    = {ws_max_size}
+param_specs    = json.loads('{param_specs_json}')
+umap_dir       = "{umap_dir}"
 
 _raw_tags = os.environ.get("EMBLASE_TILED_ACCESS_TAGS", "").strip()
 access_tags: list[str] | None = [t.strip() for t in _raw_tags.split(",") if t.strip()] or None
@@ -64,6 +69,8 @@ log.info("batch_size : %d", batch_size)
 log.info("thumb_mode : %s", thumb_mode)
 log.info("image_key  : %s", image_key)
 log.info("access_tags: %s", access_tags)
+log.info("param_specs: %s", list(param_specs.keys()))
+log.info("umap_dir   : %s", umap_dir or "(none)")
 
 models_dir = "{models_dir}"
 if models_dir not in sys.path:
@@ -86,6 +93,42 @@ model = load_model(
 )
 log.info("Model loaded in %.1f s", time.perf_counter() - t0)
 
+# ---------------------------------------------------------------------------
+# Optional UMAP approximator — loaded once at startup, applied per batch.
+# ---------------------------------------------------------------------------
+_umap_model = None
+_umap_scaler = None
+
+if umap_dir:
+    try:
+        import joblib
+        from pathlib import Path as _Path
+        _ud = _Path(umap_dir)
+        if str(_ud) not in sys.path:
+            sys.path.insert(0, str(_ud))
+        from neural_dimred_wrapper import SimpleDimRedApproximator
+        _scaler_path = _ud / "scaler.pkl"
+        _umap_scaler = joblib.load(_scaler_path) if _scaler_path.exists() else None
+        _sd = torch.load(_ud / "umap_approximator.pth", map_location=device, weights_only=True)
+        _umap_model = SimpleDimRedApproximator(input_dim=_sd["network.0.weight"].shape[1])
+        _umap_model.load_state_dict(_sd)
+        _umap_model.eval().to(device)
+        log.info("UMAP approximator loaded from %s", umap_dir)
+    except Exception as _exc:
+        log.warning("UMAP approximator not loaded — projections will be NaN: %s", _exc)
+        _umap_model = None
+
+
+def _compute_projections(embeddings):
+    if _umap_model is None:
+        return None
+    X = embeddings.astype("float32")
+    if _umap_scaler is not None:
+        X = _umap_scaler.transform(X)
+    with torch.no_grad():
+        coords = _umap_model(torch.tensor(X, dtype=torch.float32, device=device)).cpu().numpy()
+    return coords.astype("float32")
+
 from tiled.client import from_uri  # noqa: E402
 from emblase.tiled.client import write_output  # noqa: E402
 
@@ -98,8 +141,36 @@ run_node = tiled_client[tuple(run_segments)]
 log.info("Run node: %s", run_path)
 
 # ---------------------------------------------------------------------------
+# Param arrays — read lazily from primary stream once the image array appears.
+# ---------------------------------------------------------------------------
+_param_arrays: dict[str, np.ndarray] = {{}}
+_param_arrays_ready = threading.Event()
+
+
+def _load_param_arrays() -> None:
+    if not param_specs:
+        _param_arrays_ready.set()
+        return
+    try:
+        primary = run_node["primary"]
+        for name, spec in param_specs.items():
+            source = spec.get("source", "")
+            parts = source.split(".", 1)
+            if len(parts) != 2 or parts[0] != "primary":
+                log.warning("Param %r: unsupported source %r — skipping", name, source)
+                continue
+            arr = primary[parts[1]].read()
+            _param_arrays[name] = np.asarray(arr)
+            log.info("Loaded param %r shape=%s", name, arr.shape)
+    except Exception as exc:
+        log.exception("Failed to load param arrays: %s", exc)
+    finally:
+        _param_arrays_ready.set()
+
+
+# ---------------------------------------------------------------------------
 # Writer thread — serialises all encode+write work through a queue.
-# Items: (frames: list[ndarray], entries: list[tuple]) or None (sentinel).
+# Items: (frames, entries, frame_indices) or None (sentinel).
 # ---------------------------------------------------------------------------
 _write_queue: queue.Queue = queue.Queue()
 _done = threading.Event()       # set when writer exits (cleanly or on error)
@@ -115,15 +186,35 @@ def _writer_loop() -> None:
                 if item is None:
                     log.info("Writer thread: sentinel received — exiting")
                     return
-                frames, entries = item
+                frames, entries, frame_indices = item
                 t0 = time.perf_counter()
                 embeddings = encode(model, frames, batch_size=1)
                 log.info("Encoded %d frame(s) in %.1f s → shape %s",
                          len(frames), time.perf_counter() - t0, embeddings.shape)
+
+                projections = _compute_projections(embeddings)
+                if projections is not None:
+                    log.info("Projections: %s", projections.shape)
+
+                batch_params = None
+                if param_specs:
+                    _param_arrays_ready.wait(timeout=30)
+                    if _param_arrays:
+                        batch_params = {{}}
+                        for name in param_specs:
+                            arr = _param_arrays.get(name)
+                            batch_params[name] = (
+                                [arr[i].item() for i in frame_indices]
+                                if arr is not None else [None] * len(frame_indices)
+                            )
+
                 write_output(
                     tiled_client, output, embeddings,
                     images=frames, source_entries=entries,
                     model_name=model_name, thumb_mode=thumb_mode, access_tags=access_tags,
+                    params=batch_params,
+                    param_specs=param_specs if batch_params is not None else None,
+                    projections=projections,
                 )
                 log.info("Written to Tiled: %s", output)
             finally:
@@ -141,6 +232,7 @@ threading.Thread(target=_writer_loop, name="emblase-writer", daemon=True).start(
 _lock = threading.Lock()
 _queued_frames: list[np.ndarray] = []
 _queued_entries: list[tuple] = []
+_queued_indices: list[int] = []
 _next_frame_idx = 0
 
 
@@ -148,9 +240,10 @@ def _maybe_flush_batch() -> None:
     """If the queue has grown to batch_size, drain it and enqueue for writing.
     Must be called with _lock held."""
     if len(_queued_frames) >= batch_size:
-        _write_queue.put((list(_queued_frames), list(_queued_entries)))
+        _write_queue.put((list(_queued_frames), list(_queued_entries), list(_queued_indices)))
         _queued_frames.clear()
         _queued_entries.clear()
+        _queued_indices.clear()
 
 
 def _on_new_image_data(event) -> None:
@@ -162,6 +255,7 @@ def _on_new_image_data(event) -> None:
         for i in range(n):
             _queued_frames.append(chunk[i].squeeze())  # (H, W)
             _queued_entries.append((run_path + f"/primary/{{image_key}}", str(_next_frame_idx)))
+            _queued_indices.append(_next_frame_idx)
             _next_frame_idx += 1
         _maybe_flush_batch()
 
@@ -169,6 +263,7 @@ def _on_new_image_data(event) -> None:
 def _on_image_child_created(event) -> None:
     if event.key == image_key:
         log.info("Image array %r appeared — subscribing", image_key)
+        threading.Thread(target=_load_param_arrays, name="emblase-params", daemon=True).start()
         sub = event.child().subscribe()
         sub.new_data.add_callback(_on_new_image_data)
         _all_subs.append(sub)
@@ -204,9 +299,10 @@ def _on_stop_doc(event) -> None:
             break
     log.info("Settled at %d frame(s) — flushing remainder", last_idx)
     with _lock:
-        remaining = list(_queued_frames), list(_queued_entries)
+        remaining = list(_queued_frames), list(_queued_entries), list(_queued_indices)
         _queued_frames.clear()
         _queued_entries.clear()
+        _queued_indices.clear()
     if remaining[0]:
         log.info("Flushing %d remaining frame(s)", len(remaining[0]))
         _write_queue.put(remaining)
@@ -233,9 +329,10 @@ _done.wait(timeout=7200)  # 2-hour hard limit
 if not _done.is_set():
     log.warning("Timeout reached — flushing and exiting")
     with _lock:
-        remaining = list(_queued_frames), list(_queued_entries)
+        remaining = list(_queued_frames), list(_queued_entries), list(_queued_indices)
         _queued_frames.clear()
         _queued_entries.clear()
+        _queued_indices.clear()
     if remaining[0]:
         _write_queue.put(remaining)
     _write_queue.put(None)

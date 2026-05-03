@@ -63,8 +63,11 @@ def _render_streaming_inference_script(
     thumb_mode: str = "logroi",
     image_key: str = "pil900KW_image",
     ws_max_size: int = 16 * 1024 * 1024,
+    param_specs: dict | None = None,
+    umap_dir: str = "",
 ) -> str:
     """Render the streaming inference template with concrete values."""
+    import json
     return _STREAMING_TEMPLATE.format(
         model_name=model_name,
         models_dir=models_dir,
@@ -75,6 +78,8 @@ def _render_streaming_inference_script(
         thumb_mode=thumb_mode,
         image_key=image_key,
         ws_max_size=ws_max_size,
+        param_specs_json=json.dumps(param_specs or {}),
+        umap_dir=umap_dir,
     )
 
 
@@ -287,6 +292,7 @@ class OrionBackend(ComputeBackend):
         client: OrionClient | None = None,
         working_dir: str | None = None,
         models_dir: str | None = None,
+        umap_dir: str | None = None,
         project_dir: str | None = None,
         home: str | None = None,
         account: str | None = None,
@@ -295,6 +301,7 @@ class OrionBackend(ComputeBackend):
         self.client = client or OrionClient()
         self.working_dir = working_dir or settings.orion_working_dir
         self.models_dir = models_dir or settings.orion_models_dir
+        self.umap_dir = umap_dir or settings.orion_umap_dir
         self.project_dir = project_dir or settings.orion_project_dir
         self.home = home or settings.orion_home
         self.account = account or settings.orion_account
@@ -468,13 +475,11 @@ class OrionBackend(ComputeBackend):
         image_key: str = "pil900KW_image",
         ws_max_size: int = 16 * 1024 * 1024,
         mem: str = "32G",
+        param_specs: dict | None = None,
+        umap_dir: str = "",
         **kwargs: Any,
     ) -> str:
         """Submit a streaming inference job that subscribes to a BlueskyRun on Orion.
-
-        The job connects to Tiled via WebSocket, watches the run's image stream,
-        encodes frames incrementally, and writes embeddings until the stop document
-        is received.
 
         Parameters
         ----------
@@ -482,8 +487,20 @@ class OrionBackend(ComputeBackend):
             Tiled path to the BlueskyRun container (e.g. ``smi/.../inputs_copy/run_xyz``).
         output:
             Tiled path to write embeddings into (e.g. ``smi/.../results/run_xyz``).
-        model_name, batch_size, mlflow_version, thumb_mode, image_key, ws_max_size:
-            Forwarded to the streaming inference script.
+        param_specs:
+            Optional dict mapping parameter names to ParamSpec dicts.  Each spec
+            must include a ``source`` key of the form ``"primary.<array_key>"``
+            pointing to a scalar array in the run's primary stream that is
+            aligned 1-to-1 with frames.
+
+            Example::
+
+                param_specs={
+                    "temperature": {"dtype": "float", "units": "°C",
+                                    "source": "primary.LinkamThermal_temperature_current"},
+                    "piezo_x":     {"dtype": "float", "units": "μm",
+                                    "source": "primary.piezo_x"},
+                }
         """
         py_script = _render_streaming_inference_script(
             model_name=model_name,
@@ -495,6 +512,8 @@ class OrionBackend(ComputeBackend):
             thumb_mode=thumb_mode,
             image_key=image_key,
             ws_max_size=ws_max_size,
+            param_specs=param_specs,
+            umap_dir=umap_dir or self.umap_dir,
         )
 
         script = _build_sbatch_script(

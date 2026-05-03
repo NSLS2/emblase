@@ -44,6 +44,12 @@ def load_model(model_name: str, **kwargs) -> torch.nn.Module:
 def _load_local(model_name: str, **kwargs) -> torch.nn.Module:
     _add_models_to_path()
     model_dir = settings.models_dir / model_name
+    # Ensure the model's own directory is on sys.path so that loader.py can do
+    # relative imports like `from vit import Autoencoder` without conflicts with
+    # any installed package sharing the same name.
+    model_dir_str = str(model_dir)
+    if model_dir_str not in sys.path:
+        sys.path.insert(0, model_dir_str)
     loader_path = model_dir / "loader.py"
     if not loader_path.exists():
         raise FileNotFoundError(
