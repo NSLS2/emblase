@@ -114,6 +114,7 @@ const NOTES_MAX_LEN = 1024;
 const USER_LABEL_MAX_LEN = 64;
 const CANVAS_HEIGHT = 500;
 const PANEL_WIDTH = 280;
+const PANEL_INSET = 70;
 const COLOR_PALETTE = [
   "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
   "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf",
@@ -467,6 +468,8 @@ function EmbeddingScatter({
     startOffsetX: number;
     startOffsetY: number;
   } | null>(null);
+  const [containerWidth, setContainerWidth] = React.useState(800);
+  // Track how many points we've loaded so far for incremental fetching
   const pointCountRef = React.useRef(0);
   // Skip the catch-up refreshAll on the first live-effect run after initial load
   const skipCatchupRef = React.useRef(false);
@@ -494,8 +497,9 @@ function EmbeddingScatter({
   const nodePath = segments.join("/");
   const customUrl = `${window.location.origin}/custom/emblase`;
 
-  // canvasWidth fallback ref — updated by ResizeObserver without triggering re-renders
-  const canvasWidthRef = React.useRef(800);
+  const canvasWidth = selected || chatOpen || lassoSelected.size > 0
+    ? containerWidth - PANEL_INSET
+    : containerWidth;
 
   // Fetch all current data (projections + index) and merge into state
   const refreshAll = React.useCallback(async () => {
@@ -554,11 +558,12 @@ function EmbeddingScatter({
 
   const fitView = React.useCallback(() => {
     if (points.length === 0) return;
-    const w = canvasRef.current?.clientWidth || canvasWidthRef.current;
-    setView(fitViewToPoints(points, w, CANVAS_HEIGHT));
+    setView(fitViewToPoints(points, canvasWidthRef.current, CANVAS_HEIGHT));
   }, [points]);
 
-  // Initial data load — runs once on mount
+  // Initial data load — runs once on mount (refreshAll ref is stable after paramNames fix)
+  const canvasWidthRef = React.useRef(canvasWidth);
+  canvasWidthRef.current = canvasWidth;
   const refreshAllRef = React.useRef(refreshAll);
   refreshAllRef.current = refreshAll;
   React.useEffect(() => {
@@ -571,8 +576,8 @@ function EmbeddingScatter({
         if (cancelled) return;
         setError(null);
         if (pts && pts.length > 0) {
-          const w = canvasRef.current?.clientWidth || canvasWidthRef.current;
-          setView(fitViewToPoints(pts, w, CANVAS_HEIGHT));
+          const fitted = fitViewToPoints(pts, canvasWidthRef.current, CANVAS_HEIGHT);
+          setView(fitted);
         }
       } catch (err: any) {
         if (!cancelled) setError(err.message);
@@ -794,19 +799,17 @@ function EmbeddingScatter({
     };
   }, [loading, liveEnabled, nodePath, apiUrl, refreshAll]);
 
-  // ResizeObserver — keeps canvasWidthRef current and forces a redraw on resize
-  const [drawTick, forceRedraw] = React.useReducer((n: number) => n + 1, 0);
+  // Resize observer — tracks container width
   React.useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const observer = new ResizeObserver(() => {
-      const w = Math.round(canvas.getBoundingClientRect().width);
-      if (w > 0 && w !== canvasWidthRef.current) {
-        canvasWidthRef.current = w;
-        forceRedraw();
+    const container = containerRef.current;
+    if (!container) return;
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const { width } = entry.contentRect;
+        if (width > 0) setContainerWidth(Math.floor(width));
       }
     });
-    observer.observe(canvas);
+    observer.observe(container);
     return () => observer.disconnect();
   }, []);
 
@@ -849,21 +852,12 @@ function EmbeddingScatter({
     if (!ctx) return;
 
     const dpr = window.devicePixelRatio || 1;
-    const w = Math.round(canvas.getBoundingClientRect().width) || canvasWidthRef.current;
-    if (w === 0) return;
-    canvasWidthRef.current = w;
-    const targetW = w * dpr;
-    const targetH = CANVAS_HEIGHT * dpr;
-    if (canvas.width !== targetW || canvas.height !== targetH) {
-      canvas.width = targetW;
-      canvas.height = targetH;
-      canvas.style.width = `${w}px`;
-      canvas.style.height = `${CANVAS_HEIGHT}px`;
-    }
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    canvas.width = canvasWidth * dpr;
+    canvas.height = CANVAS_HEIGHT * dpr;
+    ctx.scale(dpr, dpr);
 
     ctx.fillStyle = "#fafafa";
-    ctx.fillRect(0, 0, w, CANVAS_HEIGHT);
+    ctx.fillRect(0, 0, canvasWidth, CANVAS_HEIGHT);
 
     // Grid
     ctx.strokeStyle = "#e0e0e0";
@@ -871,12 +865,12 @@ function EmbeddingScatter({
     const gridStep = 50 * view.scale;
     if (gridStep > 10) {
       const startX = ((view.offsetX % gridStep) + gridStep) % gridStep; // always positive
-      for (let x = startX; x < w; x += gridStep) {
+      for (let x = startX; x < canvasWidth; x += gridStep) {
         ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, CANVAS_HEIGHT); ctx.stroke();
       }
       const startY = ((view.offsetY % gridStep) + gridStep) % gridStep;
       for (let y = startY; y < CANVAS_HEIGHT; y += gridStep) {
-        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvasWidth, y); ctx.stroke();
       }
     }
 
@@ -887,7 +881,7 @@ function EmbeddingScatter({
       const sy = -p.y * view.scale + view.offsetY;
       if (
         sx < -10 ||
-        sx > w + 10 ||
+        sx > canvasWidth + 10 ||
         sy < -10 ||
         sy > CANVAS_HEIGHT + 10
       )
@@ -951,7 +945,8 @@ function EmbeddingScatter({
         ctx.fill();
       }
     }
-  }, [drawTick, points, view, tooltip, selected, lassoPath, lassoSelected, colorBy, hiddenLabels, paramRange, paramMin, paramMax, uniqueLabels]);
+  }, [points, view, canvasWidth, tooltip, selected, lassoPath, lassoSelected, colorBy, hiddenLabels, paramRange, paramMin, paramMax, uniqueLabels]);
+
   // Mouse handlers
   const toDataCoords = React.useCallback(
     (clientX: number, clientY: number) => {
@@ -1319,11 +1314,9 @@ function EmbeddingScatter({
     (selected.note !== selected.originalNote ||
       selected.userLabel !== selected.originalUserLabel);
 
-  const panelOpen = !!(selected || chatOpen || (lassoSummary && !selected && !chatOpen));
-
   return React.createElement(
     "div",
-    { ref: containerRef, style: { width: "100%" } },
+    { ref: containerRef },
     // Header (full width, always above canvas + panel)
     React.createElement(
       "div",
@@ -1553,21 +1546,26 @@ function EmbeddingScatter({
     ),
     React.createElement(
       "div",
-      { style: { position: "relative" as const } },
-    // Canvas
-    React.createElement("canvas", {
-      ref: canvasRef,
-      height: CANVAS_HEIGHT,
-      style: {
-        display: "block",
-        width: panelOpen ? `calc(100% - ${PANEL_WIDTH}px)` : "100%",
+      { style: { position: "relative" } },
+      // Canvas + tooltip wrapper
+      React.createElement(
+        "div",
+        { style: { position: "relative", display: "inline-block" } },
+      // Canvas
+      React.createElement("canvas", {
+        ref: canvasRef,
+        width: canvasWidth,
         height: CANVAS_HEIGHT,
-        cursor: toolMode === "lasso" ? "crosshair" : dragging ? "grabbing" : tooltip ? "pointer" : "grab",
-        border: "1px solid #ddd",
-        borderRadius: panelOpen ? "4px 0 0 4px" : 4,
-      },
-      onMouseMove: handleMouseMove,
-      onMouseDown: handleMouseDown,
+        style: {
+          width: canvasWidth,
+          height: CANVAS_HEIGHT,
+          cursor: toolMode === "lasso" ? "crosshair" : dragging ? "grabbing" : tooltip ? "pointer" : "grab",
+          border: "1px solid #ddd",
+          borderRadius: 4,
+          display: "block",
+        },
+        onMouseMove: handleMouseMove,
+        onMouseDown: handleMouseDown,
         onMouseUp: handleMouseUp,
         onMouseLeave: () => {
           dragRef.current = null;
@@ -1617,9 +1615,11 @@ function EmbeddingScatter({
                   `Label: ${tooltip.point.label}`,
                 )
               : null,
+
           )
         : null,
-      // Detail panel — position:absolute right of canvas
+      ),
+      // Detail panel — anchored to right edge of content area
       selected
         ? React.createElement(
             "div",
@@ -1632,10 +1632,9 @@ function EmbeddingScatter({
                 height: CANVAS_HEIGHT,
                 background: "white",
                 border: "1px solid #ccc",
-                borderLeft: "none",
-                borderRadius: "0 4px 4px 0",
+                borderRadius: 4,
                 padding: "12px 16px",
-                boxShadow: "2px 2px 8px rgba(0,0,0,0.08)",
+                boxShadow: "0 2px 8px rgba(0,0,0,0.08)",
                 overflowY: "auto" as const,
                 fontSize: 13,
                 boxSizing: "border-box" as const,
@@ -1801,7 +1800,7 @@ function EmbeddingScatter({
               : null,
           )
         : null,
-      // Chat panel — position:absolute right of canvas (mutual exclusion with detail panel)
+      // Chat panel — same position as detail panel (mutual exclusion)
       chatOpen && !selected
         ? React.createElement(
             "div",
@@ -1814,9 +1813,8 @@ function EmbeddingScatter({
                 height: CANVAS_HEIGHT,
                 background: "white",
                 border: "1px solid #ccc",
-                borderLeft: "none",
-                borderRadius: "0 4px 4px 0",
-                boxShadow: "2px 2px 8px rgba(0,0,0,0.08)",
+                borderRadius: 4,
+                boxShadow: "0 2px 8px rgba(0,0,0,0.08)",
                 fontSize: 13,
                 boxSizing: "border-box" as const,
                 display: "flex",
@@ -2052,9 +2050,8 @@ function EmbeddingScatter({
                 height: CANVAS_HEIGHT,
                 background: "white",
                 border: "1px solid #ccc",
-                borderLeft: "none",
-                borderRadius: "0 4px 4px 0",
-                boxShadow: "2px 2px 8px rgba(0,0,0,0.08)",
+                borderRadius: 4,
+                boxShadow: "0 2px 8px rgba(0,0,0,0.08)",
                 fontSize: 13,
                 boxSizing: "border-box" as const,
                 display: "flex",
@@ -2275,7 +2272,7 @@ function EmbeddingScatter({
       : // Continuous param: colorbar + dual-handle range slider
         React.createElement(
           "div",
-          { style: { marginTop: 10 } },
+          { style: { marginTop: 10, width: canvasWidth } },
           React.createElement(RangeSlider, {
             min: paramMin,
             max: paramMax,
