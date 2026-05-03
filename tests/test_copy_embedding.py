@@ -26,23 +26,25 @@ def _make_src(
     projections = np.column_stack([np.arange(n, dtype=np.float32),
                                    np.arange(n, dtype=np.float32)])
 
-    # Build _index table
-    indx = list(range(n))
-    if shuffle_indx:
-        indx = list(reversed(indx))  # simulate out-of-order storage
+    # Build _index table.
+    # indx[i] == i always (indx IS the array row offset).
+    # shuffle_indx=True simulates the SQL table returning rows in reverse order,
+    # so idx_df row 0 has indx=n-1, row 1 has indx=n-2, etc.
+    sql_row_order = list(reversed(range(n))) if shuffle_indx else list(range(n))
 
     schema = _make_index_schema(param_specs)
     table_data = {
-        "indx": indx,
-        "path": [f"scan/{i}" for i in range(n)],
-        "slice": [str(i) for i in range(n)],
-        "label": labels if labels is not None else [None] * n,
+        "indx": sql_row_order,                              # SQL rows in shuffled order
+        "path": [f"scan/{i}" for i in sql_row_order],      # path matches indx value
+        "slice": [str(i) for i in sql_row_order],
+        "label": ([labels[i] for i in sql_row_order] if labels is not None
+                  else [None] * n),
         "model_version": ["v1"] * n,
         "mlflow_run_id": [""] * n,
-        "timestamp": [float(i) for i in range(n)],
+        "timestamp": [float(i) for i in sql_row_order],
     }
     for name in sorted(param_specs):
-        table_data[f"param_{name}"] = [float(i) for i in range(n)]
+        table_data[f"param_{name}"] = [float(i) for i in sql_row_order]
     index_table = pa.table(table_data, schema=schema)
 
     src = MagicMock(spec=LatentSpaceEmbedding)
@@ -115,15 +117,20 @@ def test_copy_embedding_null_labels_passed_as_none(mock_create):
 
 @patch("emblase.tiled.client.create_embedding_container")
 def test_copy_embedding_reorders_by_indx(mock_create):
-    """Arrays are reordered by indx so row 0 of the destination matches indx=0 in the source."""
+    """_index metadata rows are aligned with the correct array rows after indx sort.
+
+    The SQL table has no guaranteed row order.  copy_embedding must sort by
+    'indx' before batching so that idx_df.iloc[i] (metadata) matches
+    embeddings[i] (array row), regardless of the SQL return order.
+    """
     n = 4
     src, embeddings, thumbnails, projections = _make_src(n=n, dim=4, shuffle_indx=True)
 
-    appended_embeddings = []
+    captured = []
 
     def capture_append(emb, thu, **kwargs):
-        appended_embeddings.append(emb.copy())
-        return len(appended_embeddings)
+        captured.append({"embeddings": emb.copy(), "paths": kwargs["paths"]})
+        return len(captured)
 
     dst = MagicMock()
     dst.append = MagicMock(side_effect=capture_append)
@@ -131,15 +138,14 @@ def test_copy_embedding_reorders_by_indx(mock_create):
 
     copy_embedding(src, MagicMock(), batch_size=n)
 
-    # With shuffle_indx=True, indx column is [3,2,1,0] for storage rows [0,1,2,3].
-    # After sort_values("indx"), the order becomes: storage row3 (indx=0), row2 (indx=1), ...
-    # order = [0,1,2,3] (the sorted indx values).
-    # embeddings[order] = embeddings[[0,1,2,3]] — so destination row 0 = embeddings[0].
-    # This correctly places the embedding with indx=0 at destination row 0.
-    result = appended_embeddings[0]
-    assert result.shape == (n, 4)
-    np.testing.assert_array_equal(result[0], embeddings[0])  # indx=0 → array row 0
-    np.testing.assert_array_equal(result[1], embeddings[1])  # indx=1 → array row 1
+    result = captured[0]
+    # After sort by indx, idx_df row 0 has indx=0, row 1 has indx=1, etc.
+    # Since indx == array row offset, embeddings[indx] is the correct embedding.
+    # So destination row i should equal embeddings[i] regardless of SQL order.
+    for i in range(n):
+        np.testing.assert_array_equal(result["embeddings"][i], embeddings[i])
+    # Paths should also be in indx order (path "scan/0" → indx=0, etc.)
+    assert result["paths"] == [f"scan/{i}" for i in range(n)]
 
 
 @patch("emblase.tiled.client.create_embedding_container")

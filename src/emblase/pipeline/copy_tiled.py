@@ -245,17 +245,18 @@ def copy_embedding(
     projections = src["projections"].read()  # (N, P)
     idx_df = src.base["_index"].read()
 
-    # Sort by indx (stable join key) or fall back to slice for older containers
-    sort_col = "indx" if "indx" in idx_df.columns else "slice"
-    idx_df = idx_df.sort_values(sort_col, key=lambda s: s.astype(int)).reset_index(drop=True)
-    # Use the indx values to reorder the arrays (indx is the row offset into the arrays)
+    # Sort _index by indx (= row offset into the Zarr arrays) so that
+    # idx_df.iloc[i] always corresponds to embeddings[i].
+    # The SQL table has no guaranteed row order, so this sort is required.
+    # Older containers without an 'indx' column fall back to 'slice'.
     if "indx" in idx_df.columns:
-        order = idx_df["indx"].tolist()
+        idx_df = idx_df.sort_values("indx", key=lambda s: s.astype(int)).reset_index(drop=True)
+        # After sorting by indx, idx_df.iloc[i] has indx==i, which is exactly
+        # the row offset into the arrays — no array reordering needed.
     else:
-        order = idx_df["slice"].astype(int).tolist()
-    embeddings = embeddings[order]
-    thumbnails = thumbnails[order]
-    projections = projections[order]
+        # Legacy containers: 'slice' holds the per-source frame index, not the
+        # array offset, so we can only sort by it as a best-effort ordering.
+        idx_df = idx_df.sort_values("slice", key=lambda s: s.astype(int)).reset_index(drop=True)
 
     n_total = len(embeddings)
     param_names = list(param_specs.keys())
