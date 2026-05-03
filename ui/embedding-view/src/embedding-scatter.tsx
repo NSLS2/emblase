@@ -474,12 +474,10 @@ function EmbeddingScatter({
   // Skip the catch-up refreshAll on the first live-effect run after initial load
   const skipCatchupRef = React.useRef(false);
 
-  // Coloring state
-  const rawParamSpecs: Record<string, ParamSpec> = item?.data?.attributes?.metadata?.param_specs || {};
-  const paramSpecs = React.useMemo(
-    () => rawParamSpecs,
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [JSON.stringify(rawParamSpecs)],
+  // Coloring state — paramSpecs/paramNames derived from item prop (stable after mount)
+  const paramSpecs: Record<string, ParamSpec> = React.useMemo(
+    () => item?.data?.attributes?.metadata?.param_specs || {},
+    [item],
   );
   const paramNames = React.useMemo(() => Object.keys(paramSpecs), [paramSpecs]);
   const [colorBy, setColorBy] = React.useState<string>("label");
@@ -563,16 +561,18 @@ function EmbeddingScatter({
     setView(fitViewToPoints(points, canvasWidthRef.current, CANVAS_HEIGHT));
   }, [points]);
 
-  // Initial data load
+  // Initial data load — runs once on mount (refreshAll ref is stable after paramNames fix)
   const canvasWidthRef = React.useRef(canvasWidth);
   canvasWidthRef.current = canvasWidth;
+  const refreshAllRef = React.useRef(refreshAll);
+  refreshAllRef.current = refreshAll;
   React.useEffect(() => {
     let cancelled = false;
 
     async function fetchData() {
       try {
         setLoading(true);
-        const pts = await refreshAll();
+        const pts = await refreshAllRef.current();
         if (cancelled) return;
         setError(null);
         if (pts && pts.length > 0) {
@@ -590,10 +590,9 @@ function EmbeddingScatter({
     }
 
     fetchData();
-    return () => {
-      cancelled = true;
-    };
-  }, [refreshAll]);
+    return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // intentionally empty — runs once on mount; refreshAllRef stays current
 
   // Auto-refit view when new points arrive via live updates,
   // unless the user has already panned or zoomed manually.
@@ -1302,14 +1301,6 @@ function EmbeddingScatter({
     return { count: selectedPts.length, labelCounts, points: selectedPts };
   }, [lassoSelected, points]);
 
-  if (loading) {
-    return React.createElement(
-      "div",
-      { style: { padding: 24, color: "#666" } },
-      "Loading embedding data...",
-    );
-  }
-
   if (error) {
     return React.createElement(
       "div",
@@ -1339,7 +1330,9 @@ function EmbeddingScatter({
           gap: 16,
         },
       },
-      React.createElement("span", null, `${points.length} embeddings`),
+      React.createElement("span", null,
+        loading ? "Loading…" : `${points.length} embeddings`,
+      ),
       // Color-by dropdown
       React.createElement(
         "div",
