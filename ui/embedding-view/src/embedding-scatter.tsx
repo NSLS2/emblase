@@ -447,8 +447,6 @@ function EmbeddingScatter({
   const pointCountRef = React.useRef(0);
   // Skip the catch-up refreshAll on the first live-effect run after initial load
   const skipCatchupRef = React.useRef(false);
-  // Whether the user has manually panned or zoomed — suppresses auto-refit
-  const userMovedRef = React.useRef(false);
 
   // Coloring state
   const meta = item?.data?.attributes?.metadata || {};
@@ -522,6 +520,11 @@ function EmbeddingScatter({
     }
   }, [apiUrl, nodePath]);
 
+  const fitView = React.useCallback(() => {
+    if (points.length === 0) return;
+    setView(fitViewToPoints(points, canvasWidthRef.current, CANVAS_HEIGHT));
+  }, [points]);
+
   // Initial data load
   const canvasWidthRef = React.useRef(canvasWidth);
   canvasWidthRef.current = canvasWidth;
@@ -557,14 +560,6 @@ function EmbeddingScatter({
   // Auto-refit view when new points arrive via live updates,
   // unless the user has already panned or zoomed manually.
   const prevPointCountRef = React.useRef(0);
-  React.useEffect(() => {
-    if (userMovedRef.current) return;
-    if (points.length === 0) return;
-    if (points.length === prevPointCountRef.current) return;
-    prevPointCountRef.current = points.length;
-    const fitted = fitViewToPoints(points, canvasWidthRef.current, CANVAS_HEIGHT);
-    setView(fitted);
-  }, [points]);
 
   // Live updates via dual WebSocket subscriptions.
   //
@@ -1003,6 +998,18 @@ function EmbeddingScatter({
   const pointsRef = React.useRef(points);
   pointsRef.current = points;
 
+  // Refs for lasso filter — keep current values accessible in callbacks
+  const colorByRef = React.useRef(colorBy);
+  colorByRef.current = colorBy;
+  const hiddenLabelsRef = React.useRef(hiddenLabels);
+  hiddenLabelsRef.current = hiddenLabels;
+  const paramRangeRef = React.useRef(paramRange);
+  paramRangeRef.current = paramRange;
+  const paramMinRef = React.useRef(paramMin);
+  paramMinRef.current = paramMin;
+  const paramMaxRef = React.useRef(paramMax);
+  paramMaxRef.current = paramMax;
+
   const handleMouseDown = React.useCallback(
     (e: React.MouseEvent) => {
       if (toolMode === "lasso") {
@@ -1020,7 +1027,6 @@ function EmbeddingScatter({
         startOffsetX: viewRef.current.offsetX,
         startOffsetY: viewRef.current.offsetY,
       };
-      userMovedRef.current = true;
       setDragging(true);
     },
     [toolMode, toDataCoords],
@@ -1037,9 +1043,17 @@ function EmbeddingScatter({
       }
       const sel = new Set<number>();
       for (const p of pointsRef.current) {
-        if (pointInPolygon(p.x, p.y, path)) {
-          sel.add(p.index);
-        }
+        if (!pointInPolygon(p.x, p.y, path)) continue;
+        // Only select points that are currently active (not greyed out by filter)
+        const { active } = resolvePointColor(
+          p,
+          colorByRef.current,
+          hiddenLabelsRef.current,
+          paramRangeRef.current,
+          paramMinRef.current,
+          paramMaxRef.current,
+        );
+        if (active) sel.add(p.index);
       }
       if (sel.size === 0) {
         setLassoPath([]);
@@ -1113,7 +1127,6 @@ function EmbeddingScatter({
       const coords = toDataCoords(e.clientX, e.clientY);
       if (!coords) return;
       const factor = e.deltaY > 0 ? 0.9 : 1.1;
-      userMovedRef.current = true;
       setView((v) => ({
         scale: v.scale * factor,
         offsetX: coords.mx - (coords.mx - v.offsetX) * factor,
@@ -1392,6 +1405,33 @@ function EmbeddingScatter({
           ),
           React.createElement("span", null, "Lasso"),
         ),
+      ),
+      // Home (fit-all) button
+      React.createElement(
+        "button",
+        {
+          onClick: fitView,
+          title: "Fit all points",
+          style: {
+            display: "flex",
+            alignItems: "center",
+            gap: 3,
+            fontSize: 12,
+            background: "none",
+            border: "1px solid #ccc",
+            borderRadius: 12,
+            padding: "2px 10px",
+            cursor: "pointer",
+            color: "#555",
+          },
+        },
+        React.createElement(
+          "svg",
+          { width: 12, height: 12, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round", strokeLinejoin: "round" },
+          React.createElement("path", { d: "M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" }),
+          React.createElement("polyline", { points: "9 22 9 12 15 12 15 22" }),
+        ),
+        React.createElement("span", null, "Home"),
       ),
       // Live status toggle
       React.createElement(
