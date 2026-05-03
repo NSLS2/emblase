@@ -1,22 +1,9 @@
 # Emblase
 
-**EMBeddings and LAtent Space Explorer** — streams live synchrotron detector images from [Tiled](https://github.com/bluesky/tiled), encodes them into embedding vectors using a ViT/VAE model, and writes results back to Tiled for interactive exploration.
-
-```
-detector → Tiled (inputs_copy) → stream_pipeline.py → Orion (Slurm) → Tiled (results)
-                                        │                     │
-                                  InputsWatcher         streaming_inference
-                                  (WebSocket)           (ViT encode + write)
-```
-
-## Models
-
-| Name | Architecture |
-|------|-------------|
-| `vit` | ViT-based autoencoder (`google/vit-base-patch16-224`) |
-| `vae` | Convolutional VAE with windowed self-attention |
-
-Weights are loaded from the local filesystem or pulled at job time from an MLflow model registry.
+**EMBeddings and LAtent Space Explorer** — encodes synchrotron detector images
+into embedding vectors using ViT/VAE models, writes results to
+[Tiled](https://github.com/bluesky/tiled) for interactive exploration, and
+supports both live streaming acquisition and batch post-processing.
 
 ## Installation
 
@@ -29,17 +16,26 @@ pixi install
 cp .env.example .env   # fill in your keys and paths
 ```
 
-## Batch Inference (quick iteration)
+## Syncing code to Orion
 
-Use `submit_orion.py infer` to process a complete, already-acquired run in one
-shot — no watcher, no WebSocket, just encode-all-then-write.  Ideal for trying
-different models or hyperparameters on existing data.
+Both local and Orion checkouts track the same git remote. Push commits locally,
+then pull on the compute node before submitting a job:
 
 ```bash
 BRANCH=$(git branch --show-current)
 git push origin $BRANCH
 ssh orion-staging.nsls2.bnl.gov "cd /nsls2/users/ymatviych/code/emblase && git fetch && git checkout $BRANCH && git pull"
+```
 
+---
+
+## Batch Inference
+
+Use `submit_orion.py infer` to process a complete, already-acquired run in one
+shot. No watcher, no WebSocket — ideal for trying different models or
+hyperparameters on existing data.
+
+```bash
 python scripts/submit_orion.py infer \
     --model      bnl-nsls2-smi-vit \
     --run        smi/sandbox/confab26_demo/inputs/run_1086139 \
@@ -52,17 +48,64 @@ python scripts/submit_orion.py infer \
 ```
 
 `--run` points at the BlueskyRun container; frames are read from
-`run/primary/<image_key>` (default `pil900KW_image`).  `--param` stores scalar
-streams from the same primary event stream alongside each embedding.
-`--umap-dir` triggers on-node UMAP projection — omit if the approximator is not
-yet trained.
+`run/primary/<image_key>` (default `pil900KW_image`).
+`--param` stores scalar streams from the same primary event stream alongside
+each embedding in the `_index` table.
+`--umap-dir` triggers on-node UMAP projection — omit if not yet trained.
+`--umap-dir` defaults to `EMBLASE_ORION_UMAP_DIR` if set.
 
-The script polls every 5 s and prints the final state.  Check the full log with:
+The script polls every 5 s and prints progress. Check the full Slurm log:
 
 ```bash
 ssh orion-staging.nsls2.bnl.gov \
     "tail -100 /nsls2/users/ymatviych/orion_jobs/slurm-<jobid>.out"
 ```
+
+---
+
+## Streaming Pipeline
+
+The pipeline watches a Tiled container for new BlueskyRuns and submits one
+Orion (Slurm) job per run to encode frames and write embeddings incrementally
+as data arrives.
+
+> **Order is critical.** Start the watcher *before* data arrives. The watcher
+> fires on the `child_created` WebSocket event when a run container is first
+> created. If the run is already complete before the Orion job starts, WS events
+> are not replayed and the job will hang forever.
+
+**Terminal 1 — start the watcher:**
+
+```bash
+pixi run python scripts/stream_pipeline.py \
+  --inputs     smi/sandbox/confab26_demo/inputs_copy \
+  --output     smi/sandbox/confab26_demo/results \
+  --model      bnl-nsls2-smi-vit \
+  --batch-size 5 \
+  --thumb-mode logroi \
+  --param      temperature:primary.LinkamThermal_temperature_current:float:°C \
+  --param      piezo_x:primary.piezo_x:float:μm \
+  --no-replay
+```
+
+Wait until `Watching … for new runs` appears before proceeding.
+
+**Terminal 2 — simulate acquisition (after watcher is ready):**
+
+```bash
+pixi run python scripts/simulate_acquisition.py \
+  --src         smi/sandbox/confab26_demo/inputs/run_1086139 \
+  --dst         smi/sandbox/confab26_demo/inputs_copy \
+  --rename      run_live_1086139 \
+  --access-tags smi_sandbox \
+  --batch-delay 0.5
+```
+
+`simulate_acquisition.py` creates the run container first (triggering the
+watcher), then writes frames one at a time. A Unix timestamp is appended to
+`--rename` automatically. The Orion job starts ~25–30 s after submission (pixi
+env + model load), well before the copy finishes
+(`0.5 s/frame × 288 frames ≈ 144 s`).
 
 ### Batch vs. streaming
 
@@ -71,44 +114,8 @@ ssh orion-staging.nsls2.bnl.gov \
 | **When to use** | Complete runs, model iteration | Live acquisition |
 | **Params** | ✓ (`--param`) | ✓ (`--param`) |
 | **UMAP** | ✓ (`--umap-dir`) | ✓ (auto via `EMBLASE_ORION_UMAP_DIR`) |
-| **Latency** | All frames at once after job starts | Incremental, per batch |
+| **Latency** | All frames at once | Incremental, per batch |
 | **Setup** | Single command | Watcher must start before data arrives |
-
----
-
-## Running the Streaming Pipeline
-
-The pipeline watches a Tiled container for new runs and submits an Orion (Slurm) job per run to encode frames and write embeddings incrementally.
-
-> **Order is critical.** Start the watcher *before* copying data. The watcher fires when a new run container appears; if the run is already complete before the job starts, WebSocket events are not replayed and the job will hang.
-
-**Terminal 1 — start the watcher:**
-
-```bash
-pixi run python scripts/stream_pipeline.py \
-  --inputs  smi/sandbox/confab26_demo/inputs_copy \
-  --output  smi/sandbox/confab26_demo/results \
-  --model   vit \
-  --batch-size 16 \
-  --thumb-mode logroi \
-  --param temperature:primary.LinkamThermal_temperature_current:float:deg C \
-  --no-replay
-```
-
-Wait until the watcher prints `Watching … for new runs` before proceeding.
-
-**Terminal 2 — copy a run into the watched container (only after watcher is up):**
-
-```bash
-pixi run python scripts/simulate_acquisition.py \
-  --src  smi/sandbox/confab26_demo/inputs/run_1086139 \
-  --dst  smi/sandbox/confab26_demo/inputs_copy \
-  --rename run_live_1086139 \
-  --access-tags smi_sandbox \
-  --batch-delay 0.5
-```
-
-`simulate_acquisition.py` creates the run container first (triggering the watcher), then writes frames one at a time to simulate live acquisition. A Unix timestamp is appended to `--rename` automatically. The Orion job starts ~25–30 s after submission (pixi + model load), well before the copy finishes at `0.5 s/frame × 288 frames ≈ 144 s`.
 
 ### `--param` syntax
 
@@ -117,47 +124,29 @@ pixi run python scripts/simulate_acquisition.py \
 ```
 
 - `source` must be `primary.<array_key>` (a scalar stream aligned 1:1 with frames)
-- `dtype`: `float`, `int`, `str`, or `bool`
-- Repeat `--param` for multiple parameters
+- `dtype`: `float`, `integer`, `string`, or `boolean`
+- Repeat for multiple parameters
 
 ### `--no-replay`
 
-Skips reprocessing runs already present in `--inputs` on startup. Omit to process all existing runs.
+Skips reprocessing runs already present in `--inputs` on startup. Omit to
+replay all existing runs.
 
-### Checking Orion job logs
-
-```bash
-ssh orion-staging.nsls2.bnl.gov "tail -50 /nsls2/users/ymatviych/orion_jobs/slurm-<jobid>.out"
-ssh orion-staging.nsls2.bnl.gov "squeue -u ymatviych"
-ssh orion-staging.nsls2.bnl.gov "scancel <jobid>"
-```
-
-### Syncing code to Orion
-
-Both local and Orion checkouts track the same git remote.  Push commits locally
-and pull on the compute node before submitting a job:
-
-```bash
-BRANCH=$(git branch --show-current)
-git push origin $BRANCH
-ssh orion-staging.nsls2.bnl.gov "cd /nsls2/users/ymatviych/code/emblase && git fetch && git checkout $BRANCH && git pull"
-```
+---
 
 ## UMAP Projections
 
-The streaming job can compute 2D UMAP projections on-the-fly per batch using a pre-trained MLP approximator:
-
 ```bash
-# on-the-fly (set umap_dir via EMBLASE_ORION_UMAP_DIR or --umap-dir, handled automatically by OrionBackend)
-
 # post-process projections on an existing results container
 pixi run python scripts/compute_umap.py \
   --dataset smi/sandbox/confab26_demo/results/run_live_1086139_<timestamp>
 
 # retrain the approximator on existing embeddings
 pixi run python scripts/train_umap.py \
-  --dataset smi/sandbox/confab26_demo/results/run_live_1086139_1777749128
+  --dataset smi/sandbox/confab26_demo/results/run_live_1086139_<timestamp>
 ```
+
+---
 
 ## Tiled Layout
 
@@ -165,20 +154,64 @@ pixi run python scripts/train_umap.py \
 smi/sandbox/confab26_demo/
 ├── inputs/             # original BlueskyRuns from the detector
 ├── inputs_copy/        # runs watched by the streaming pipeline
-└── results/            # LatentSpaceEmbedding containers written by Orion jobs
+└── results/            # LatentSpaceEmbedding containers written by Orion
 ```
 
 Each `results/<run>/` container (`spec="LatentSpaceEmbedding"`) holds:
-- `embeddings` — `(N, D)` float32 embedding vectors
-- `thumbnails` — `(N, H, W)` float32 downsampled images
-- `projections` — `(N, 2)` float32 UMAP coordinates (NaN until computed)
-- `notes`, `user_labels` — `(N,)` unicode, mutable
-- `_index` — PyArrow table with `path`, `slice`, `model_version`, `timestamp`, and any declared scalar params
+
+| Child | Shape | Description |
+|-------|-------|-------------|
+| `embeddings` | `(N, D)` float32 | embedding vectors |
+| `thumbnails` | `(N, H, W)` float32 | downsampled source images |
+| `projections` | `(N, 2)` float32 | UMAP coordinates (NaN until computed) |
+| `notes` | `(N,)` unicode | freeform mutable annotations |
+| `user_labels` | `(N,)` unicode | user-assigned labels |
+| `_index` | table | `indx`, `path`, `slice`, `model_version`, `timestamp`, `param_*` |
+
+`indx` is the 0-based row offset into `embeddings`/`projections` — use it as
+the stable join key between `_index` rows and array positions (SQL row order is
+non-deterministic).
+
+---
+
+## Orion job management
+
+```bash
+# check status
+python scripts/submit_orion.py status <job_id>
+
+# cancel
+python scripts/submit_orion.py cancel <job_id>
+
+# full log
+ssh orion-staging.nsls2.bnl.gov \
+    "tail -50 /nsls2/users/ymatviych/orion_jobs/slurm-<job_id>.out"
+
+# queue
+ssh orion-staging.nsls2.bnl.gov "squeue -u ymatviych"
+```
+
+---
+
+## Models
+
+| Registry name | Architecture |
+|---------------|-------------|
+| `bnl-nsls2-smi-vit` | ViT-based autoencoder (canonical; v2) |
+| `vae` | Convolutional VAE with windowed self-attention |
+
+Weights are pulled at job time from the MLflow registry and cached at
+`EMBLASE_MODEL_CACHE_DIR` (default `~/.cache/emblase/models`). A local model
+directory under `models/<name>/` with a `loader.py` takes priority over the
+registry.
+
+---
 
 ## Configuration
 
-All settings are read from `.env` (or environment variables), prefixed `EMBLASE_`.
-Copy [`.env.example`](.env.example) to `.env` and fill in your values.
+All settings are read from `.env` (or environment variables), prefixed
+`EMBLASE_`. Copy [`.env.example`](.env.example) to `.env` and fill in your
+values.
 
 | Variable | Description |
 |----------|-------------|
@@ -186,15 +219,20 @@ Copy [`.env.example`](.env.example) to `.env` and fill in your values.
 | `EMBLASE_TILED_API_KEY` | Tiled API key (write access) |
 | `EMBLASE_TILED_ACCESS_TAGS` | Comma-separated access tags applied to all written nodes |
 | `EMBLASE_ORION_API_KEY` | Orion REST API key |
-| `EMBLASE_ORION_UMAP_DIR` | Path to `umap_approx/` on Orion (default: `/nsls2/users/ymatviych/code/emblase/models/umap_approx`) |
+| `EMBLASE_ORION_UMAP_DIR` | Path to `umap_approx/` on Orion |
 | `EMBLASE_MLFLOW_TRACKING_URI` | MLflow tracking server URI |
 | `EMBLASE_MLFLOW_API_KEY` | MLflow API key |
+| `EMBLASE_MODEL_CACHE_DIR` | Local cache for downloaded MLflow model weights |
+
+---
 
 ## Development
 
 ```bash
 pixi run python -m pytest tests/ -x -q   # 122 tests, no GPU or live connections required
 ```
+
+---
 
 ## Project Structure
 
@@ -204,35 +242,42 @@ src/emblase/
 ├── models.py               # load_model(), encode()
 ├── mlflow_registry.py      # MLflow push/pull/list
 ├── compute/
-│   ├── base.py             # ComputeBackend ABC
-│   ├── orion.py            # OrionBackend, script rendering, submit_streaming
+│   ├── base.py             # ComputeBackend ABC, JobStatus, JobResult
+│   ├── orion.py            # OrionBackend, OrionClient, script rendering
 │   └── local.py            # LocalBackend (dev/test)
 ├── pipeline/
-│   ├── streaming.py        # InputsWatcher — subscribes to inputs_copy container
-│   └── copy_tiled.py       # deepcopy() — copies a BlueskyRun between catalogs
+│   ├── streaming.py        # InputsWatcher — subscribes to inputs_copy via WebSocket
+│   └── copy_tiled.py       # deepcopy() for BlueskyRuns; copy_embedding() for LSE containers
 ├── tiled/
-│   └── client.py           # read_images, write_output, LatentSpaceEmbedding
+│   └── client.py           # read_images, write_output, LatentSpaceEmbedding, THUMB_MODES
 └── worker/
     ├── inference.py.tmpl           # batch inference node script (params + UMAP)
-    └── streaming_inference.py.tmpl # streaming inference node script
+    └── streaming_inference.py.tmpl # streaming inference node script (params + UMAP)
 scripts/
 ├── stream_pipeline.py      # CLI: watch inputs_copy → submit streaming jobs
 ├── simulate_acquisition.py # CLI: copy a run into inputs_copy frame-by-frame
-├── simulate_results.py     # CLI/lib: replay a results container into a local Tiled (WebUI dev)
-├── submit_orion.py         # CLI: submit one-off batch jobs (infer/status/cancel)
-├── compute_umap.py         # apply UMAP approximator → write projections
-└── train_umap.py           # fit UMAP + train MLP approximator
+├── simulate_results.py     # CLI/lib: replay a LSE container into a local Tiled (WebUI dev)
+├── submit_orion.py         # CLI: submit batch jobs (infer / status / cancel)
+├── compute_umap.py         # post-process: apply UMAP approximator → write projections
+└── train_umap.py           # fit UMAP + train MLP approximator on existing embeddings
 models/
-├── vit/                    # ViT weights + loader.py
 ├── noop/                   # NoopEncoder (seeded random, for testing)
+├── vit/                    # ViT weights + loader.py (optional local override)
 └── umap_approx/            # neural_dimred_wrapper.py, scaler.pkl, umap_approximator.pth
 tests/                      # pytest suite (mocked, no hardware required)
 ```
+
+---
 
 ## Acknowledgements
 
 Emblase builds on ideas from two prior projects at ALS / NSLS-II:
 
-- **[mlex_latent_explorer](https://github.com/mlexchange/mlex_latent_explorer)** — the original MLExchange Latent Space Explorer application, a full Dash/Plotly web app for real-time latent space visualization of synchrotron data. It pioneered the autoencoder + UMAP dimensionality reduction pipeline, MLflow model registry integration, Tiled data I/O, and the streaming architecture via Arroyo and Redis that Emblase is designed to eventually integrate with.
+- **[mlex_latent_explorer](https://github.com/mlexchange/mlex_latent_explorer)** —
+  the original MLExchange Latent Space Explorer, pioneering the autoencoder +
+  UMAP pipeline, MLflow registry integration, Tiled I/O, and streaming
+  architecture via Arroyo and Redis.
 
-- **[arroyosas](https://github.com/als-computing/arroyosas)** — the streaming small-angle scattering reduction pipeline at ALS, which established the data transport patterns (WebSockets, ZMQ, Tiled) and schema conventions that inform Emblase's streaming architecture.
+- **[arroyosas](https://github.com/als-computing/arroyosas)** — the streaming
+  small-angle scattering reduction pipeline at ALS, establishing data transport
+  patterns (WebSockets, ZMQ, Tiled) and schema conventions.
