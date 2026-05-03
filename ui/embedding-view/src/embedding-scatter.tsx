@@ -494,8 +494,8 @@ function EmbeddingScatter({
   const nodePath = segments.join("/");
   const customUrl = `${window.location.origin}/custom/emblase`;
 
-  // canvasWidth tracks the canvas element's actual CSS pixel width (updated by ResizeObserver)
-  const [canvasWidth, setCanvasWidth] = React.useState(800);
+  // canvasWidth fallback ref — updated by ResizeObserver without triggering re-renders
+  const canvasWidthRef = React.useRef(800);
 
   // Fetch all current data (projections + index) and merge into state
   const refreshAll = React.useCallback(async () => {
@@ -554,9 +554,9 @@ function EmbeddingScatter({
 
   const fitView = React.useCallback(() => {
     if (points.length === 0) return;
-    const w = canvasRef.current?.clientWidth || canvasWidth;
+    const w = canvasRef.current?.clientWidth || canvasWidthRef.current;
     setView(fitViewToPoints(points, w, CANVAS_HEIGHT));
-  }, [points, canvasWidth]);
+  }, [points]);
 
   // Initial data load — runs once on mount
   const refreshAllRef = React.useRef(refreshAll);
@@ -571,7 +571,7 @@ function EmbeddingScatter({
         if (cancelled) return;
         setError(null);
         if (pts && pts.length > 0) {
-          const w = canvasRef.current?.clientWidth || canvasWidth;
+          const w = canvasRef.current?.clientWidth || canvasWidthRef.current;
           setView(fitViewToPoints(pts, w, CANVAS_HEIGHT));
         }
       } catch (err: any) {
@@ -794,14 +794,14 @@ function EmbeddingScatter({
     };
   }, [loading, liveEnabled, nodePath, apiUrl, refreshAll]);
 
-  // ResizeObserver — tracks canvas element width so canvasWidth stays current
+  // ResizeObserver — keeps canvasWidthRef current without triggering re-renders
   React.useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const observer = new ResizeObserver((entries) => {
       for (const entry of entries) {
         const w = Math.floor(entry.contentRect.width);
-        if (w > 0) setCanvasWidth(w);
+        if (w > 0) canvasWidthRef.current = w;
       }
     });
     observer.observe(canvas);
@@ -847,7 +847,7 @@ function EmbeddingScatter({
     if (!ctx) return;
 
     const dpr = window.devicePixelRatio || 1;
-    const w = canvas.clientWidth || canvasWidth;
+    const w = canvas.clientWidth || canvasWidthRef.current;
     canvas.width = w * dpr;
     canvas.height = CANVAS_HEIGHT * dpr;
     ctx.scale(dpr, dpr);
@@ -941,7 +941,7 @@ function EmbeddingScatter({
         ctx.fill();
       }
     }
-  }, [points, view, canvasWidth, tooltip, selected, lassoPath, lassoSelected, colorBy, hiddenLabels, paramRange, paramMin, paramMax, uniqueLabels]);
+  }, [points, view, tooltip, selected, lassoPath, lassoSelected, colorBy, hiddenLabels, paramRange, paramMin, paramMax, uniqueLabels]);
   // Mouse handlers
   const toDataCoords = React.useCallback(
     (clientX: number, clientY: number) => {
