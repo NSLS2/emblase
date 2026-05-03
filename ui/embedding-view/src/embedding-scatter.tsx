@@ -447,6 +447,8 @@ function EmbeddingScatter({
   const pointCountRef = React.useRef(0);
   // Skip the catch-up refreshAll on the first live-effect run after initial load
   const skipCatchupRef = React.useRef(false);
+  // Whether the user has manually panned or zoomed — suppresses auto-refit
+  const userMovedRef = React.useRef(false);
 
   // Coloring state
   const meta = item?.data?.attributes?.metadata || {};
@@ -551,6 +553,18 @@ function EmbeddingScatter({
       cancelled = true;
     };
   }, [refreshAll]);
+
+  // Auto-refit view when new points arrive via live updates,
+  // unless the user has already panned or zoomed manually.
+  const prevPointCountRef = React.useRef(0);
+  React.useEffect(() => {
+    if (userMovedRef.current) return;
+    if (points.length === 0) return;
+    if (points.length === prevPointCountRef.current) return;
+    prevPointCountRef.current = points.length;
+    const fitted = fitViewToPoints(points, canvasWidthRef.current, CANVAS_HEIGHT);
+    setView(fitted);
+  }, [points]);
 
   // Live updates via dual WebSocket subscriptions.
   //
@@ -787,6 +801,15 @@ function EmbeddingScatter({
     return { paramMin: mn, paramMax: mx };
   }, [points, colorBy, paramNames]);
 
+  // When new live data extends the param range, if the existing paramRange
+  // now covers the full extent, clear it (equivalent to no filter).
+  React.useEffect(() => {
+    if (!paramRange) return;
+    if (paramRange[0] <= paramMin && paramRange[1] >= paramMax) {
+      setParamRange(null);
+    }
+  }, [paramMin, paramMax]);
+
   // Draw canvas
   React.useEffect(() => {
     const canvas = canvasRef.current;
@@ -997,6 +1020,7 @@ function EmbeddingScatter({
         startOffsetX: viewRef.current.offsetX,
         startOffsetY: viewRef.current.offsetY,
       };
+      userMovedRef.current = true;
       setDragging(true);
     },
     [toolMode, toDataCoords],
@@ -1089,6 +1113,7 @@ function EmbeddingScatter({
       const coords = toDataCoords(e.clientX, e.clientY);
       if (!coords) return;
       const factor = e.deltaY > 0 ? 0.9 : 1.1;
+      userMovedRef.current = true;
       setView((v) => ({
         scale: v.scale * factor,
         offsetX: coords.mx - (coords.mx - v.offsetX) * factor,
