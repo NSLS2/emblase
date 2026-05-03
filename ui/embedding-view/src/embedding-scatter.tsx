@@ -794,14 +794,16 @@ function EmbeddingScatter({
     };
   }, [loading, liveEnabled, nodePath, apiUrl, refreshAll]);
 
-  // ResizeObserver — keeps canvasWidthRef current without triggering re-renders
+  // ResizeObserver — keeps canvasWidthRef current and forces a redraw on resize
+  const [drawTick, forceRedraw] = React.useReducer((n: number) => n + 1, 0);
   React.useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const observer = new ResizeObserver((entries) => {
-      for (const entry of entries) {
-        const w = Math.floor(entry.contentRect.width);
-        if (w > 0) canvasWidthRef.current = w;
+    const observer = new ResizeObserver(() => {
+      const w = Math.round(canvas.getBoundingClientRect().width);
+      if (w > 0 && w !== canvasWidthRef.current) {
+        canvasWidthRef.current = w;
+        forceRedraw();
       }
     });
     observer.observe(canvas);
@@ -847,9 +849,10 @@ function EmbeddingScatter({
     if (!ctx) return;
 
     const dpr = window.devicePixelRatio || 1;
-    const w = canvas.clientWidth || canvasWidthRef.current;
-    // Set pixel buffer to physical pixels, lock CSS size to logical pixels
-    // so the browser never stretches the buffer.
+    const w = Math.round(canvas.getBoundingClientRect().width) || canvasWidthRef.current;
+    if (w === 0) return; // not yet laid out — next render will pick it up
+    canvasWidthRef.current = w;
+    // Lock CSS size to logical pixels so the browser never stretches the buffer.
     canvas.width = w * dpr;
     canvas.height = CANVAS_HEIGHT * dpr;
     canvas.style.width = `${w}px`;
@@ -945,7 +948,7 @@ function EmbeddingScatter({
         ctx.fill();
       }
     }
-  }, [points, view, tooltip, selected, lassoPath, lassoSelected, colorBy, hiddenLabels, paramRange, paramMin, paramMax, uniqueLabels]);
+  }, [drawTick, points, view, tooltip, selected, lassoPath, lassoSelected, colorBy, hiddenLabels, paramRange, paramMin, paramMax, uniqueLabels]);
   // Mouse handlers
   const toDataCoords = React.useCallback(
     (clientX: number, clientY: number) => {
