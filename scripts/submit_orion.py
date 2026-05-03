@@ -9,9 +9,10 @@ cancel  Cancel a running job.
 
 Typical workflow — quick iteration on a complete run
 -----------------------------------------------------
-Sync code, then submit::
+Push commits, pull on Orion, then submit::
 
-    rsync -az src/emblase/ orion-staging.nsls2.bnl.gov:/nsls2/users/ymatviych/code/emblase/src/emblase/
+    git push
+    ssh orion-staging.nsls2.bnl.gov "cd /nsls2/users/ymatviych/code/emblase && git pull"
 
     python scripts/submit_orion.py infer \\
         --model   bnl-nsls2-smi-vit \\

@@ -36,8 +36,9 @@ shot — no watcher, no WebSocket, just encode-all-then-write.  Ideal for trying
 different models or hyperparameters on existing data.
 
 ```bash
-# sync code first
-rsync -az src/emblase/ orion-staging.nsls2.bnl.gov:/nsls2/users/ymatviych/code/emblase/src/emblase/
+# push local commits, then pull on Orion
+git push
+ssh orion-staging.nsls2.bnl.gov "cd /nsls2/users/ymatviych/code/emblase && git pull"
 
 python scripts/submit_orion.py infer \
     --model      bnl-nsls2-smi-vit \
@@ -133,11 +134,13 @@ ssh orion-staging.nsls2.bnl.gov "scancel <jobid>"
 
 ### Syncing code to Orion
 
-```bash
-rsync -az src/emblase/ orion-staging.nsls2.bnl.gov:/nsls2/users/ymatviych/code/emblase/src/emblase/
-```
+Both local and Orion checkouts track the same git remote.  Push commits locally
+and pull on the compute node before submitting a job:
 
-Run this after any local changes before submitting a new job.
+```bash
+git push
+ssh orion-staging.nsls2.bnl.gov "cd /nsls2/users/ymatviych/code/emblase && git pull"
+```
 
 ## UMAP Projections
 
