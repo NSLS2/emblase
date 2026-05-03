@@ -848,8 +848,12 @@ function EmbeddingScatter({
 
     const dpr = window.devicePixelRatio || 1;
     const w = canvas.clientWidth || canvasWidthRef.current;
+    // Set pixel buffer to physical pixels, lock CSS size to logical pixels
+    // so the browser never stretches the buffer.
     canvas.width = w * dpr;
     canvas.height = CANVAS_HEIGHT * dpr;
+    canvas.style.width = `${w}px`;
+    canvas.style.height = `${CANVAS_HEIGHT}px`;
     ctx.scale(dpr, dpr);
 
     ctx.fillStyle = "#fafafa";
