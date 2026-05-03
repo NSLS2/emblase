@@ -52,6 +52,7 @@ interface EmbeddingPoint {
   label?: string;
   path?: string;
   params?: Record<string, number | null>;
+  metaReceived: boolean; // false until _index row has been applied
 }
 
 interface ParamSpec {
@@ -149,6 +150,8 @@ function resolvePointColor(
   paramMax: number,
   sortedLabels: string[],
 ): { color: string; active: boolean } {
+  // Point arrived from projection stream but _index metadata not yet received
+  if (!p.metaReceived) return { color: GREY_OUT, active: false };
   if (colorBy === "label") {
     const lbl = p.label || "";
     const active = lbl === "" || !hiddenLabels.has(lbl);
@@ -491,23 +494,31 @@ function EmbeddingScatter({
       const indexData = await indexRes.json();
       if (projData.length === 0) return;
 
+      // Sort _index rows by `indx` column to guarantee alignment with projections array
+      const indxCol: number[] = indexData.indx || indexData.slice || [];
+      const order = indxCol.map((v, i) => ({ v, i }))
+        .sort((a, b) => a.v - b.v)
+        .map((x) => x.i);
+
       const labels: string[] = indexData.label || [];
       const paths: string[] = indexData.path || [];
 
       const pts: EmbeddingPoint[] = projData.map(
-        (coords: number[], i: number) => {
+        (coords: number[], rowIdx: number) => {
+          const src = order[rowIdx] ?? rowIdx; // sorted row → original column position
           const params: Record<string, number | null> = {};
           for (const name of paramNames) {
             const col: (number | null)[] = indexData[`param_${name}`] || [];
-            params[name] = col[i] ?? null;
+            params[name] = col[src] ?? null;
           }
           return {
             x: coords[0],
             y: coords[1],
-            index: i,
-            label: labels[i] || "",
-            path: paths[i] || "",
+            index: rowIdx,
+            label: labels[src] || "",
+            path: paths[src] || "",
             params,
+            metaReceived: true,
           };
         },
       );
@@ -662,6 +673,7 @@ function EmbeddingScatter({
               label: meta.labels[rel] || p.label,
               path: meta.paths[rel] || p.path,
               params: newParams,
+              metaReceived: true,
             };
           }
           return p;
@@ -689,6 +701,7 @@ function EmbeddingScatter({
           index: startIdx + i,
           label: "",
           path: "",
+          metaReceived: false,
         }),
       );
       pointCountRef.current = startIdx + payload.length;
@@ -737,6 +750,7 @@ function EmbeddingScatter({
                   label: labels[rel] || p.label,
                   path: paths[rel] || p.path,
                   params: newParams,
+                  metaReceived: true,
                 };
               }
               return p;
