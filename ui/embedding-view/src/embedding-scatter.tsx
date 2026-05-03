@@ -2176,9 +2176,16 @@ function EmbeddingScatter({
                     },
                     onMouseEnter: (e: React.MouseEvent<HTMLDivElement>) => {
                       (e.currentTarget as HTMLDivElement).style.background = "#f5f5f5";
+                      setTooltip({
+                        point: p,
+                        screenX: -9999, // off-screen — highlight only, no tooltip popup
+                        screenY: -9999,
+                        thumbnailUrl: `${apiUrl}/array/full/${nodePath}/thumbnails?format=image/png&slice=${p.index}`,
+                      });
                     },
                     onMouseLeave: (e: React.MouseEvent<HTMLDivElement>) => {
                       (e.currentTarget as HTMLDivElement).style.background = "none";
+                      setTooltip(null);
                     },
                   },
                   React.createElement("span", { style: { color: "#1976d2" } }, `#${p.index}`),
