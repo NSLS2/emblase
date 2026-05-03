@@ -1303,12 +1303,6 @@ function EmbeddingScatter({
         },
       },
       React.createElement("span", null, `${points.length} embeddings`),
-      meta.model_name
-        ? React.createElement("span", null, `Model: ${meta.model_name}`)
-        : null,
-      meta.embedding_dim
-        ? React.createElement("span", null, `Dim: ${meta.embedding_dim}`)
-        : null,
       // Color-by dropdown
       React.createElement(
         "div",
@@ -1337,12 +1331,39 @@ function EmbeddingScatter({
           }),
         ),
       ),
+      // Home (fit-all) button
+      React.createElement(
+        "button",
+        {
+          onClick: fitView,
+          title: "Fit all points",
+          style: {
+            display: "flex",
+            alignItems: "center",
+            gap: 3,
+            fontSize: 12,
+            background: "none",
+            border: "1px solid #ccc",
+            borderRadius: 12,
+            padding: "2px 10px",
+            cursor: "pointer",
+            color: "#555",
+            marginLeft: "auto",
+          },
+        },
+        React.createElement(
+          "svg",
+          { width: 12, height: 12, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round", strokeLinejoin: "round" },
+          React.createElement("path", { d: "M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" }),
+          React.createElement("polyline", { points: "9 22 9 12 15 12 15 22" }),
+        ),
+        React.createElement("span", null, "Home"),
+      ),
       // Tool mode toggle (Pan / Lasso)
       React.createElement(
         "div",
         {
           style: {
-            marginLeft: "auto",
             display: "flex",
             border: "1px solid #ccc",
             borderRadius: 12,
@@ -1405,33 +1426,6 @@ function EmbeddingScatter({
           ),
           React.createElement("span", null, "Lasso"),
         ),
-      ),
-      // Home (fit-all) button
-      React.createElement(
-        "button",
-        {
-          onClick: fitView,
-          title: "Fit all points",
-          style: {
-            display: "flex",
-            alignItems: "center",
-            gap: 3,
-            fontSize: 12,
-            background: "none",
-            border: "1px solid #ccc",
-            borderRadius: 12,
-            padding: "2px 10px",
-            cursor: "pointer",
-            color: "#555",
-          },
-        },
-        React.createElement(
-          "svg",
-          { width: 12, height: 12, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round", strokeLinejoin: "round" },
-          React.createElement("path", { d: "M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" }),
-          React.createElement("polyline", { points: "9 22 9 12 15 12 15 22" }),
-        ),
-        React.createElement("span", null, "Home"),
       ),
       // Live status toggle
       React.createElement(
