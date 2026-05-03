@@ -298,6 +298,16 @@ def main():
             "'false' or '0': skip projections entirely and write NaN."
         ),
     )
+    infer_p.add_argument(
+        "--classifier",
+        default=None,
+        metavar="NAME",
+        help=(
+            "Classifier model name. Omit (default) to skip classification — label column "
+            "will be NULL. NAME: checks models_dir/<NAME> on the node, then falls back "
+            "to MLflow (e.g. --classifier classifier)."
+        ),
+    )
 
     # image sources (mutually exclusive; if none given, dummy data is used)
     src = infer_p.add_mutually_exclusive_group()
