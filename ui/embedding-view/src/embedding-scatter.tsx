@@ -462,6 +462,7 @@ function EmbeddingScatter({
   const [lassoPath, setLassoPath] = React.useState<{ x: number; y: number }[]>([]);
   const [lassoSelected, setLassoSelected] = React.useState<Set<number>>(new Set());
   const lassoDrawing = React.useRef(false);
+  const didDragRef = React.useRef(false);
   const dragRef = React.useRef<{
     startX: number;
     startY: number;
@@ -1001,6 +1002,7 @@ function EmbeddingScatter({
       if (dragRef.current) {
         const dx = e.clientX - dragRef.current.startX;
         const dy = e.clientY - dragRef.current.startY;
+        if (Math.abs(dx) > 2 || Math.abs(dy) > 2) didDragRef.current = true;
         setView((v) => ({
           ...v,
           offsetX: dragRef.current!.startOffsetX + dx,
@@ -1062,6 +1064,7 @@ function EmbeddingScatter({
         startOffsetX: viewRef.current.offsetX,
         startOffsetY: viewRef.current.offsetY,
       };
+      didDragRef.current = false;
       setDragging(true);
     },
     [toolMode, toDataCoords],
@@ -1152,12 +1155,13 @@ function EmbeddingScatter({
     (e: React.MouseEvent) => {
       // In lasso mode, clicks are handled by mousedown/mouseup
       if (toolMode === "lasso") return;
+      // Ignore click events that are the tail of a pan drag
+      if (didDragRef.current) { didDragRef.current = false; return; }
       const coords = toDataCoords(e.clientX, e.clientY);
       if (!coords) return;
       const p = findPoint(coords.mx, coords.my);
       if (!p) {
         setSelected(null);
-        // Don't clear lasso on empty click — user must explicitly clear
         return;
       }
       openPoint(p);
