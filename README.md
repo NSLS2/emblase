@@ -141,12 +141,29 @@ replay all existing runs.
 
 ## UMAP Projections
 
+The core logic lives in `emblase.umap` and can be called from IPython with an
+already-initialised Tiled node — no CLI required:
+
+```python
+from emblase.umap import train_umap, apply_umap
+
+node = client["smi/sandbox/confab26_demo/results/run_xyz"]
+
+# Fit a new approximator and write projections back to Tiled:
+train_umap(node, umap_dir="models/umap_approx")
+
+# Apply an existing approximator and write projections back to Tiled:
+apply_umap(node, umap_dir="models/umap_approx")
+```
+
+Or via the CLI scripts (thin wrappers over the same functions):
+
 ```bash
-# post-process projections on an existing results container
+# apply existing approximator
 pixi run python scripts/compute_umap.py \
   --dataset smi/sandbox/confab26_demo/results/run_live_1086139_<timestamp>
 
-# retrain the approximator on existing embeddings
+# retrain approximator then write projections
 pixi run python scripts/train_umap.py \
   --dataset smi/sandbox/confab26_demo/results/run_live_1086139_<timestamp>
 ```
@@ -245,6 +262,7 @@ src/emblase/
 ├── config.py               # Settings (pydantic-settings, EMBLASE_ prefix)
 ├── models.py               # load_model(), encode()
 ├── mlflow_registry.py      # MLflow push/pull/list
+├── umap.py                 # train_umap(), apply_umap() — callable from IPython
 ├── compute/
 │   ├── base.py             # ComputeBackend ABC, JobStatus, JobResult
 │   ├── orion.py            # OrionBackend, OrionClient, script rendering
