@@ -1,25 +1,28 @@
 """Inference script — runs on the compute node inside `pixi run python`.
 
 Filled by _render_inference_script():
-    {models_dir}     — absolute path to the models directory on the compute node
-    {model_name}     — short name ("vae", "vit") or MLflow registry name
-    {batch_size}     — number of images per encode call (default 1)
-    {inputs}         — repr of list[str | tuple[str,str]] of Tiled (path[, slice]) entries
-    {output}         — Tiled container path to write embeddings (empty → save output.npy only)
-    {mlflow_version} — MLflow model version, or "" for latest
+    {models_dir}        — absolute path to the models directory on the compute node
+    {model_name}        — short name ("vae", "vit") or MLflow registry name
+    {batch_size}        — number of images per encode call (default 1)
+    {run_path}          — Tiled path to a BlueskyRun container; when non-empty the
+                          image array is read as run_path/primary/<image_key> and
+                          param arrays are sliced from the same primary stream.
+                          Mutually exclusive with inputs.
+    {image_key}         — array key within primary stream (default "pil900KW_image")
+    {inputs}            — repr of list[str | tuple[str,str]] of Tiled (path[, slice])
+                          entries; used when run_path is empty (legacy raw-entry mode).
+    {output}            — Tiled container path to write embeddings (empty → output.npy)
+    {mlflow_version}    — MLflow model version, or "" for latest
+    {thumb_mode}        — thumbnail mode ("default" or "logroi")
+    {param_specs_json}  — JSON dict mapping param name → ParamSpec
+                          (source must be "primary.<array_key>")
+    {umap_dir}          — path to umap_approx dir; empty string → no projections
 
 job_dir is read from the JOB_DIR environment variable (set by the sbatch script
 to working_dir/job_$SLURM_JOB_ID), so the folder name always matches slurm-<id>.out.
-
-Input source (controlled by inputs):
-  - non-empty — read frames from Tiled via read_images.
-  - empty      — load input.npy from job_dir (embedded or symlinked by sbatch).
-
-Output delivery (controlled by output):
-  - non-empty  — write embeddings into the Tiled container at output path.
-  - empty      — save output.npy in job_dir only.
 """
 
+import json
 import logging
 import os
 import sys
@@ -28,7 +31,6 @@ import time
 import numpy as np
 import torch
 
-# --- logging setup ---
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)-8s %(message)s",
@@ -39,15 +41,18 @@ logging.basicConfig(
 log = logging.getLogger("emblase.inference")
 
 # --- job parameters (substituted by _render_inference_script) ---
-job_dir = os.environ["JOB_DIR"]
-model_name = "{model_name}"
-batch_size = {batch_size}
-inputs = {inputs}
-output = "{output}"
+job_dir        = os.environ["JOB_DIR"]
+model_name     = "{model_name}"
+batch_size     = {batch_size}
+run_path       = "{run_path}"
+image_key      = "{image_key}"
+inputs         = {inputs}
+output         = "{output}"
 mlflow_version = "{mlflow_version}" or None
-thumb_mode = "{thumb_mode}"
+thumb_mode     = "{thumb_mode}"
+param_specs    = json.loads('{param_specs_json}')
+umap_dir       = "{umap_dir}"
 
-# access_tags: comma-separated string from env → list[str], or None if unset/empty
 _raw_tags = os.environ.get("EMBLASE_TILED_ACCESS_TAGS", "").strip()
 access_tags: list[str] | None = [t.strip() for t in _raw_tags.split(",") if t.strip()] or None
 
@@ -57,11 +62,14 @@ log.info("model      : %s", model_name)
 log.info("mlflow_ver : %s", mlflow_version or "latest")
 log.info("batch_size : %d", batch_size)
 log.info("thumb_mode : %s", thumb_mode)
-log.info("inputs     : %s", inputs or "(none — loading input.npy)")
+log.info("run_path   : %s", run_path or "(none — using raw inputs)")
+log.info("image_key  : %s", image_key)
+log.info("inputs     : %s", inputs or "(none)")
 log.info("output     : %s", output or "(none — saving output.npy)")
-log.info("access_tags: %s", access_tags or "(none — server default)")
+log.info("access_tags: %s", access_tags or "(none)")
+log.info("param_specs: %s", list(param_specs.keys()))
+log.info("umap_dir   : %s", umap_dir or "(none)")
 
-# Ensure the models directory is on sys.path so model source files are importable.
 models_dir = "{models_dir}"
 if models_dir not in sys.path:
     sys.path.insert(0, models_dir)
@@ -73,7 +81,6 @@ log.info("device     : %s", device)
 if device.type == "cuda":
     log.info("GPU        : %s", torch.cuda.get_device_name(device))
 
-# --- load model ---
 log.info("Loading model %r ...", model_name)
 t0 = time.perf_counter()
 model = load_model(
@@ -84,29 +91,81 @@ model = load_model(
 )
 log.info("Model loaded in %.1f s", time.perf_counter() - t0)
 
-# --- connect to Tiled if needed ---
+# ---------------------------------------------------------------------------
+# Optional UMAP approximator
+# ---------------------------------------------------------------------------
+_umap_model = None
+_umap_scaler = None
+
+if umap_dir:
+    try:
+        import joblib
+        from pathlib import Path as _Path
+        _ud = _Path(umap_dir)
+        if str(_ud) not in sys.path:
+            sys.path.insert(0, str(_ud))
+        from neural_dimred_wrapper import SimpleDimRedApproximator
+        _scaler_path = _ud / "scaler.pkl"
+        _umap_scaler = joblib.load(_scaler_path) if _scaler_path.exists() else None
+        _sd = torch.load(_ud / "umap_approximator.pth", map_location=device, weights_only=True)
+        _umap_model = SimpleDimRedApproximator(input_dim=_sd["network.0.weight"].shape[1])
+        _umap_model.load_state_dict(_sd)
+        _umap_model.eval().to(device)
+        log.info("UMAP approximator loaded from %s", umap_dir)
+    except Exception as _exc:
+        log.warning("UMAP approximator not loaded — projections will be NaN: %s", _exc)
+        _umap_model = None
+
+
+def _compute_projections(embeddings: np.ndarray) -> np.ndarray | None:
+    if _umap_model is None:
+        return None
+    X = embeddings.astype("float32")
+    if _umap_scaler is not None:
+        X = _umap_scaler.transform(X)
+    with torch.no_grad():
+        coords = _umap_model(torch.tensor(X, dtype=torch.float32, device=device)).cpu().numpy()
+    return coords.astype("float32")
+
+# ---------------------------------------------------------------------------
+# Connect to Tiled
+# ---------------------------------------------------------------------------
 tiled_client = None
-if inputs or output:
+if run_path or inputs or output:
     from tiled.client import from_uri
     tiled_server = os.environ["EMBLASE_TILED_SERVER_URI"]
     log.info("Connecting to Tiled: %s", tiled_server)
     tiled_client = from_uri(tiled_server, api_key=os.environ.get("EMBLASE_TILED_API_KEY") or None)
 
-# --- load input ---
-if inputs:
+# ---------------------------------------------------------------------------
+# Load input frames
+# ---------------------------------------------------------------------------
+images: list[np.ndarray] | torch.Tensor
+frame_entries = None
+frame_indices: list[int] = []
+
+if run_path:
+    # Run-path mode: read all frames from primary/<image_key>
+    from emblase.tiled.client import read_images  # noqa: E402
+    run_segments = [s for s in run_path.split("/") if s]
+    run_node = tiled_client[tuple(run_segments)]
+    image_tiled_path = run_path.rstrip("/") + f"/primary/{image_key}"
+    log.info("Reading frames from %s", image_tiled_path)
+    t0 = time.perf_counter()
+    images, frame_entries = read_images(tiled_client, [image_tiled_path])
+    frame_indices = list(range(len(images)))
+    log.info("Read %d frame(s) in %.1f s", len(images), time.perf_counter() - t0)
+
+elif inputs:
     from emblase.tiled.client import read_images  # noqa: E402
     log.info("Reading %d Tiled entr%s ...", len(inputs), "y" if len(inputs) == 1 else "ies")
     t0 = time.perf_counter()
     images, frame_entries = read_images(tiled_client, inputs)
+    frame_indices = list(range(len(images)))
     unique_shapes = sorted(set(img.shape for img in images))
-    log.info(
-        "Read %d frame(s) in %.1f s  (shapes: %s)",
-        len(images),
-        time.perf_counter() - t0,
-        unique_shapes,
-    )
+    log.info("Read %d frame(s) in %.1f s  (shapes: %s)", len(images), time.perf_counter() - t0, unique_shapes)
+
 else:
-    images, frame_entries = [], None
     input_path = os.path.join(job_dir, "input.npy")
     log.info("Loading input from %s ...", input_path)
     arr = np.load(input_path)
@@ -115,19 +174,63 @@ else:
         arr = arr[:, np.newaxis, :, :]
         log.info("Reshaped to (N, 1, H, W): %s", arr.shape)
     images = torch.from_numpy(arr).float()
+    frame_indices = list(range(len(images)))
 
-# --- encode ---
+# ---------------------------------------------------------------------------
+# Load param arrays (run-path mode only)
+# ---------------------------------------------------------------------------
+batch_params: dict | None = None
+
+if param_specs and run_path:
+    try:
+        primary = run_node["primary"]
+        raw_params: dict[str, np.ndarray] = {{}}
+        for name, spec in param_specs.items():
+            source = spec.get("source", "")
+            parts = source.split(".", 1)
+            if len(parts) != 2 or parts[0] != "primary":
+                log.warning("Param %r: unsupported source %r — skipping", name, source)
+                continue
+            arr = primary[parts[1]].read()
+            raw_params[name] = np.asarray(arr)
+            log.info("Loaded param %r shape=%s", name, raw_params[name].shape)
+        batch_params = {{
+            name: [raw_params[name][i].item() for i in frame_indices]
+            for name in param_specs
+            if name in raw_params
+        }}
+    except Exception as exc:
+        log.exception("Failed to load param arrays — params will be null: %s", exc)
+        batch_params = None
+
+elif param_specs:
+    log.warning("param_specs provided but run_path is empty — params require run_path mode")
+
+# ---------------------------------------------------------------------------
+# Encode
+# ---------------------------------------------------------------------------
 log.info("Encoding (batch_size=%d) ...", batch_size)
 t0 = time.perf_counter()
 embeddings = encode(model, images, batch_size=batch_size)
 log.info("Encoded in %.1f s  →  shape: %s", time.perf_counter() - t0, embeddings.shape)
 
-# --- save output.npy (always) ---
+# ---------------------------------------------------------------------------
+# UMAP projections
+# ---------------------------------------------------------------------------
+projections = _compute_projections(embeddings)
+if projections is not None:
+    log.info("Projections: %s", projections.shape)
+
+# ---------------------------------------------------------------------------
+# Save output.npy (always)
+# ---------------------------------------------------------------------------
 output_path = os.path.join(job_dir, "output.npy")
 np.save(output_path, embeddings)
 log.info("output.npy saved: %s", output_path)
 
-# --- write to Tiled if output path given ---
+# ---------------------------------------------------------------------------
+# Write to Tiled
+# ---------------------------------------------------------------------------
 if output:
     from emblase.tiled.client import write_output  # noqa: E402
     log.info("Writing embeddings to Tiled: %s  shape=%s", output, embeddings.shape)
@@ -141,6 +244,9 @@ if output:
         model_name=model_name,
         thumb_mode=thumb_mode,
         access_tags=access_tags,
+        params=batch_params,
+        param_specs=param_specs if batch_params is not None else None,
+        projections=projections,
     )
     log.info("Written to Tiled in %.1f s", time.perf_counter() - t0)
 

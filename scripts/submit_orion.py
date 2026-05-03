@@ -1,14 +1,68 @@
-"""Manage Orion jobs: connectivity test, inference submission, status, cancel."""
+"""Manage Orion jobs: connectivity test, batch inference, status, cancel.
+
+Subcommands
+-----------
+infer   Submit a batch inference job (encode all frames, write to Tiled).
+run     Submit a connectivity test or an arbitrary bash script.
+status  Poll the state of a job by ID.
+cancel  Cancel a running job.
+
+Typical workflow — quick iteration on a complete run
+-----------------------------------------------------
+Sync code, then submit::
+
+    rsync -az src/emblase/ orion-staging.nsls2.bnl.gov:/nsls2/users/ymatviych/code/emblase/src/emblase/
+
+    python scripts/submit_orion.py infer \\
+        --model   bnl-nsls2-smi-vit \\
+        --run     smi/sandbox/confab26_demo/inputs/run_1086139 \\
+        --output  smi/sandbox/confab26_demo/results/run_1086139_vit \\
+        --batch-size 1 \\
+        --thumb-mode logroi \\
+        --param temperature:primary.LinkamThermal_temperature_current:float:°C \\
+        --param piezo_x:primary.piezo_x:float:μm
+
+The job reads all frames from ``run_path/primary/<image_key>``, encodes them,
+writes a ``LatentSpaceEmbedding`` container to ``--output``, and stores the
+requested scalar params in the ``_index`` table alongside each embedding.
+
+Add ``--umap-dir`` to also compute on-node UMAP projections::
+
+    python scripts/submit_orion.py infer \\
+        --model   bnl-nsls2-smi-vit \\
+        --run     smi/sandbox/confab26_demo/inputs/run_1086139 \\
+        --output  smi/sandbox/confab26_demo/results/run_1086139_vit \\
+        --batch-size 1 \\
+        --thumb-mode logroi \\
+        --param temperature:primary.LinkamThermal_temperature_current:float:°C \\
+        --umap-dir /nsls2/users/ymatviych/code/emblase/models/umap_approx
+
+Check the job log::
+
+    ssh orion-staging.nsls2.bnl.gov \\
+        "tail -50 /nsls2/users/ymatviych/orion_jobs/slurm-<jobid>.out"
+
+--param syntax
+--------------
+    --param name:source:dtype:units
+
+``source`` must be ``primary.<array_key>`` — a scalar stream in the run's primary
+event stream aligned 1-to-1 with image frames.
+``dtype`` defaults to ``float``; ``units`` defaults to empty string.
+Repeat for multiple params.
+"""
 
 import argparse
 import asyncio
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
+from emblase.compute.base import JobStatus  # noqa: E402
 from emblase.compute.orion import OrionBackend, OrionClient, _SLURM_STATE_MAP  # noqa: E402
 
 CONNECTIVITY_SCRIPT = """\
@@ -31,26 +85,51 @@ echo '=== done ==='
 """
 
 
+def _parse_param_specs(param_strs: list[str]) -> dict | None:
+    """Parse --param name:source[:dtype[:units]] entries into a ParamSpec dict."""
+    if not param_strs:
+        return None
+    specs: dict = {}
+    for s in param_strs:
+        parts = s.split(":")
+        if len(parts) < 2:
+            sys.exit(f"Invalid --param spec {s!r}: expected name:source[:dtype[:units]]")
+        name = parts[0]
+        source = parts[1]
+        dtype = parts[2] if len(parts) > 2 else "float"
+        units = parts[3] if len(parts) > 3 else ""
+        specs[name] = {"source": source, "dtype": dtype, "units": units}
+    return specs
+
+
 async def _infer(args):
     backend = OrionBackend()
     print(f"Working dir : {backend.working_dir}")
     print(f"Models dir  : {backend.models_dir}")
+
+    param_specs = _parse_param_specs(args.params)
+    umap_dir = args.umap_dir
 
     submit_kwargs = dict(
         model_name=args.model,
         batch_size=args.batch_size,
         output=args.output or "",
         thumb_mode=args.thumb_mode,
+        mlflow_version=args.mlflow_version,
+        param_specs=param_specs,
+        umap_dir=umap_dir,
     )
 
-    if args.npy_file:
+    if args.run:
+        submit_kwargs["run_path"] = args.run
+        submit_kwargs["image_key"] = args.image_key
+    elif args.npy_file:
         images = np.load(args.npy_file)
         print(f"Loaded from {args.npy_file}: {images.shape}  dtype={images.dtype}")
         submit_kwargs["images"] = images
     elif args.npy_path:
         submit_kwargs["npy_path"] = args.npy_path
     elif args.inputs:
-        # Parse each entry: bare "path/to/node" or "path/to/node:slice_expr"
         parsed = []
         for e in args.inputs:
             if ":" in e:
@@ -73,7 +152,6 @@ async def _infer(args):
         return
 
     print("Waiting for job to complete (polling every 5s)...")
-    import time
     t0 = time.monotonic()
     while True:
         await asyncio.sleep(5)
@@ -81,10 +159,9 @@ async def _infer(args):
         async with OrionClient() as client:
             info = await client.get_job(int(job_id))
         print(f"  [{elapsed:>4}s] state={info.state} node={info.node or '(queued)'}")
-        if info.state in ("COMPLETED", "FAILED", "CANCELLED", "TIMEOUT", "NODE_FAIL", "OUT_OF_MEMORY"):
+        if _SLURM_STATE_MAP.get(info.state) in (JobStatus.completed, JobStatus.failed):
             break
 
-    from emblase.compute.base import JobStatus
     final_status = _SLURM_STATE_MAP.get(info.state, JobStatus.failed)
     print(f"\nJob {job_id} finished: {final_status.value}")
     if final_status != JobStatus.completed:
@@ -112,7 +189,10 @@ async def _run_script(script: str, working_dir: str, gpu: bool, wait: bool):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Manage Orion jobs for Emblase")
+    parser = argparse.ArgumentParser(
+        description="Manage Orion jobs for Emblase",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     sub = parser.add_subparsers(dest="command")
 
     # -- test / run subcommand --
@@ -130,21 +210,32 @@ def main():
     run_p.add_argument("--no-wait", action="store_true")
 
     # -- infer subcommand --
-    infer_p = sub.add_parser("infer", help="Submit an inference job")
+    infer_p = sub.add_parser("infer", help="Submit a batch inference job")
     infer_p.add_argument(
         "--model",
         default="vae",
+        metavar="MODEL_NAME",
         help=(
             "Model name. Use a short architecture name ('vae', 'vit') to load "
-            "from local weights, or an MLflow registry name to pull from the registry."
+            "from local weights, or an MLflow registry name (e.g. 'bnl-nsls2-smi-vit') "
+            "to pull from the registry."
         ),
     )
-    infer_p.add_argument("--image-size", type=int, default=512)
+    infer_p.add_argument(
+        "--mlflow-version",
+        default="",
+        metavar="VERSION",
+        help="MLflow model version string (default: latest).",
+    )
     infer_p.add_argument(
         "--batch-size",
         type=int,
-        default=8,
-        help="Images per encode call on the node. Default 8; reduce if OOM on large images.",
+        default=1,
+        metavar="N",
+        help=(
+            "Images per encode call on the node (default: 1). "
+            "Reduce if OOM on large images; SMI frames (619×1475) are safe at 1."
+        ),
     )
     infer_p.add_argument("--no-wait", action="store_true")
     infer_p.add_argument(
@@ -152,50 +243,97 @@ def main():
         metavar="TILED_PATH",
         default="",
         help=(
-            "Tiled path to write embeddings into (e.g. 'proposal/embeddings/scan1'). "
+            "Tiled path to write the LatentSpaceEmbedding container "
+            "(e.g. 'smi/sandbox/confab26_demo/results/run_1086139_vit'). "
             "If omitted, output.npy is saved in the job working directory only."
+        ),
+    )
+    infer_p.add_argument(
+        "--thumb-mode",
+        default="logroi",
+        choices=["default", "logroi"],
+        help=(
+            "Thumbnail generation mode (default: logroi). "
+            "'default': nearest-neighbour resize of the full frame. "
+            "'logroi': crop ROI (rows 0:180, cols 220:400), clip negatives, "
+            "apply log1p, then resize. Recommended for X-ray photon-count data."
+        ),
+    )
+    infer_p.add_argument(
+        "--image-key",
+        default="pil900KW_image",
+        metavar="KEY",
+        help="Array key within the primary stream (default: pil900KW_image). Used with --run.",
+    )
+    infer_p.add_argument(
+        "--param",
+        action="append",
+        default=[],
+        dest="params",
+        metavar="name:source[:dtype[:units]]",
+        help=(
+            "Scalar parameter to store alongside each embedding in the _index table. "
+            "source must be 'primary.<array_key>' — a scalar stream aligned 1-to-1 "
+            "with image frames. dtype defaults to 'float', units to ''. "
+            "Repeat for multiple params, e.g.: "
+            "--param temperature:primary.LinkamThermal_temperature_current:float:°C "
+            "--param piezo_x:primary.piezo_x:float:μm"
+        ),
+    )
+    infer_p.add_argument(
+        "--umap-dir",
+        default="",
+        metavar="DIR",
+        help=(
+            "Path to the umap_approx directory on Orion "
+            "(neural_dimred_wrapper.py + umap_approximator.pth + scaler.pkl). "
+            "When set, UMAP projections are computed on-node and written to the "
+            "projections array. Defaults to EMBLASE_ORION_UMAP_DIR env var / "
+            "OrionBackend.umap_dir."
         ),
     )
 
     # image sources (mutually exclusive; if none given, dummy data is used)
     src = infer_p.add_mutually_exclusive_group()
     src.add_argument(
+        "--run",
+        metavar="TILED_PATH",
+        default="",
+        help=(
+            "Tiled path to a BlueskyRun container "
+            "(e.g. 'smi/sandbox/confab26_demo/inputs/run_1086139'). "
+            "Frames are read from run/primary/<image_key>. "
+            "Required for --param support. Preferred over --inputs."
+        ),
+    )
+    src.add_argument(
         "--npy-file",
         metavar="PATH",
-        help="Local .npy file to upload and run on Orion",
+        help="Local .npy file to upload and run on Orion (no param support).",
     )
     src.add_argument(
         "--npy-path",
         metavar="PATH",
-        help="Absolute path to a .npy file already on Orion (symlinked into job dir)",
+        help="Absolute path to a .npy file already on Orion (no param support).",
     )
     src.add_argument(
         "--inputs",
         nargs="+",
         metavar="PATH[:SLICE]",
         help=(
-            "One or more Tiled entries to read as input. Each is a slash-separated "
-            "path optionally followed by a colon and a numpy-style slice, e.g. "
-            "'proposal/scan' or 'proposal/scan:0:10'"
+            "One or more raw Tiled array paths, optionally with a slice suffix "
+            "(e.g. 'smi/sandbox/.../pil900KW_image' or 'proposal/scan:0:10'). "
+            "No param support; prefer --run for BlueskyRun data."
         ),
     )
     infer_p.add_argument(
         "--n-images",
         type=int,
         default=2,
-        help="Number of dummy images (ignored if an image source is given)",
+        metavar="N",
+        help="Number of dummy images when no image source is given (default: 2).",
     )
-    infer_p.add_argument(
-        "--thumb-mode",
-        default="default",
-        choices=["default", "logroi"],
-        help=(
-            "Thumbnail generation mode. "
-            "'default': nearest-neighbour resize of the full frame. "
-            "'log': crop ROI (rows 0:180, cols 220:400), clip negatives, "
-            "apply log1p, then resize. Recommended for X-ray photon-count data."
-        ),
-    )
+    infer_p.add_argument("--image-size", type=int, default=512, metavar="PX")
 
     # -- status subcommand --
     status_p = sub.add_parser("status", help="Check job status")

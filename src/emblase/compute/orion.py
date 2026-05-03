@@ -38,20 +38,28 @@ def _render_inference_script(
     model_name: str,
     models_dir: str,
     batch_size: int = 1,
+    run_path: str = "",
+    image_key: str = "pil900KW_image",
     inputs: list[str | tuple[str, str]] | None = None,
     output: str = "",
     mlflow_version: str = "",
     thumb_mode: str = "default",
+    param_specs: dict | None = None,
+    umap_dir: str = "",
 ) -> str:
     """Render the batch inference template with concrete values."""
     return _TEMPLATE.format(
         model_name=model_name,
         models_dir=models_dir,
         batch_size=batch_size,
+        run_path=run_path,
+        image_key=image_key,
         inputs=repr(inputs or []),
         output=output,
         mlflow_version=mlflow_version,
         thumb_mode=thumb_mode,
+        param_specs_json=json.dumps(param_specs or {}),
+        umap_dir=umap_dir,
     )
 
 
@@ -336,36 +344,42 @@ class OrionBackend(ComputeBackend):
         batch_size: int = 1,
         images: np.ndarray | None = None,
         npy_path: str | None = None,
+        run_path: str = "",
+        image_key: str = "pil900KW_image",
         inputs: list[str | tuple[str, str]] | None = None,
         output: str = "",
         mlflow_version: str = "",
         thumb_mode: str = "default",
+        param_specs: dict | None = None,
+        umap_dir: str = "",
         **kwargs: Any,
     ) -> str:
-        """Submit an inference job.
+        """Submit a batch inference job.
 
         Image source — provide exactly one:
+          - ``run_path``: Tiled BlueskyRun path; frames read from
+            ``run_path/primary/<image_key>``, params from same primary stream.
           - ``images``: numpy array uploaded from the client (embedded in the job script).
           - ``npy_path``: absolute path to a .npy file already on Orion (symlinked).
-          - ``inputs``: list of Tiled paths / ``(path, slice)`` tuples read on the node.
+          - ``inputs``: list of raw Tiled paths / ``(path, slice)`` tuples.
           - *(none)*: dummy random images are generated on the node.
 
         Output:
           - ``output``: Tiled path to write embeddings into. If omitted, results are
             saved as ``output.npy`` in the job working directory only.
-
-        Thumbnail:
-          - ``thumb_mode``: ``"default"`` (resize only) or ``"logroi"`` (ROI crop +
-            log1p normalisation).  See ``write_output`` for details.
         """
         py_script = _render_inference_script(
             model_name=model_name,
             models_dir=self.models_dir,
             batch_size=batch_size,
+            run_path=run_path,
+            image_key=image_key,
             inputs=inputs,
             output=output,
             mlflow_version=mlflow_version,
             thumb_mode=thumb_mode,
+            param_specs=param_specs,
+            umap_dir=umap_dir or self.umap_dir,
         )
 
         if images is not None:
@@ -394,7 +408,7 @@ class OrionBackend(ComputeBackend):
             **script_kwargs,
         )
 
-        environment = self._build_environment(require_tiled=bool(inputs or output))
+        environment = self._build_environment(require_tiled=bool(run_path or inputs or output))
 
         job_id = await self.client.submit_job(
             script=script,

@@ -24,11 +24,12 @@ def test_render_inference_script_substitutes_all_placeholders():
         output="",
     )
     assert "/models" in script
-    assert 'model_name = "vae"' in script
-    assert 'models_dir = "/models"' in script
-    assert 'inputs = []' in script
-    assert 'output = ""' in script
+    assert '"vae"' in script
+    assert 'inputs         = []' in script
+    assert 'output         = ""' in script
     assert 'os.environ["JOB_DIR"]' in script
+    assert 'param_specs    = ' in script
+    assert 'umap_dir       = ' in script
 
 
 def test_render_inference_script_with_output():

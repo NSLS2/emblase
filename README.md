@@ -29,6 +29,52 @@ pixi install
 cp .env.example .env   # fill in your keys and paths
 ```
 
+## Batch Inference (quick iteration)
+
+Use `submit_orion.py infer` to process a complete, already-acquired run in one
+shot — no watcher, no WebSocket, just encode-all-then-write.  Ideal for trying
+different models or hyperparameters on existing data.
+
+```bash
+# sync code first
+rsync -az src/emblase/ orion-staging.nsls2.bnl.gov:/nsls2/users/ymatviych/code/emblase/src/emblase/
+
+python scripts/submit_orion.py infer \
+    --model      bnl-nsls2-smi-vit \
+    --run        smi/sandbox/confab26_demo/inputs/run_1086139 \
+    --output     smi/sandbox/confab26_demo/results/run_1086139_vit \
+    --batch-size 1 \
+    --thumb-mode logroi \
+    --param      temperature:primary.LinkamThermal_temperature_current:float:°C \
+    --param      piezo_x:primary.piezo_x:float:μm \
+    --umap-dir   /nsls2/users/ymatviych/code/emblase/models/umap_approx
+```
+
+`--run` points at the BlueskyRun container; frames are read from
+`run/primary/<image_key>` (default `pil900KW_image`).  `--param` stores scalar
+streams from the same primary event stream alongside each embedding.
+`--umap-dir` triggers on-node UMAP projection — omit if the approximator is not
+yet trained.
+
+The script polls every 5 s and prints the final state.  Check the full log with:
+
+```bash
+ssh orion-staging.nsls2.bnl.gov \
+    "tail -100 /nsls2/users/ymatviych/orion_jobs/slurm-<jobid>.out"
+```
+
+### Batch vs. streaming
+
+| | Batch (`submit_orion.py infer`) | Streaming (`stream_pipeline.py`) |
+|---|---|---|
+| **When to use** | Complete runs, model iteration | Live acquisition |
+| **Params** | ✓ (`--param`) | ✓ (`--param`) |
+| **UMAP** | ✓ (`--umap-dir`) | ✓ (auto via `EMBLASE_ORION_UMAP_DIR`) |
+| **Latency** | All frames at once after job starts | Incremental, per batch |
+| **Setup** | Single command | Watcher must start before data arrives |
+
+---
+
 ## Running the Streaming Pipeline
 
 The pipeline watches a Tiled container for new runs and submits an Orion (Slurm) job per run to encode frames and write embeddings incrementally.
@@ -143,7 +189,7 @@ Copy [`.env.example`](.env.example) to `.env` and fill in your values.
 ## Development
 
 ```bash
-pixi run python -m pytest tests/ -x -q   # 117 tests, no GPU or live connections required
+pixi run python -m pytest tests/ -x -q   # 122 tests, no GPU or live connections required
 ```
 
 ## Project Structure
@@ -163,13 +209,13 @@ src/emblase/
 ├── tiled/
 │   └── client.py           # read_images, write_output, LatentSpaceEmbedding
 └── worker/
-    ├── inference.py.tmpl           # batch inference node script
+    ├── inference.py.tmpl           # batch inference node script (params + UMAP)
     └── streaming_inference.py.tmpl # streaming inference node script
 scripts/
 ├── stream_pipeline.py      # CLI: watch inputs_copy → submit streaming jobs
 ├── simulate_acquisition.py # CLI: copy a run into inputs_copy frame-by-frame
-├── simulate_results.py     # CLI: stream a results container into a local Tiled (for WebUI dev)
-├── submit_orion.py         # CLI: submit one-off batch jobs
+├── simulate_results.py     # CLI/lib: replay a results container into a local Tiled (WebUI dev)
+├── submit_orion.py         # CLI: submit one-off batch jobs (infer/status/cancel)
 ├── compute_umap.py         # apply UMAP approximator → write projections
 └── train_umap.py           # fit UMAP + train MLP approximator
 models/
