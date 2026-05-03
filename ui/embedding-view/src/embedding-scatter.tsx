@@ -554,12 +554,11 @@ function EmbeddingScatter({
 
   const fitView = React.useCallback(() => {
     if (points.length === 0) return;
-    setView(fitViewToPoints(points, canvasWidthRef.current, CANVAS_HEIGHT));
-  }, [points]);
+    const w = canvasRef.current?.clientWidth || canvasWidth;
+    setView(fitViewToPoints(points, w, CANVAS_HEIGHT));
+  }, [points, canvasWidth]);
 
-  // Initial data load — runs once on mount (refreshAll ref is stable after paramNames fix)
-  const canvasWidthRef = React.useRef(canvasWidth);
-  canvasWidthRef.current = canvasWidth;
+  // Initial data load — runs once on mount
   const refreshAllRef = React.useRef(refreshAll);
   refreshAllRef.current = refreshAll;
   React.useEffect(() => {
@@ -572,8 +571,8 @@ function EmbeddingScatter({
         if (cancelled) return;
         setError(null);
         if (pts && pts.length > 0) {
-          const fitted = fitViewToPoints(pts, canvasWidthRef.current, CANVAS_HEIGHT);
-          setView(fitted);
+          const w = canvasRef.current?.clientWidth || canvasWidth;
+          setView(fitViewToPoints(pts, w, CANVAS_HEIGHT));
         }
       } catch (err: any) {
         if (!cancelled) setError(err.message);
@@ -848,12 +847,13 @@ function EmbeddingScatter({
     if (!ctx) return;
 
     const dpr = window.devicePixelRatio || 1;
-    canvas.width = canvasWidth * dpr;
+    const w = canvas.clientWidth || canvasWidth;
+    canvas.width = w * dpr;
     canvas.height = CANVAS_HEIGHT * dpr;
     ctx.scale(dpr, dpr);
 
     ctx.fillStyle = "#fafafa";
-    ctx.fillRect(0, 0, canvasWidth, CANVAS_HEIGHT);
+    ctx.fillRect(0, 0, w, CANVAS_HEIGHT);
 
     // Grid
     ctx.strokeStyle = "#e0e0e0";
@@ -861,12 +861,12 @@ function EmbeddingScatter({
     const gridStep = 50 * view.scale;
     if (gridStep > 10) {
       const startX = ((view.offsetX % gridStep) + gridStep) % gridStep; // always positive
-      for (let x = startX; x < canvasWidth; x += gridStep) {
+      for (let x = startX; x < w; x += gridStep) {
         ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, CANVAS_HEIGHT); ctx.stroke();
       }
       const startY = ((view.offsetY % gridStep) + gridStep) % gridStep;
       for (let y = startY; y < CANVAS_HEIGHT; y += gridStep) {
-        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvasWidth, y); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
       }
     }
 
@@ -877,7 +877,7 @@ function EmbeddingScatter({
       const sy = -p.y * view.scale + view.offsetY;
       if (
         sx < -10 ||
-        sx > canvasWidth + 10 ||
+        sx > w + 10 ||
         sy < -10 ||
         sy > CANVAS_HEIGHT + 10
       )
@@ -942,7 +942,6 @@ function EmbeddingScatter({
       }
     }
   }, [points, view, canvasWidth, tooltip, selected, lassoPath, lassoSelected, colorBy, hiddenLabels, paramRange, paramMin, paramMax, uniqueLabels]);
-
   // Mouse handlers
   const toDataCoords = React.useCallback(
     (clientX: number, clientY: number) => {
@@ -1550,7 +1549,6 @@ function EmbeddingScatter({
       // Canvas
       React.createElement("canvas", {
         ref: canvasRef,
-        width: canvasWidth,
         height: CANVAS_HEIGHT,
         style: {
           width: "100%",
