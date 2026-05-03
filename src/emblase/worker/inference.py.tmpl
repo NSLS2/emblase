@@ -273,11 +273,12 @@ else:
         log.info("Projections: %s", projections.shape)
 
 # ---------------------------------------------------------------------------
-# Save output.npy (always)
+# Save output.npy (only when not writing to Tiled)
 # ---------------------------------------------------------------------------
-output_path = os.path.join(job_dir, "output.npy")
-np.save(output_path, embeddings)
-log.info("output.npy saved: %s", output_path)
+if not output:
+    output_path = os.path.join(job_dir, "output.npy")
+    np.save(output_path, embeddings)
+    log.info("output.npy saved: %s", output_path)
 
 # ---------------------------------------------------------------------------
 # Write to Tiled
