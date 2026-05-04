@@ -68,6 +68,28 @@ async def chat_stream(req: ChatRequest):
     return StreamingResponse(stream(), media_type="text/event-stream")
 
 
+@router.post("/chat")
+async def chat(req: ChatRequest) -> dict:
+    """Non-streaming proxy: send a message and return the full assistant reply.
+
+    Useful for scripting / debugging without SSE support.
+    """
+    payload = {
+        "message": req.message,
+        "model_name": _CHAT_MODEL,
+        "chat_session_id": req.chat_session_id,
+        "image_refs": [],
+    }
+    headers = {
+        "Authorization": f"Bearer {_CHAT_TOKEN}",
+        "Content-Type": "application/json",
+    }
+    async with httpx.AsyncClient(timeout=120) as client:
+        res = await client.post(f"{_CHAT_URL}/chat", json=payload, headers=headers)
+    res.raise_for_status()
+    return res.json()
+
+
 @router.get("/chat/history/{session_id}")
 async def chat_history(session_id: str):
     """Fetch message history for a session from AmSC."""
