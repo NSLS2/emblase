@@ -100,9 +100,9 @@ interface ChatMessage {
 }
 
 interface ChatConfig {
-  chat_url?: string;
-  chat_token?: string;
-  chat_model?: string;
+  chat_url: string;
+  chat_token: string;
+  chat_model: string;
 }
 
 interface ViewState {
@@ -441,7 +441,7 @@ function EmbeddingScatter({
 }: {
   segments: string[];
   item: any;
-  config?: ChatConfig;
+  config?: Record<string, unknown>;
 }) {
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
   const containerRef = React.useRef<HTMLDivElement>(null);
@@ -505,12 +505,27 @@ function EmbeddingScatter({
 
   const nodePath = segments.join("/");
 
-  // Chat config from spec_view settings (passed via config prop)
-  const chatUrl = config.chat_url ?? "";
-  const chatToken = config.chat_token ?? "";
-  const chatModel = config.chat_model ?? "openai/gpt-oss-120b";
+  // Chat config — fetched from the server so credentials stay out of ui_settings.yml
+  const [chatConfig, setChatConfig] = React.useState<ChatConfig>({
+    chat_url: "",
+    chat_token: "",
+    chat_model: "openai/gpt-oss-120b",
+  });
+  const chatUrl = chatConfig.chat_url;
+  const chatToken = chatConfig.chat_token;
+  const chatModel = chatConfig.chat_model;
   // localStorage key for persisting chat_session_id per embedding
   const chatSessionKey = `emblase.chat_session.${nodePath}`;
+
+  // Fetch chat config once on mount
+  React.useEffect(() => {
+    fetch(`${window.location.origin}/custom/emblase/config`, {
+      headers: authHeaders(),
+    })
+      .then((r) => r.ok ? r.json() : null)
+      .then((cfg) => { if (cfg) setChatConfig(cfg); })
+      .catch(() => { /* leave defaults */ });
+  }, []);
 
   const canvasWidth = selected || chatOpen || lassoSelected.size > 0
     ? containerWidth - PANEL_INSET
