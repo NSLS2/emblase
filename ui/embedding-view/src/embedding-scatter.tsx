@@ -99,11 +99,8 @@ interface ChatMessage {
   timestamp: number;
 }
 
-interface ChatConfig {
-  chat_url: string;
-  chat_token: string;
-  chat_model: string;
-}
+// Base URL of the Tiled proxy endpoints for chat
+const CHAT_PROXY = `${window.location.origin}/custom/emblase`;
 
 interface ViewState {
   offsetX: number;
@@ -505,27 +502,8 @@ function EmbeddingScatter({
 
   const nodePath = segments.join("/");
 
-  // Chat config — fetched from the server so credentials stay out of ui_settings.yml
-  const [chatConfig, setChatConfig] = React.useState<ChatConfig>({
-    chat_url: "",
-    chat_token: "",
-    chat_model: "openai/gpt-oss-120b",
-  });
-  const chatUrl = chatConfig.chat_url;
-  const chatToken = chatConfig.chat_token;
-  const chatModel = chatConfig.chat_model;
   // localStorage key for persisting chat_session_id per embedding
   const chatSessionKey = `emblase.chat_session.${nodePath}`;
-
-  // Fetch chat config once on mount
-  React.useEffect(() => {
-    fetch(`${window.location.origin}/custom/emblase/config`, {
-      headers: authHeaders(),
-    })
-      .then((r) => r.ok ? r.json() : null)
-      .then((cfg) => { if (cfg) setChatConfig(cfg); })
-      .catch(() => { /* leave defaults */ });
-  }, []);
 
   const canvasWidth = selected || chatOpen || lassoSelected.size > 0
     ? containerWidth - PANEL_INSET
@@ -1250,12 +1228,11 @@ function EmbeddingScatter({
   // ── Chat ──────────────────────────────────────────────────────────────────
 
   const loadChatHistory = React.useCallback(async () => {
-    if (!chatUrl) return;
     const sessionId = localStorage.getItem(chatSessionKey);
     if (!sessionId) return;
     try {
-      const res = await fetch(`${chatUrl}/sessions/${sessionId}/messages`, {
-        headers: { Authorization: `Bearer ${chatToken}` },
+      const res = await fetch(`${CHAT_PROXY}/chat/history/${sessionId}`, {
+        headers: authHeaders(),
       });
       if (res.ok) {
         const msgs: { role: string; content: string; message_id: number; created_at: string }[] = await res.json();
@@ -1267,11 +1244,11 @@ function EmbeddingScatter({
         })));
       }
     } catch { /* ignore */ }
-  }, [chatUrl, chatToken, chatSessionKey]);
+  }, [chatSessionKey]);
 
   const sendChatMessage = React.useCallback(async () => {
     const text = chatInput.trim();
-    if (!text || chatSending || !chatUrl) return;
+    if (!text || chatSending) return;
     setChatInput("");
     setChatSending(true);
 
@@ -1289,14 +1266,12 @@ function EmbeddingScatter({
 
     try {
       const sessionId = localStorage.getItem(chatSessionKey);
-      const res = await fetch(`${chatUrl}/chat/stream`, {
+      const res = await fetch(`${CHAT_PROXY}/chat/stream`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${chatToken}` },
+        headers: authHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify({
           message: text,
-          model_name: chatModel,
           chat_session_id: sessionId ?? null,
-          image_refs: [],
         }),
       });
       if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
@@ -1327,7 +1302,7 @@ function EmbeddingScatter({
       }
     } catch { /* ignore network errors */ }
     setChatSending(false);
-  }, [chatInput, chatSending, chatUrl, chatToken, chatModel, chatSessionKey]);
+  }, [chatInput, chatSending, chatSessionKey]);
 
   const clearChatHistory = React.useCallback(() => {
     localStorage.removeItem(chatSessionKey);
