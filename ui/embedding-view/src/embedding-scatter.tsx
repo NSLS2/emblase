@@ -434,11 +434,9 @@ function RangeSlider({
 function EmbeddingScatter({
   segments,
   item,
-  config = {},
 }: {
   segments: string[];
   item: any;
-  config?: Record<string, unknown>;
 }) {
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
   const containerRef = React.useRef<HTMLDivElement>(null);
