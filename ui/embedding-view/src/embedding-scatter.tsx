@@ -1269,6 +1269,7 @@ function EmbeddingScatter({
         headers: authHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify({
           message: text,
+          node_path: nodePath,
           chat_session_id: sessionId ?? null,
         }),
       });
