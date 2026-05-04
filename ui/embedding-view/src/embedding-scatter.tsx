@@ -99,6 +99,12 @@ interface ChatMessage {
   timestamp: number;
 }
 
+interface ChatConfig {
+  chat_url?: string;
+  chat_token?: string;
+  chat_model?: string;
+}
+
 interface ViewState {
   offsetX: number;
   offsetY: number;
@@ -431,9 +437,11 @@ function RangeSlider({
 function EmbeddingScatter({
   segments,
   item,
+  config = {},
 }: {
   segments: string[];
   item: any;
+  config?: ChatConfig;
 }) {
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
   const containerRef = React.useRef<HTMLDivElement>(null);
@@ -496,7 +504,13 @@ function EmbeddingScatter({
   const apiUrl = `${window.location.origin}/api/v1`;
 
   const nodePath = segments.join("/");
-  const customUrl = `${window.location.origin}/custom/emblase`;
+
+  // Chat config from spec_view settings (passed via config prop)
+  const chatUrl = config.chat_url ?? "";
+  const chatToken = config.chat_token ?? "";
+  const chatModel = config.chat_model ?? "openai/gpt-oss-120b";
+  // localStorage key for persisting chat_session_id per embedding
+  const chatSessionKey = `emblase.chat_session.${nodePath}`;
 
   const canvasWidth = selected || chatOpen || lassoSelected.size > 0
     ? containerWidth - PANEL_INSET
@@ -1218,25 +1232,34 @@ function EmbeddingScatter({
     }
   }, [selected, apiUrl, nodePath]);
 
+  // ── Chat ──────────────────────────────────────────────────────────────────
+
   const loadChatHistory = React.useCallback(async () => {
+    if (!chatUrl) return;
+    const sessionId = localStorage.getItem(chatSessionKey);
+    if (!sessionId) return;
     try {
-      const res = await fetch(`${customUrl}/chat/history/${nodePath}`, {
-        headers: authHeaders(),
+      const res = await fetch(`${chatUrl}/sessions/${sessionId}/messages`, {
+        headers: { Authorization: `Bearer ${chatToken}` },
       });
       if (res.ok) {
-        const history: ChatMessage[] = await res.json();
-        setChatMessages(history);
+        const msgs: { role: string; content: string; message_id: number; created_at: string }[] = await res.json();
+        setChatMessages(msgs.map((m) => ({
+          id: String(m.message_id),
+          role: m.role as "user" | "assistant",
+          content: m.content,
+          timestamp: new Date(m.created_at).getTime() / 1000,
+        })));
       }
     } catch { /* ignore */ }
-  }, [customUrl, nodePath]);
+  }, [chatUrl, chatToken, chatSessionKey]);
 
   const sendChatMessage = React.useCallback(async () => {
     const text = chatInput.trim();
-    if (!text || chatSending) return;
+    if (!text || chatSending || !chatUrl) return;
     setChatInput("");
     setChatSending(true);
 
-    // Optimistically add user message
     const userMsg: ChatMessage = {
       id: Date.now().toString(36),
       role: "user",
@@ -1245,31 +1268,58 @@ function EmbeddingScatter({
     };
     setChatMessages((prev) => [...prev, userMsg]);
 
+    // Placeholder assistant message that we'll stream into
+    const assistantId = Date.now().toString(36) + "a";
+    setChatMessages((prev) => [...prev, { id: assistantId, role: "assistant", content: "", timestamp: Date.now() / 1000 }]);
+
     try {
-      const res = await fetch(`${customUrl}/chat`, {
+      const sessionId = localStorage.getItem(chatSessionKey);
+      const res = await fetch(`${chatUrl}/chat/stream`, {
         method: "POST",
-        headers: authHeaders({ "Content-Type": "application/json" }),
-        body: JSON.stringify({ message: text, node_path: nodePath }),
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${chatToken}` },
+        body: JSON.stringify({
+          message: text,
+          model_name: chatModel,
+          chat_session_id: sessionId ?? null,
+          image_refs: [],
+        }),
       });
-      if (res.ok) {
-        const assistantMsg: ChatMessage = await res.json();
-        setChatMessages((prev) => [...prev, assistantMsg]);
+      if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          try {
+            const evt = JSON.parse(line.slice(6));
+            if (evt.type === "chunk") {
+              setChatMessages((prev) => prev.map((m) =>
+                m.id === assistantId ? { ...m, content: m.content + evt.text } : m,
+              ));
+            } else if (evt.type === "done") {
+              if (evt.chat_session_id) localStorage.setItem(chatSessionKey, evt.chat_session_id);
+            }
+          } catch { /* ignore malformed */ }
+        }
       }
-    } catch { /* ignore */ }
+    } catch { /* ignore network errors */ }
     setChatSending(false);
-  }, [chatInput, chatSending, customUrl, nodePath]);
+  }, [chatInput, chatSending, chatUrl, chatToken, chatModel, chatSessionKey]);
 
-  const clearChatHistory = React.useCallback(async () => {
-    try {
-      await fetch(`${customUrl}/chat/history/${nodePath}`, {
-        method: "DELETE",
-        headers: authHeaders(),
-      });
-      setChatMessages([]);
-    } catch { /* ignore */ }
-  }, [customUrl, nodePath]);
+  const clearChatHistory = React.useCallback(() => {
+    localStorage.removeItem(chatSessionKey);
+    setChatMessages([]);
+  }, [chatSessionKey]);
 
-  // Load chat history when chat panel opens
+  // Load chat history when chat panel first opens
   React.useEffect(() => {
     if (chatOpen) loadChatHistory();
   }, [chatOpen, loadChatHistory]);
