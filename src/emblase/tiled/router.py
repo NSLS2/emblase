@@ -17,9 +17,15 @@ import os
 from pathlib import Path
 
 import httpx
+from dotenv import load_dotenv
 from fastapi import APIRouter
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
+
+# Load .env from the working directory (or any parent) so EMBLASE_* vars are
+# available even when the server is started without explicitly sourcing .env.
+# Already-set env vars take priority (load_dotenv won't override them).
+load_dotenv()
 
 router = APIRouter(prefix="/emblase", tags=["emblase"])
 
@@ -28,6 +34,14 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 _CHAT_URL = os.environ.get("EMBLASE_CHATAPP_URL", "https://chat-amsc-dev.nsls2.bnl.gov").rstrip("/")
 _CHAT_TOKEN = os.environ.get("EMBLASE_CHATAPP_TOKEN", "")
 _CHAT_MODEL = os.environ.get("EMBLASE_CHATAPP_MODEL", "openai/gpt-oss-120b")
+
+if not _CHAT_TOKEN:
+    import warnings
+    warnings.warn(
+        "EMBLASE_CHATAPP_TOKEN is not set — chat proxy endpoints will fail. "
+        "Add it to your .env file or set it in the environment.",
+        stacklevel=1,
+    )
 
 
 class ChatRequest(BaseModel):
