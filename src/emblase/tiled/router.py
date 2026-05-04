@@ -90,6 +90,9 @@ def _build_priming_message(node_path: str, metadata: dict) -> str:
     lines += [
         "",
         f"You can query the contents of this container directly using your Tiled tools (path: {node_path}).",
+        "",
+        "Important: responses will be displayed in a narrow side panel. Keep answers concise.",
+        "Avoid large headers and excessive structure — short paragraphs or brief bullet points are preferred.",
     ]
     return "\n".join(lines)
 

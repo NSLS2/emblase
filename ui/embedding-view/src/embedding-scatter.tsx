@@ -154,6 +154,100 @@ function viridis(t: number): string {
 const GREY_OUT = "#cccccc";
 
 /**
+ * Minimal markdown → React renderer for assistant chat messages.
+ *
+ * Supported: **bold**, *italic*, `inline code`, ```code blocks```,
+ * # headings (h1-h3 rendered as bold text), - / * bullet lists,
+ * and plain paragraphs. Everything else is rendered as-is.
+ */
+function renderMarkdown(text: string): React.ReactNode[] {
+  const CE = React.createElement;
+
+  // Inline formatting within a text run
+  function inlineNodes(s: string, key: string): React.ReactNode[] {
+    const parts: React.ReactNode[] = [];
+    // Patterns: ``code``, `code`, **bold**, *italic*
+    const re = /(`{1,2})([^`]+?)\1|\*\*(.+?)\*\*|\*(.+?)\*/g;
+    let last = 0, m: RegExpExecArray | null, i = 0;
+    while ((m = re.exec(s)) !== null) {
+      if (m.index > last) parts.push(s.slice(last, m.index));
+      if (m[1]) {
+        parts.push(CE("code", {
+          key: `${key}-c${i++}`,
+          style: { background: "#e8e8e8", borderRadius: 3, padding: "1px 4px", fontFamily: "monospace", fontSize: "0.9em" },
+        }, m[2]));
+      } else if (m[3]) {
+        parts.push(CE("strong", { key: `${key}-b${i++}` }, m[3]));
+      } else if (m[4]) {
+        parts.push(CE("em", { key: `${key}-i${i++}` }, m[4]));
+      }
+      last = re.lastIndex;
+    }
+    if (last < s.length) parts.push(s.slice(last));
+    return parts;
+  }
+
+  const nodes: React.ReactNode[] = [];
+  const lines = text.split("\n");
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i];
+
+    // Fenced code block
+    if (line.startsWith("```")) {
+      const codeLines: string[] = [];
+      i++;
+      while (i < lines.length && !lines[i].startsWith("```")) {
+        codeLines.push(lines[i++]);
+      }
+      nodes.push(CE("pre", {
+        key: `blk${i}`,
+        style: { background: "#e8e8e8", borderRadius: 4, padding: "6px 8px", overflowX: "auto" as const, margin: "4px 0", fontSize: "0.85em", fontFamily: "monospace", whiteSpace: "pre" as const },
+      }, codeLines.join("\n")));
+      i++;
+      continue;
+    }
+
+    // Headings — render as bold text, not full h1/h2 (too large for the panel)
+    const hMatch = line.match(/^#{1,3}\s+(.+)/);
+    if (hMatch) {
+      nodes.push(CE("p", { key: `h${i}`, style: { margin: "4px 0", fontWeight: 700 } },
+        ...inlineNodes(hMatch[1], `h${i}`)));
+      i++;
+      continue;
+    }
+
+    // Bullet list — collect consecutive bullet lines
+    if (/^[-*]\s+/.test(line)) {
+      const items: React.ReactNode[] = [];
+      while (i < lines.length && /^[-*]\s+/.test(lines[i])) {
+        const txt = lines[i].replace(/^[-*]\s+/, "");
+        items.push(CE("li", { key: `li${i}`, style: { marginLeft: 14, listStyleType: "disc" } },
+          ...inlineNodes(txt, `li${i}`)));
+        i++;
+      }
+      nodes.push(CE("ul", { key: `ul${i}`, style: { margin: "2px 0", paddingLeft: 0 } }, ...items));
+      continue;
+    }
+
+    // Blank line — small spacer
+    if (line.trim() === "") {
+      nodes.push(CE("div", { key: `sp${i}`, style: { height: 4 } }));
+      i++;
+      continue;
+    }
+
+    // Regular paragraph line
+    nodes.push(CE("p", { key: `p${i}`, style: { margin: "2px 0" } },
+      ...inlineNodes(line, `p${i}`)));
+    i++;
+  }
+
+  return nodes;
+}
+
+/**
  * Determine a point's fill color and whether it is "active" (within filter).
  * Returns { color, active } where active=false means grey it out.
  */
@@ -1974,7 +2068,7 @@ function EmbeddingScatter({
                         wordBreak: "break-word" as const,
                       },
                     },
-                    msg.content,
+                    msg.role === "user" ? msg.content : renderMarkdown(msg.content),
                   ),
                 ),
               ),
