@@ -33,7 +33,7 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 _CHAT_URL = os.environ.get("EMBLASE_CHATAPP_URL", "https://chat-amsc-dev.nsls2.bnl.gov").rstrip("/")
 _CHAT_TOKEN = os.environ.get("EMBLASE_CHATAPP_TOKEN", "")
-_CHAT_MODEL = os.environ.get("EMBLASE_CHATAPP_MODEL", "openai/gpt-oss-120b")
+_CHAT_MODEL = os.environ.get("EMBLASE_CHATAPP_MODEL", "openai/gpt-oss-20b")
 
 if not _CHAT_TOKEN:
     import warnings
@@ -77,6 +77,7 @@ def _build_priming_message(node_path: str, metadata: dict) -> str:
         f"The user is currently viewing a LatentSpaceEmbedding container in the Emblase Latent Space Explorer.",
         f"The Tiled path for this specific container is: {node_path}",
         f"Please treat this as the primary dataset for this conversation — do not confuse it with other nodes you may find in Tiled.",
+        f"The only exception are the source datasets used to produce these embeddings (the `path` column in the `_index` table).",
         "",
         "Container metadata:",
         f"  - Embedding model: {model_name}",
@@ -91,7 +92,7 @@ def _build_priming_message(node_path: str, metadata: dict) -> str:
         "",
         f"You can query the contents of this container directly using your Tiled tools (path: {node_path}).",
         "",
-        "Important: responses will be displayed in a narrow side panel. Keep answers concise.",
+        "Important: keep answers concise, up to 3 sentences. Expect follow-up questions.",
         "Avoid large headers and excessive structure — short paragraphs or brief bullet points are preferred.",
     ]
     return "\n".join(lines)
