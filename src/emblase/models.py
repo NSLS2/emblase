@@ -7,7 +7,6 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import Union
 
 import numpy as np
 import torch
@@ -44,6 +43,12 @@ def load_model(model_name: str, **kwargs) -> torch.nn.Module:
 def _load_local(model_name: str, **kwargs) -> torch.nn.Module:
     _add_models_to_path()
     model_dir = settings.models_dir / model_name
+    # Ensure the model's own directory is on sys.path so that loader.py can do
+    # relative imports like `from vit import Autoencoder` without conflicts with
+    # any installed package sharing the same name.
+    model_dir_str = str(model_dir)
+    if model_dir_str not in sys.path:
+        sys.path.insert(0, model_dir_str)
     loader_path = model_dir / "loader.py"
     if not loader_path.exists():
         raise FileNotFoundError(
@@ -64,18 +69,44 @@ def _load_from_mlflow(model_name: str, **kwargs) -> torch.nn.Module:
 
     tracking_uri = kwargs.get("mlflow_tracking_uri")
     api_key = kwargs.get("mlflow_api_key")
-
-    version = mlflow_registry.resolve_version(
-        model_name,
-        version=kwargs.get("mlflow_version"),
-        tracking_uri=tracking_uri,
-        api_key=api_key,
-    )
+    requested_version = kwargs.get("mlflow_version")
 
     cache_root = kwargs.get("cache_dir") or Path(
         os.environ.get("EMBLASE_MODEL_CACHE_DIR")
         or Path.home() / ".cache" / "emblase" / "models"
     )
+
+    # Cache-first: if no specific version is requested, scan the local cache
+    # for existing versions and use the highest one — no MLflow network call.
+    # Only hit MLflow when the cache is empty or a specific version is pinned.
+    version: str | None = None
+    if requested_version is not None:
+        # Explicit version requested — resolve (no-op, just stringifies) then check cache.
+        version = mlflow_registry.resolve_version(
+            model_name, version=requested_version,
+            tracking_uri=tracking_uri, api_key=api_key,
+        )
+    else:
+        # Look for any cached versions: <cache_root>/<model_name>/v<N>/model/loader.py
+        model_cache = Path(cache_root) / model_name
+        cached_versions = sorted(
+            int(p.parent.parent.name[1:])
+            for p in model_cache.glob("v*/model/loader.py")
+            if p.parent.parent.name[1:].isdigit()
+        )
+        if cached_versions:
+            version = str(max(cached_versions))
+            log.info(
+                "Cache-first: using cached '%s' v%s (skip MLflow API call)",
+                model_name, version,
+            )
+        else:
+            # No cache — must resolve from MLflow.
+            version = mlflow_registry.resolve_version(
+                model_name, version=None,
+                tracking_uri=tracking_uri, api_key=api_key,
+            )
+
     # weights_dir is always <cache_root>/<model_name>/v<version>/model/
     # matching the artifact subpath MLflow uses on download.
     weights_dir = Path(cache_root) / model_name / f"v{version}" / "model"
@@ -117,26 +148,22 @@ def _load_from_mlflow(model_name: str, **kwargs) -> torch.nn.Module:
 
 def encode(
     model: torch.nn.Module,
-    images: Union[torch.Tensor, list[np.ndarray]],
+    images: torch.Tensor | list[np.ndarray],
     batch_size: int = 1,
 ) -> np.ndarray:
     """Run the encoder and return output as a ``(B, latent_dim)`` numpy array.
 
     ``images`` may be:
 
-    - A ``(B, C, H, W)`` tensor — uniform shape, processed in chunks of
-      ``batch_size``.
-    - A list of ``(H, W)`` numpy arrays — varying shapes allowed, always
-      processed one frame at a time regardless of ``batch_size``.
-
-    Default ``batch_size=1`` is safe for any image size; increase for
-    throughput when images are small and uniform.
+    - A ``(B, C, H, W)`` tensor — processed in chunks of ``batch_size``.
+    - A list of ``(H, W)`` numpy arrays:
+      - If all frames share the same shape they are stacked into a tensor
+        and processed in batches of ``batch_size`` (fast path).
+      - If shapes differ they are processed one at a time (ragged path).
     """
     device = next(model.parameters()).device
     results = []
     input_size: tuple[int, int] | None = getattr(model, "input_size", None)
-    if input_size:
-        log.info("Model expects input size %s — images will be resized if needed", input_size)
 
     def _resize(t: torch.Tensor) -> torch.Tensor:
         """Resize-with-aspect-ratio then pad to model.input_size.
@@ -182,16 +209,34 @@ def encode(
 
     with torch.no_grad():
         if isinstance(images, list):
-            # Ragged batch: each (H, W) frame → (1, 1, H, W) tensor
-            log.info("Encoding %d ragged frame(s) one at a time", len(images))
-            for i, frame in enumerate(images):
-                t = torch.from_numpy(np.asarray(frame, dtype=np.float32))[None, None].to(device)
-                results.append(_forward(t))
-                if (i + 1) % 10 == 0 or (i + 1) == len(images):
-                    log.info("  encoded %d / %d", i + 1, len(images))
+            shapes = {f.shape for f in images}
+            if len(shapes) == 1:
+                # All frames have the same shape — stack into a tensor and batch.
+                arr = np.stack([np.asarray(f, dtype=np.float32) for f in images])
+                # (N, H, W) → (N, 1, H, W)
+                tensor = torch.from_numpy(arr[:, None]).to(device)
+                n_batches = (len(images) + batch_size - 1) // batch_size
+                log.info(
+                    "Encoding %d frames %s in %d batch(es) of %d",
+                    len(images), tuple(shapes)[0], n_batches, batch_size,
+                )
+                for i in range(0, len(tensor), batch_size):
+                    results.append(_forward(tensor[i : i + batch_size]))
+            else:
+                # Truly ragged — must process one at a time.
+                log.info(
+                    "Encoding %d ragged frames (%d distinct shapes) one at a time",
+                    len(images), len(shapes),
+                )
+                for i, frame in enumerate(images):
+                    t = torch.from_numpy(np.asarray(frame, dtype=np.float32))[None, None].to(device)
+                    results.append(_forward(t))
         else:
             n_batches = (len(images) + batch_size - 1) // batch_size
-            log.info("Encoding tensor %s in %d batch(es) of %d", tuple(images.shape), n_batches, batch_size)
+            log.info(
+                "Encoding tensor %s in %d batch(es) of %d",
+                tuple(images.shape), n_batches, batch_size,
+            )
             for i in range(0, len(images), batch_size):
                 results.append(_forward(images[i : i + batch_size].to(device)))
 

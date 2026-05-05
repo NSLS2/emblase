@@ -302,7 +302,9 @@ def resolve_version(
     versions = client.search_model_versions(f"name='{model_name}'")
     if not versions:
         raise ValueError(f"No versions found for model '{model_name}'")
-    return str(max(int(v.version) for v in versions))
+    latest = str(max(int(v.version) for v in versions))
+    print(f"No version specified for '{model_name}' — using latest: {latest}")
+    return latest
 
 
 def pull(
@@ -321,12 +323,7 @@ def pull(
     out.mkdir(parents=True, exist_ok=True)
     client = _get_client(tracking_uri, api_key)
 
-    if version is None:
-        versions = client.search_model_versions(f"name='{model_name}'")
-        if not versions:
-            raise ValueError(f"No versions found for model '{model_name}'")
-        version = str(max(int(v.version) for v in versions))
-        print(f"No version specified — using latest: {version}")
+    version = resolve_version(model_name, version=version, tracking_uri=tracking_uri, api_key=api_key)
 
     mv = client.get_model_version(model_name, str(version))
     print(f"Pulling '{model_name}' v{version} → {out}")

@@ -210,3 +210,7 @@ __marimo__/
 
 # ML models and artifacts
 models/*
+# noop is pure code (no weights) — track it
+!models/noop/
+!models/noop/**
+jobs/*models/noop/__pycache__/
