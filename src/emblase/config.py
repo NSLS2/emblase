@@ -50,7 +50,17 @@ class Settings(BaseSettings):
     orion_ssh_host: str = ""  # e.g. "orion-staging.nsls2.bnl.gov"
     orion_ssh_user: str = ""  # e.g. "ymatviych"; defaults to local $USER
 
-    # Compute backend selection: "local" or "orion"
+    # NERSC compute (IRI API + Shifter)
+    nersc_api_token: str = ""
+    nersc_resource_id: str = "perlmutter"
+    nersc_working_dir: str = "/pscratch/sd/y/ymatviych/emblase/jobs"
+    nersc_models_dir: str = "/pscratch/sd/y/ymatviych/emblase/models"
+    nersc_account: str = ""
+    nersc_container_image: str = "ghcr.io/nsls2/emblase:latest"
+    nersc_time_limit: str = "00:30:00"
+    nersc_constraint: str = "gpu"
+
+    # Compute backend selection: "local", "orion", or "nersc"
     compute_backend: str = "local"
 
     model_config = {
