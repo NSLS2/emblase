@@ -161,9 +161,10 @@ def copy_container(src, dst, key, access_tags=None, batch_size=None, batch_delay
 
 @_register(StructureFamily.table)
 def copy_table(src, dst, key, access_tags=None, batch_size=None, batch_delay: float = 0.0):
-    if key in dst.base:
-        dst.base.delete_contents(key, external_only=False, recursive=True)
-    dst.write_table(
+    base = dst.base if any(spec.name == "composite" for spec in src.specs) else dst
+    if key in base:
+        base.delete_contents(key, external_only=False, recursive=True)
+    base.write_table(
         src.read(),
         key=key,
         metadata=dict(src.metadata),
