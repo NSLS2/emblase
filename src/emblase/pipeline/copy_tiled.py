@@ -146,6 +146,7 @@ def copy_array(
     batch_delay: float = 0.0,
     on_progress: Callable[[int, int], None] | None = None,
 ):
+    print(f"Copying array: {key} (shape: {src.shape}, dtype: {src.dtype}, batch_size={batch_size}, batch_delay={batch_delay})")
     n_rows = src.shape[0]
     # batch_size=None/0 → write entire array at once
     if not batch_size:
@@ -173,6 +174,7 @@ def copy_array(
         on_progress(min(bs, n_rows), n_rows)
     row = bs
     while row < n_rows:
+        print(f"Patching array: {key}, rows {row}:{min(row+bs, n_rows)} / {n_rows}")
         if batch_delay > 0:
             time.sleep(batch_delay)
         end = min(row + bs, n_rows)

@@ -1,0 +1,9 @@
+.pixi
+.git
+dist
+models
+*.pyc
+__pycache__
+.env
+.pytest_cache
+ui/node_modules
