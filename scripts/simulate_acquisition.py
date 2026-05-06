@@ -6,8 +6,8 @@ acquisition speed.  The destination container key is auto-generated as
 ``<rename>_<unix_timestamp>`` unless ``--rename`` already contains a timestamp.
 
 This script is the standard way to test the streaming pipeline locally.  Run it
-*after* ``stream_pipeline.py`` is already watching the destination container —
-the container creation event triggers the Orion job submission.
+*after* ``start_watcher.py`` is already watching the destination container —
+the container creation event triggers the compute backend job submission.
 
 Example
 -------
@@ -24,10 +24,10 @@ Notes
 -----
 - Always use ``--batch-size 1`` (default).  Larger batch sizes cause Tiled to
   store the array with internal spatial chunking; the WS subscription then
-  replays partial tiles instead of full frames, breaking the Orion job.
-- Start ``stream_pipeline.py`` first, wait for "Watching … for new runs", then
+  replays partial tiles instead of full frames, breaking the compute job.
+- Start ``start_watcher.py`` first, wait for "Press Ctrl+C to stop", then
   run this script.
-- 288 frames x 0.1 s/frame ≈ 30 s total; the Orion job starts in ~25 s so
+- 288 frames x 0.1 s/frame ≈ 30 s total; the compute job starts in ~25 s so
   timing is tight — if the job starts after deepcopy finishes it will hang.
   Use ``--batch-delay 0.5`` for a safer margin (144 s total).
 """
@@ -104,6 +104,16 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="SECONDS",
         help="Sleep between frame writes to simulate acquisition rate (default: 0.1 s).",
     )
+    p.add_argument(
+        "--image-key",
+        default="primary.pil900KW_image",
+        metavar="KEY",
+        help=(
+            "Dotted key identifying the image array to copy incrementally, "
+            "in the form '<stream>.<array_key>' (default: primary.pil900KW_image).  "
+            "All other arrays are copied in one shot."
+        ),
+    )
     return p
 
 
@@ -136,9 +146,34 @@ def main() -> None:
 
     print(f"Source     : {args.src}")
     print(f"Destination: {args.dst}/{rename}")
+    print(f"Image key  : {args.image_key}")
     print(f"batch_size : {args.batch_size}  batch_delay: {args.batch_delay} s")
     if access_tags:
         print(f"access_tags: {access_tags}")
+    print()
+
+    t_start = time.monotonic()
+    _last_print = 0.0
+
+    def _on_progress(written: int, total: int) -> None:
+        nonlocal _last_print
+        now = time.monotonic()
+        elapsed = now - t_start
+        pct = written / total * 100 if total else 0
+        rate = written / elapsed if elapsed > 0 else 0
+        eta = (total - written) / rate if rate > 0 else 0
+        if total <= 30 or now - _last_print >= 1.0 or written == total:
+            bar_filled = int(pct / 5)
+            bar = "█" * bar_filled + "░" * (20 - bar_filled)
+            print(
+                f"\r  [{bar}] {written}/{total} frames  "
+                f"{pct:5.1f}%  {rate:.1f} fr/s  ETA {eta:.0f}s",
+                end="",
+                flush=True,
+            )
+            _last_print = now
+        if written == total:
+            print()
 
     deepcopy(
         src_node,
@@ -147,8 +182,12 @@ def main() -> None:
         access_tags=access_tags,
         batch_size=args.batch_size,
         batch_delay=args.batch_delay,
+        image_key=args.image_key,
+        on_progress=_on_progress,
     )
-    print("Done.")
+
+    elapsed = time.monotonic() - t_start
+    print(f"Done in {elapsed:.1f} s — run written to {args.dst}/{rename}")
 
 
 if __name__ == "__main__":

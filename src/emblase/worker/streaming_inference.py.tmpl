@@ -4,35 +4,29 @@ Filled by _render_streaming_inference_script():
     {{models_dir}}       — absolute path to the models directory on the compute node
     {{model_name}}       — short name ("vae", "vit") or MLflow registry name
     {{batch_size}}       — number of frames per encode call
-    {{run_path}}         — Tiled path to the BlueskyRun to watch (e.g. smi/.../run_xyz)
+    {{run_path}}         — Tiled path to the BlueskyRun to watch
     {{output}}           — Tiled container path to write embeddings
     {{mlflow_version}}   — MLflow model version, or "" for latest
     {{thumb_mode}}       — thumbnail mode ("default" or "logroi")
-    {{image_key}}        — key of the image array within the primary stream
+    {{image_key}}        — dotted key of the image array, e.g. "primary.pil900KW_image"
     {{ws_max_size}}      — WebSocket max message size in bytes
-    {{param_specs_json}} — JSON dict mapping param name → ParamSpec (source: "primary.<key>")
+    {{param_specs_json}} — JSON dict mapping param name → ParamSpec
     {{projector_mode}}   — one of: "name" | "scratch" | "false"
     {{projector_name}}   — projector model name when projector_mode=="name", else ""
     {{classifier_name}}  — classifier model name, or "" to skip classification
 
 Projector behaviour:
-    projector_mode="name"    — resolve saved approximator: check models_dir/<projector_name>,
-                               then fall back to MLflow.  Apply per-batch in the writer thread.
-    projector_mode="scratch" — accumulate ALL embeddings; after stop-doc flush, fit a fresh
-                               UMAP (umap-learn) and rewrite projections in a second pass.
-    projector_mode="false"   — skip entirely; write NaN projections.
+    projector_mode="name"    — resolve saved approximator; apply per-batch.
+    projector_mode="scratch" — accumulate all embeddings; fit UMAP after stop-doc; rewrite.
+    projector_mode="false"   — skip; write NaN projections.
 
 Flow:
-  1. Load model and connect to Tiled.
-  2. Subscribe to the run container (replay) → wait for primary stream.
-  3. Subscribe to primary (replay) → wait for the image array.
-  4. Subscribe to image array (replay) → accumulate frames; enqueue full batches
-     to the writer thread for encoding + writing.
-  5. Subscribe to parent container (replay) → detect stop document.
-  6. On stop doc: poll until _next_frame_idx stabilises (image WS has gone quiet),
-     flush remaining frames, send sentinel to writer thread, wait for it to exit.
-  7. If umap_mode=="scratch": fit UMAP over all collected embeddings and update
-     projections in the output container.
+  1. Load model, projector, classifier.
+  2. Subscribe to run → wait for image stream → subscribe to image array.
+  3. Accumulate frames; enqueue full batches to the writer thread.
+  4. Subscribe to parent container → detect stop document.
+  5. On stop doc: wait for WS to settle, flush remainder, send sentinel to writer.
+  6. Optionally fit scratch UMAP and rewrite projections.
 """
 
 import json
@@ -55,48 +49,50 @@ logging.basicConfig(
 )
 log = logging.getLogger("emblase.streaming_inference")
 
-# --- job parameters (substituted by _render_streaming_inference_script) ---
-job_dir        = os.environ["JOB_DIR"]
-model_name     = "{model_name}"
-batch_size     = {batch_size}
-run_path       = "{run_path}"
-output         = "{output}"
-mlflow_version = "{mlflow_version}" or None
-thumb_mode     = "{thumb_mode}"
-image_key      = "{image_key}"
-ws_max_size    = {ws_max_size}
-param_specs    = json.loads('{param_specs_json}')
-projector_mode = "{projector_mode}"   # "name" | "scratch" | "false"
-projector_name = "{projector_name}"   # non-empty only when projector_mode=="name"
-classifier_name = "{classifier_name}" # non-empty to apply classifier after encoding
+# --- job parameters (substituted at render time) ---
+job_dir         = os.environ["JOB_DIR"]
+model_name      = "{model_name}"
+batch_size      = {batch_size}
+run_path        = "{run_path}"
+output          = "{output}"
+mlflow_version  = "{mlflow_version}" or None
+thumb_mode      = "{thumb_mode}"
+image_key       = "{image_key}"
+ws_max_size     = {ws_max_size}
+param_specs     = json.loads('{param_specs_json}')
+projector_mode  = "{projector_mode}"
+projector_name  = "{projector_name}"
+classifier_name = "{classifier_name}"
+models_dir      = "{models_dir}"
+
+# Resolve image_key → (stream, array_key)
+_ik = image_key.split(".", 1)
+image_stream    = _ik[0] if len(_ik) == 2 else "primary"
+image_array_key = _ik[1] if len(_ik) == 2 else _ik[0]
 
 _raw_tags = os.environ.get("EMBLASE_TILED_ACCESS_TAGS", "").strip()
 access_tags: list[str] | None = [t.strip() for t in _raw_tags.split(",") if t.strip()] or None
 
 log.info("=== Emblase streaming inference job ===")
 log.info("job_dir    : %s", job_dir)
-log.info("model      : %s", model_name)
+log.info("model      : %s  ver=%s", model_name, mlflow_version or "latest")
 log.info("run_path   : %s", run_path)
 log.info("output     : %s", output)
-log.info("batch_size : %d", batch_size)
-log.info("thumb_mode : %s", thumb_mode)
-log.info("image_key  : %s", image_key)
+log.info("batch_size : %d  thumb_mode=%s", batch_size, thumb_mode)
+log.info("image_key  : %s  (stream=%r  array=%r)", image_key, image_stream, image_array_key)
 log.info("access_tags: %s", access_tags)
 log.info("param_specs: %s", list(param_specs.keys()))
-log.info("projector_mode: %s", projector_mode)
-log.info("projector_name: %s", projector_name or "(n/a)")
-log.info("classifier   : %s", classifier_name or "(none)")
+log.info("projector  : mode=%s  name=%r", projector_mode, projector_name or "(n/a)")
+log.info("classifier : %s", classifier_name or "(none)")
 
-models_dir = "{models_dir}"
 if models_dir not in sys.path:
     sys.path.insert(0, models_dir)
 
 from emblase.models import encode, load_model  # noqa: E402
+from emblase.worker.utils import load_classifier_dir, load_projector  # noqa: E402
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-log.info("device     : %s", device)
-if device.type == "cuda":
-    log.info("GPU        : %s", torch.cuda.get_device_name(device))
+log.info("device: %s%s", device, f"  GPU={{torch.cuda.get_device_name(device)}}" if device.type == "cuda" else "")
 
 log.info("Loading model %r ...", model_name)
 t0 = time.perf_counter()
@@ -109,108 +105,44 @@ model = load_model(
 log.info("Model loaded in %.1f s", time.perf_counter() - t0)
 
 # ---------------------------------------------------------------------------
-# Projector approximator — resolved by name (local dir or MLflow).
-# Only used when projector_mode == "name".
+# Projector approximator
 # ---------------------------------------------------------------------------
-_projector_model = None
-_projector_scaler = None
+_projector_model = _projector_scaler = None
 
 if projector_mode == "name":
     try:
-        import joblib
-        from pathlib import Path as _Path
-        _ud = _Path(models_dir) / projector_name
-        if not _ud.is_dir():
-            log.info("Projector model %r not found locally — pulling from MLflow", projector_name)
-            from emblase import mlflow_registry
-            import os as _os
-            _cache_root = _Path(
-                _os.environ.get("EMBLASE_MODEL_CACHE_DIR", "")
-                or _Path.home() / ".cache" / "emblase" / "models"
-            )
-            _version = mlflow_registry.resolve_version(
-                projector_name,
-                tracking_uri=_os.environ.get("EMBLASE_MLFLOW_TRACKING_URI") or None,
-                api_key=_os.environ.get("EMBLASE_MLFLOW_API_KEY") or None,
-            )
-            _ud = _cache_root / projector_name / f"v{{_version}}" / "model"
-            if not (_ud / "umap_approximator.pth").exists():
-                mlflow_registry.download_model_weights(
-                    model_name=projector_name, version=_version,
-                    dest_dir=_ud.parent,
-                    tracking_uri=_os.environ.get("EMBLASE_MLFLOW_TRACKING_URI") or None,
-                    api_key=_os.environ.get("EMBLASE_MLFLOW_API_KEY") or None,
-                )
-        _ud_str = str(_ud)
-        if _ud_str not in sys.path:
-            sys.path.insert(0, _ud_str)
-        from neural_dimred_wrapper import SimpleDimRedApproximator
-        _scaler_path = _ud / "scaler.pkl"
-        _projector_scaler = joblib.load(_scaler_path) if _scaler_path.exists() else None
-        _sd = torch.load(_ud / "umap_approximator.pth", map_location=device, weights_only=True)
-        _weight_keys = sorted(k for k in _sd if k.startswith("network.") and k.endswith(".weight"))
-        _hidden_dims = [_sd[k].shape[0] for k in _weight_keys[:-1]]
-        _projector_model = SimpleDimRedApproximator(
-            input_dim=_sd["network.0.weight"].shape[1], hidden_dims=_hidden_dims
-        )
-        _projector_model.load_state_dict(_sd)
-        _projector_model.eval().to(device)
-        log.info("Projector approximator loaded from %s", _ud)
+        _projector_model, _projector_scaler = load_projector(projector_name, models_dir, device)
     except Exception as _exc:
-        log.warning("Projector approximator not loaded — projections will be NaN: %s", _exc)
-        _projector_model = None
+        log.warning("Projector not loaded — projections will be NaN: %s", _exc)
 
 
-def _compute_projections(embeddings):
-    """Apply named projector approximator.  Returns (N,2) or None."""
+def _compute_projections(embeddings: np.ndarray) -> np.ndarray | None:
     if _projector_model is None:
         return None
     X = embeddings.astype("float32")
     if _projector_scaler is not None:
         X = _projector_scaler.transform(X)
     with torch.no_grad():
-        coords = _projector_model(torch.tensor(X, dtype=torch.float32, device=device)).cpu().numpy()
-    return coords.astype("float32")
+        return _projector_model(
+            torch.tensor(X, dtype=torch.float32, device=device)
+        ).cpu().numpy().astype("float32")
 
-from tiled.client import from_uri  # noqa: E402
 
 # ---------------------------------------------------------------------------
-# Classifier — resolved by name (local dir or MLflow), applied per-batch.
-# Only loaded when classifier_name is set.
+# Classifier
 # ---------------------------------------------------------------------------
 _classifier_dir = None
 
 if classifier_name:
     try:
-        from pathlib import Path as _CPath
-        _cd = _CPath(models_dir) / classifier_name
-        if not _cd.is_dir():
-            log.info("Classifier %r not found locally — pulling from MLflow", classifier_name)
-            from emblase import mlflow_registry
-            import os as _os
-            _cache_root = _CPath(
-                _os.environ.get("EMBLASE_MODEL_CACHE_DIR", "")
-                or _CPath.home() / ".cache" / "emblase" / "models"
-            )
-            _version = mlflow_registry.resolve_version(
-                classifier_name,
-                tracking_uri=_os.environ.get("EMBLASE_MLFLOW_TRACKING_URI") or None,
-                api_key=_os.environ.get("EMBLASE_MLFLOW_API_KEY") or None,
-            )
-            _cd = _cache_root / classifier_name / f"v{{_version}}" / "model"
-            if not (_cd / "classifier.pth").exists():
-                mlflow_registry.download_model_weights(
-                    model_name=classifier_name, version=_version,
-                    dest_dir=_cd.parent,
-                    tracking_uri=_os.environ.get("EMBLASE_MLFLOW_TRACKING_URI") or None,
-                    api_key=_os.environ.get("EMBLASE_MLFLOW_API_KEY") or None,
-                )
-        _classifier_dir = _cd
-        log.info("Classifier artefacts at %s", _classifier_dir)
+        _classifier_dir = load_classifier_dir(classifier_name, models_dir)
     except Exception as _exc:
         log.warning("Classifier not loaded — labels will be null: %s", _exc)
-        _classifier_dir = None
 
+# ---------------------------------------------------------------------------
+# Tiled
+# ---------------------------------------------------------------------------
+from tiled.client import from_uri  # noqa: E402
 from emblase.tiled.client import write_output  # noqa: E402
 
 tiled_server = os.environ["EMBLASE_TILED_SERVER_URI"]
@@ -219,10 +151,9 @@ tiled_client = from_uri(tiled_server, api_key=os.environ.get("EMBLASE_TILED_API_
 
 run_segments = [s for s in run_path.split("/") if s]
 run_node = tiled_client[tuple(run_segments)]
-log.info("Run node: %s", run_path)
 
 # ---------------------------------------------------------------------------
-# Param arrays — read lazily from primary stream once the image array appears.
+# Param arrays — loaded lazily once the image array appears.
 # ---------------------------------------------------------------------------
 _param_arrays: dict[str, np.ndarray] = {{}}
 _param_arrays_ready = threading.Event()
@@ -233,16 +164,16 @@ def _load_param_arrays() -> None:
         _param_arrays_ready.set()
         return
     try:
-        primary = run_node["primary"]
         for name, spec in param_specs.items():
             source = spec.get("source", "")
             parts = source.split(".", 1)
-            if len(parts) != 2 or parts[0] != "primary":
-                log.warning("Param %r: unsupported source %r — skipping", name, source)
+            if len(parts) != 2:
+                log.warning("Param %r: invalid source %r — skipping", name, source)
                 continue
-            arr = primary[parts[1]].read()
+            sname, akey = parts
+            arr = run_node[sname][akey].read()
             _param_arrays[name] = np.asarray(arr)
-            log.info("Loaded param %r shape=%s", name, arr.shape)
+            log.info("Loaded param %r shape=%s", name, _param_arrays[name].shape)
     except Exception as exc:
         log.exception("Failed to load param arrays: %s", exc)
     finally:
@@ -250,18 +181,16 @@ def _load_param_arrays() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Scratch-UMAP accumulator — collects all embeddings for a post-run fit.
-# Only populated when umap_mode == "scratch".
+# Scratch-UMAP accumulator
 # ---------------------------------------------------------------------------
-_all_embeddings: list[np.ndarray] = []  # each entry is (N, latent_dim)
+_all_embeddings: list[np.ndarray] = []
 _all_embeddings_lock = threading.Lock()
 
 # ---------------------------------------------------------------------------
-# Writer thread — serialises all encode+write work through a queue.
-# Items: (frames, entries, frame_indices) or None (sentinel).
+# Writer thread
 # ---------------------------------------------------------------------------
 _write_queue: queue.Queue = queue.Queue()
-_done = threading.Event()       # set when writer exits (cleanly or on error)
+_done = threading.Event()
 _writer_error: BaseException | None = None
 
 
@@ -277,42 +206,37 @@ def _writer_loop() -> None:
                 frames, entries, frame_indices = item
                 t0 = time.perf_counter()
                 embeddings = encode(model, frames, batch_size=1)
-                log.info("Encoded %d frame(s) in %.1f s → shape %s",
+                log.info("Encoded %d frame(s) in %.1f s  shape=%s",
                          len(frames), time.perf_counter() - t0, embeddings.shape)
 
-                # Accumulate for scratch projector
                 if projector_mode == "scratch":
                     with _all_embeddings_lock:
                         _all_embeddings.append(embeddings.copy())
-
-                # Per-batch projections: only for named approximator
-                if projector_mode == "name":
+                    projections = None
+                elif projector_mode == "name":
                     projections = _compute_projections(embeddings)
-                    if projections is not None:
-                        log.info("Projections: %s", projections.shape)
                 else:
-                    projections = None  # scratch: fill later; false: stay NaN
+                    projections = None
 
-                # Classifier labels
                 batch_labels = None
                 if _classifier_dir is not None:
                     try:
-                        from emblase.classifier import apply_classifier
+                        from emblase.classifier import apply_classifier  # noqa: PLC0415
                         batch_labels = list(apply_classifier(embeddings, classifier_dir=_classifier_dir))
                     except Exception as _exc:
-                        log.warning("Classifier failed for batch — labels will be null: %s", _exc)
+                        log.warning("Classifier failed for batch: %s", _exc)
 
                 batch_params = None
                 if param_specs:
                     _param_arrays_ready.wait(timeout=30)
                     if _param_arrays:
-                        batch_params = {{}}
-                        for name in param_specs:
-                            arr = _param_arrays.get(name)
-                            batch_params[name] = (
-                                [arr[i].item() for i in frame_indices]
-                                if arr is not None else [None] * len(frame_indices)
+                        batch_params = {{
+                            name: (
+                                [_param_arrays[name][i].item() for i in frame_indices]
+                                if name in _param_arrays else [None] * len(frame_indices)
                             )
+                            for name in param_specs
+                        }}
 
                 write_output(
                     tiled_client, output, embeddings,
@@ -335,7 +259,9 @@ def _writer_loop() -> None:
 
 threading.Thread(target=_writer_loop, name="emblase-writer", daemon=True).start()
 
-# --- frame accumulation state (accessed from image WS thread + stop-doc thread) ---
+# ---------------------------------------------------------------------------
+# Frame accumulation
+# ---------------------------------------------------------------------------
 _lock = threading.Lock()
 _queued_frames: list[np.ndarray] = []
 _queued_entries: list[tuple] = []
@@ -344,8 +270,7 @@ _next_frame_idx = 0
 
 
 def _maybe_flush_batch() -> None:
-    """If the queue has grown to batch_size, drain it and enqueue for writing.
-    Must be called with _lock held."""
+    """Drain queue to writer when it reaches batch_size. Must be called with _lock held."""
     if len(_queued_frames) >= batch_size:
         _write_queue.put((list(_queued_frames), list(_queued_entries), list(_queued_indices)))
         _queued_frames.clear()
@@ -355,21 +280,23 @@ def _maybe_flush_batch() -> None:
 
 def _on_new_image_data(event) -> None:
     global _next_frame_idx
-    chunk = event.data()  # (n, C, H, W)
+    chunk = event.data()
     n = chunk.shape[0]
     log.info("Received %d frame(s) (idx %d–%d)", n, _next_frame_idx, _next_frame_idx + n - 1)
     with _lock:
         for i in range(n):
-            _queued_frames.append(chunk[i].squeeze())  # (H, W)
-            _queued_entries.append((run_path + f"/primary/{{image_key}}", str(_next_frame_idx)))
+            _queued_frames.append(chunk[i].squeeze())
+            _queued_entries.append(
+                (run_path + f"/{{image_stream}}/{{image_array_key}}", str(_next_frame_idx))
+            )
             _queued_indices.append(_next_frame_idx)
             _next_frame_idx += 1
         _maybe_flush_batch()
 
 
 def _on_image_child_created(event) -> None:
-    if event.key == image_key:
-        log.info("Image array %r appeared — subscribing", image_key)
+    if event.key == image_array_key:
+        log.info("Image array %r appeared — subscribing", image_array_key)
         threading.Thread(target=_load_param_arrays, name="emblase-params", daemon=True).start()
         sub = event.child().subscribe()
         sub.new_data.add_callback(_on_new_image_data)
@@ -378,8 +305,8 @@ def _on_image_child_created(event) -> None:
 
 
 def _on_run_child_created(event) -> None:
-    if event.key == "primary":
-        log.info("primary stream appeared — subscribing")
+    if event.key == image_stream:
+        log.info("%r stream appeared — subscribing", image_stream)
         sub = event.child().subscribe()
         sub.child_created.add_callback(_on_image_child_created)
         _all_subs.append(sub)
@@ -390,10 +317,7 @@ def _on_stop_doc(event) -> None:
     if event.key != run_segments[-1] or "stop" not in (event.metadata or {{}}):
         return
     log.info("Stop doc received — waiting for image WS to settle")
-    # The stop doc and image frames arrive on two independent WS connections;
-    # poll until _next_frame_idx is stable for 2 s (WS replay has finished).
-    _STABLE_SECS = 2.0
-    _MAX_WAIT_SECS = 120.0
+    _STABLE_SECS, _MAX_WAIT_SECS = 2.0, 120.0
     deadline = time.monotonic() + _MAX_WAIT_SECS
     last_idx, stable_since = -1, time.monotonic()
     while time.monotonic() < deadline:
@@ -413,9 +337,12 @@ def _on_stop_doc(event) -> None:
     if remaining[0]:
         log.info("Flushing %d remaining frame(s)", len(remaining[0]))
         _write_queue.put(remaining)
-    _write_queue.put(None)  # sentinel
+    _write_queue.put(None)
 
 
+# ---------------------------------------------------------------------------
+# Subscribe
+# ---------------------------------------------------------------------------
 _all_subs: list = []
 
 run_sub = run_node.subscribe()
@@ -431,10 +358,10 @@ parent_sub.start_in_thread(start=1)
 
 log.info("Watching run %s — waiting for stop document ...", run_path)
 
-_done.wait(timeout=7200)  # 2-hour hard limit
+_done.wait(timeout=7200)
 
 if not _done.is_set():
-    log.warning("Timeout reached — flushing and exiting")
+    log.warning("Timeout — flushing and exiting")
     with _lock:
         remaining = list(_queued_frames), list(_queued_entries), list(_queued_indices)
         _queued_frames.clear()
@@ -452,30 +379,27 @@ for sub in _all_subs:
         pass
 
 # ---------------------------------------------------------------------------
-# Scratch projector (UMAP) — fit over all embeddings and update projections in Tiled.
+# Scratch projector — fit over all accumulated embeddings.
 # ---------------------------------------------------------------------------
 if projector_mode == "scratch" and not _writer_error:
     with _all_embeddings_lock:
         _collected = _all_embeddings[:]
     if _collected:
         _all_emb = np.vstack(_collected)
-        log.info("Fitting scratch projector (UMAP) over %d embeddings ...", len(_all_emb))
+        log.info("Fitting scratch UMAP over %d embeddings ...", len(_all_emb))
         try:
-            import umap as _umap_lib
-            from emblase.tiled.client import _embedding_container_cache  # noqa
-            _reducer = _umap_lib.UMAP(n_components=2, random_state=42)
-            _proj = _reducer.fit_transform(_all_emb.astype("float32")).astype("float32")
-            log.info("Scratch projector done: %s", _proj.shape)
-            # Write projections back: locate the existing container and update.
+            import umap as _umap  # noqa: PLC0415
+            _proj = _umap.UMAP(n_components=2, random_state=42).fit_transform(
+                _all_emb.astype("float32")
+            ).astype("float32")
+            log.info("Scratch UMAP done: %s", _proj.shape)
             _out_segs = [s for s in output.split("/") if s]
-            _out_node = tiled_client[tuple(_out_segs)]
-            _proj_node = _out_node["projections"]
-            _proj_node.write(_proj)
+            tiled_client[tuple(_out_segs)]["projections"].write(_proj)
             log.info("Projections written to %s/projections", output)
         except Exception as _exc:
-            log.warning("Scratch projector failed — projections remain NaN: %s", _exc)
+            log.warning("Scratch UMAP failed — projections remain NaN: %s", _exc)
     else:
-        log.warning("No embeddings collected — scratch projector skipped")
+        log.warning("No embeddings collected — scratch UMAP skipped")
 
 log.info("=== Streaming inference done ===")
 

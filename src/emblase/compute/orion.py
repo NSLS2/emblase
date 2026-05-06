@@ -1,4 +1,4 @@
-"""Orion compute backend for inference jobs."""
+"""Orion compute backend — Slurm job submission via the Orion REST API."""
 
 from __future__ import annotations
 
@@ -6,10 +6,13 @@ import asyncio
 import base64
 import io
 import json
+import os
+import subprocess
 import time
+import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Generator
 
 import httpx
 import numpy as np
@@ -20,26 +23,32 @@ from .base import ComputeBackend, JobResult, JobStatus
 _TEMPLATE = (Path(__file__).parent.parent / "worker" / "inference.py.tmpl").read_text()
 _STREAMING_TEMPLATE = (Path(__file__).parent.parent / "worker" / "streaming_inference.py.tmpl").read_text()
 
-_SLURM_STATE_MAP = {
-    "PENDING": JobStatus.pending,
-    "CONFIGURING": JobStatus.pending,
-    "RUNNING": JobStatus.running,
-    "COMPLETING": JobStatus.running,
-    "COMPLETED": JobStatus.completed,
-    "FAILED": JobStatus.failed,
-    "CANCELLED": JobStatus.failed,
-    "TIMEOUT": JobStatus.failed,
-    "NODE_FAIL": JobStatus.failed,
+_SLURM_STATE_MAP: dict[str, JobStatus] = {
+    "PENDING":       JobStatus.pending,
+    "CONFIGURING":   JobStatus.pending,
+    "RUNNING":       JobStatus.running,
+    "COMPLETING":    JobStatus.running,
+    "COMPLETED":     JobStatus.completed,
+    "FAILED":        JobStatus.failed,
+    "CANCELLED":     JobStatus.failed,
+    "TIMEOUT":       JobStatus.failed,
+    "NODE_FAIL":     JobStatus.failed,
     "OUT_OF_MEMORY": JobStatus.failed,
 }
 
+_TERMINAL_STATES = {JobStatus.completed, JobStatus.failed}
+
+
+# ---------------------------------------------------------------------------
+# Script rendering
+# ---------------------------------------------------------------------------
 
 def _projector_mode_and_name(projector: str | None) -> tuple[str, str]:
-    """Translate the ``--projector`` CLI value into (projector_mode, projector_name).
+    """Translate the ``--projector`` CLI value into ``(mode, name)``.
 
-    projector=None        → ("scratch", "")   — fit UMAP from scratch after encoding
-    projector="false"/0   → ("false",  "")   — write NaN projections, skip projector entirely
-    projector="<name>"    → ("name",   name) — resolve saved model by name
+    ``None``                  → ``("scratch", "")`` — fit UMAP from scratch
+    ``"false"``/``"0"``/etc.  → ``("false",  "")`` — write NaN, skip projector
+    ``"<name>"``              → ``("name",   name)`` — resolve saved model by name
     """
     if projector is None:
         return "scratch", ""
@@ -48,12 +57,26 @@ def _projector_mode_and_name(projector: str | None) -> tuple[str, str]:
     return "name", projector
 
 
+def _render_worker_script(template: str, **kwargs: Any) -> str:
+    """Render a worker template, converting projector/classifier kwargs to template slots."""
+    projector_mode, projector_name = _projector_mode_and_name(kwargs.pop("projector", None))
+    classifier = kwargs.pop("classifier", None)
+    param_specs = kwargs.pop("param_specs", None)
+    return template.format(
+        **kwargs,
+        param_specs_json=json.dumps(param_specs or {}),
+        projector_mode=projector_mode,
+        projector_name=projector_name,
+        classifier_name=classifier or "",
+    )
+
+
 def _render_inference_script(
     model_name: str,
     models_dir: str,
     batch_size: int = 1,
     run_path: str = "",
-    image_key: str = "pil900KW_image",
+    image_key: str = "primary.pil900KW_image",
     inputs: list[str | tuple[str, str]] | None = None,
     output: str = "",
     mlflow_version: str = "",
@@ -62,9 +85,8 @@ def _render_inference_script(
     projector: str | None = None,
     classifier: str | None = None,
 ) -> str:
-    """Render the batch inference template with concrete values."""
-    projector_mode, projector_name = _projector_mode_and_name(projector)
-    return _TEMPLATE.format(
+    return _render_worker_script(
+        _TEMPLATE,
         model_name=model_name,
         models_dir=models_dir,
         batch_size=batch_size,
@@ -74,10 +96,9 @@ def _render_inference_script(
         output=output,
         mlflow_version=mlflow_version,
         thumb_mode=thumb_mode,
-        param_specs_json=json.dumps(param_specs or {}),
-        projector_mode=projector_mode,
-        projector_name=projector_name,
-        classifier_name=classifier or "",
+        param_specs=param_specs,
+        projector=projector,
+        classifier=classifier,
     )
 
 
@@ -89,15 +110,14 @@ def _render_streaming_inference_script(
     batch_size: int = 8,
     mlflow_version: str = "",
     thumb_mode: str = "logroi",
-    image_key: str = "pil900KW_image",
+    image_key: str = "primary.pil900KW_image",
     ws_max_size: int = 64 * 1024 * 1024,
     param_specs: dict | None = None,
     projector: str | None = None,
     classifier: str | None = None,
 ) -> str:
-    """Render the streaming inference template with concrete values."""
-    projector_mode, projector_name = _projector_mode_and_name(projector)
-    return _STREAMING_TEMPLATE.format(
+    return _render_worker_script(
+        _STREAMING_TEMPLATE,
         model_name=model_name,
         models_dir=models_dir,
         run_path=run_path,
@@ -107,12 +127,15 @@ def _render_streaming_inference_script(
         thumb_mode=thumb_mode,
         image_key=image_key,
         ws_max_size=ws_max_size,
-        param_specs_json=json.dumps(param_specs or {}),
-        projector_mode=projector_mode,
-        projector_name=projector_name,
-        classifier_name=classifier or "",
+        param_specs=param_specs,
+        projector=projector,
+        classifier=classifier,
     )
 
+
+# ---------------------------------------------------------------------------
+# sbatch script builder
+# ---------------------------------------------------------------------------
 
 def _build_sbatch_script(
     working_dir: str,
@@ -125,15 +148,14 @@ def _build_sbatch_script(
     npy_path: str | None = None,
     tiled_input: bool = False,
 ) -> str:
-    """Build the sbatch script. Exactly one image source must be indicated:
+    """Build a self-contained sbatch script.
 
-    - payload_b64: numpy array encoded client-side, embedded as heredoc, decoded on node.
-    - npy_path: .npy already on Orion; symlinked into the job dir.
-    - tiled_input: input is read directly by the inference script from Tiled;
-      no pre-fetch step needed in the sbatch preamble.
+    Exactly one image-source flag must be set:
+    - ``payload_b64``: base64-encoded numpy array embedded as a heredoc.
+    - ``npy_path``: path to an ``.npy`` file already on the cluster (symlinked).
+    - ``tiled_input``: inference script reads frames directly from Tiled (no pre-fetch).
     """
-    sources = [bool(payload_b64), bool(npy_path), tiled_input]
-    if sum(sources) != 1:
+    if sum([bool(payload_b64), bool(npy_path), tiled_input]) != 1:
         raise ValueError("Provide exactly one of payload_b64, npy_path, tiled_input=True")
 
     if payload_b64:
@@ -157,7 +179,7 @@ rm -f "$JOB_DIR/_input_b64.txt"
     elif npy_path:
         input_section = f'ln -sf {npy_path} "$JOB_DIR/input.npy"\n'
     else:
-        input_section = ""  # tiled_input: inference script reads directly from Tiled
+        input_section = ""
 
     return f"""\
 #!/bin/bash
@@ -184,10 +206,13 @@ EMBLASE_INFERENCE_EOF
 """
 
 
+# ---------------------------------------------------------------------------
+# Orion REST client
+# ---------------------------------------------------------------------------
+
 @dataclass
 class OrionJob:
-    """Parsed Orion job info."""
-
+    """Parsed response from the Orion jobs endpoint."""
     job_id: int
     state: str
     node: str | None = None
@@ -197,13 +222,12 @@ class OrionJob:
 
 
 class OrionClient:
-    """Async HTTP client for the Orion compute REST API (Slurm job submission).
+    """Async HTTP client for the Orion REST API.
 
-    Usage::
+    Use as an async context manager to ensure the underlying session is closed::
 
-        async with OrionClient() as client:
-            job_id = await client.submit_job(script="#!/bin/bash\\nhostname")
-            info = await client.get_job(job_id)
+        async with OrionClient() as c:
+            job_id = await c.submit_job(script="#!/bin/bash\\nhostname")
     """
 
     def __init__(
@@ -211,28 +235,31 @@ class OrionClient:
         api_url: str | None = None,
         api_key: str | None = None,
         cluster: str | None = None,
-    ):
+    ) -> None:
         self.api_url = (api_url or settings.orion_api_url).rstrip("/")
         self.api_key = api_key or settings.orion_api_key
         self.cluster = cluster or settings.orion_cluster
         self._client: httpx.AsyncClient | None = None
 
     async def __aenter__(self) -> OrionClient:
-        await self._ensure_client()
+        await self._open()
         return self
 
-    async def __aexit__(self, *exc: Any) -> None:
-        if self._client:
-            await self._client.aclose()
-            self._client = None
+    async def __aexit__(self, *_: Any) -> None:
+        await self._close()
 
-    async def _ensure_client(self) -> httpx.AsyncClient:
+    async def _open(self) -> httpx.AsyncClient:
         if self._client is None:
             self._client = httpx.AsyncClient(
                 timeout=30.0,
                 headers={"x-api-key": self.api_key, "Content-Type": "application/json"},
             )
         return self._client
+
+    async def _close(self) -> None:
+        if self._client:
+            await self._client.aclose()
+            self._client = None
 
     async def submit_job(
         self,
@@ -241,25 +268,21 @@ class OrionClient:
         overrides: dict[str, str] | None = None,
         environment: list[str] | None = None,
     ) -> int:
-        """Submit a job script to Orion. Returns the Slurm job ID."""
-        client = await self._ensure_client()
+        """Submit a job script. Returns the Slurm job ID."""
+        client = await self._open()
         payload: dict[str, Any] = {"script": script, "working_dir_path": working_dir}
         if overrides:
             payload["overrides"] = overrides
         if environment:
             payload["environment"] = environment
-        resp = await client.post(
-            f"{self.api_url}/api/v1/compute/{self.cluster}/jobs", json=payload
-        )
+        resp = await client.post(f"{self.api_url}/api/v1/compute/{self.cluster}/jobs", json=payload)
         resp.raise_for_status()
         return resp.json()["job_id"]
 
     async def get_job(self, job_id: int) -> OrionJob:
-        """Get info for a single job."""
-        client = await self._ensure_client()
-        resp = await client.get(
-            f"{self.api_url}/api/v1/compute/{self.cluster}/jobs/{job_id}"
-        )
+        """Fetch info for a single job."""
+        client = await self._open()
+        resp = await client.get(f"{self.api_url}/api/v1/compute/{self.cluster}/jobs/{job_id}")
         resp.raise_for_status()
         data = resp.json()["jobs"][0]
         state = data.get("state", ["UNKNOWN"])
@@ -276,10 +299,8 @@ class OrionClient:
 
     async def cancel_job(self, job_id: int) -> None:
         """Cancel a running job."""
-        client = await self._ensure_client()
-        resp = await client.delete(
-            f"{self.api_url}/api/v1/compute/{self.cluster}/jobs/{job_id}"
-        )
+        client = await self._open()
+        resp = await client.delete(f"{self.api_url}/api/v1/compute/{self.cluster}/jobs/{job_id}")
         resp.raise_for_status()
 
     async def wait_for_job(
@@ -288,19 +309,12 @@ class OrionClient:
         poll_interval: float = 5.0,
         timeout: float = 1800.0,
     ) -> OrionJob:
-        """Poll until job reaches a terminal state.
-
-        Uses wall-clock time (monotonic) so sleep jitter doesn't accumulate.
-        Default timeout is 30 minutes — enough for any normal inference job.
-        """
+        """Poll until the job reaches a terminal state. Raises ``TimeoutError`` on timeout."""
         deadline = time.monotonic() + timeout
-        info = None
+        info: OrionJob | None = None
         while time.monotonic() < deadline:
             info = await self.get_job(job_id)
-            if info.state in _SLURM_STATE_MAP and _SLURM_STATE_MAP[info.state] in (
-                JobStatus.completed,
-                JobStatus.failed,
-            ):
+            if _SLURM_STATE_MAP.get(info.state) in _TERMINAL_STATES:
                 return info
             await asyncio.sleep(poll_interval)
         raise TimeoutError(
@@ -308,6 +322,60 @@ class OrionClient:
             f"(last state: {info.state if info else 'unknown'})"
         )
 
+
+# ---------------------------------------------------------------------------
+# SSH log streaming
+# ---------------------------------------------------------------------------
+
+def _ssh_host() -> str:
+    if settings.orion_ssh_host:
+        return settings.orion_ssh_host
+    return urllib.parse.urlparse(settings.orion_api_url).hostname or "orion-staging.nsls2.bnl.gov"
+
+
+def _ssh_user() -> str:
+    return settings.orion_ssh_user or os.environ.get("USER", "")
+
+
+def _log_path(job_id: int) -> str:
+    return f"{settings.orion_working_dir}/slurm-{job_id}.out"
+
+
+def stream_logs(
+    job_id: int,
+    tail_n: int = 50,
+    ssh_host: str | None = None,
+    ssh_user: str | None = None,
+) -> Generator[str, None, None]:
+    """Stream the Slurm log for *job_id* from the Orion login node via SSH.
+
+    Runs ``ssh <host> tail -f -n <tail_n> <log_file>`` and yields one
+    stripped line at a time.  Blocks until the caller breaks or SSH exits.
+    ``tail -f`` waits silently if the log file does not yet exist.
+    """
+    host = ssh_host or _ssh_host()
+    user = ssh_user or _ssh_user()
+    destination = f"{user}@{host}" if user else host
+    cmd = [
+        "ssh", "-o", "StrictHostKeyChecking=accept-new",
+        destination, f"tail -f -n {tail_n} -- {_log_path(job_id)}",
+    ]
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            text=True, bufsize=1)
+    try:
+        for line in proc.stdout:  # type: ignore[union-attr]
+            yield line.rstrip("\n")
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+
+
+# ---------------------------------------------------------------------------
+# OrionBackend
+# ---------------------------------------------------------------------------
 
 class OrionBackend(ComputeBackend):
     """Submit inference jobs to Orion (Slurm) via the Orion REST API."""
@@ -321,7 +389,7 @@ class OrionBackend(ComputeBackend):
         home: str | None = None,
         account: str | None = None,
         path: str | None = None,
-    ):
+    ) -> None:
         self.client = client or OrionClient()
         self.working_dir = working_dir or settings.orion_working_dir
         self.models_dir = models_dir or settings.orion_models_dir
@@ -331,12 +399,27 @@ class OrionBackend(ComputeBackend):
         self.path = path or settings.orion_path
         self._jobs: dict[int, dict[str, Any]] = {}
 
+    # -- log streaming -------------------------------------------------------
+
+    @staticmethod
+    def log_path(job_id: int) -> str:
+        return _log_path(job_id)
+
+    @staticmethod
+    def stream_logs(
+        job_id: int,
+        tail_n: int = 50,
+        ssh_host: str | None = None,
+        ssh_user: str | None = None,
+    ) -> Generator[str, None, None]:
+        """Stream the Slurm log for *job_id* via SSH. See module-level ``stream_logs``."""
+        return stream_logs(job_id, tail_n=tail_n, ssh_host=ssh_host, ssh_user=ssh_user)
+
+    # -- internal helpers ----------------------------------------------------
+
     def _build_environment(self, *, require_tiled: bool = False) -> list[str]:
-        """Build the environment variable list for a Slurm job."""
         if require_tiled and not settings.tiled_server_uri:
-            raise ValueError(
-                "EMBLASE_TILED_SERVER_URI is not set — required for this job type."
-            )
+            raise ValueError("EMBLASE_TILED_SERVER_URI is not set — required for this job type.")
         env = [
             f"PATH={self.path}",
             f"HOME={self.home}",
@@ -358,6 +441,31 @@ class OrionBackend(ComputeBackend):
                 env.append(f"EMBLASE_MODEL_CACHE_DIR={settings.model_cache_dir}")
         return env
 
+    async def _submit_job(
+        self,
+        script: str,
+        model_name: str,
+        output: str,
+        *,
+        require_tiled: bool,
+        mem: str = "16G",
+    ) -> str:
+        """Submit *script* to Orion, store metadata, return string job_id."""
+        job_id = await self.client.submit_job(
+            script=script,
+            working_dir=self.working_dir,
+            overrides={"tres_per_job": "gres/gpu:1", "account": self.account},
+            environment=self._build_environment(require_tiled=require_tiled),
+        )
+        self._jobs[job_id] = {
+            "job_dir": f"{self.working_dir}/job_{job_id}",
+            "model_name": model_name,
+            "output": output,
+        }
+        return str(job_id)
+
+    # -- ComputeBackend interface --------------------------------------------
+
     async def submit(
         self,
         model_name: str,
@@ -365,7 +473,7 @@ class OrionBackend(ComputeBackend):
         images: np.ndarray | None = None,
         npy_path: str | None = None,
         run_path: str = "",
-        image_key: str = "pil900KW_image",
+        image_key: str = "primary.pil900KW_image",
         inputs: list[str | tuple[str, str]] | None = None,
         output: str = "",
         mlflow_version: str = "",
@@ -373,59 +481,29 @@ class OrionBackend(ComputeBackend):
         param_specs: dict | None = None,
         projector: str | None = None,
         classifier: str | None = None,
-        **kwargs: Any,
+        **_: Any,
     ) -> str:
         """Submit a batch inference job.
 
-        Image source — provide exactly one:
-          - ``run_path``: Tiled BlueskyRun path; frames read from
-            ``run_path/primary/<image_key>``, params from same primary stream.
-          - ``images``: numpy array uploaded from the client (embedded in the job script).
-          - ``npy_path``: absolute path to a .npy file already on Orion (symlinked).
-          - ``inputs``: list of raw Tiled paths / ``(path, slice)`` tuples.
-          - *(none)*: dummy random images are generated on the node.
-
-        Output:
-          - ``output``: Tiled path to write embeddings into. If omitted, results are
-            saved as ``output.npy`` in the job working directory only.
-
-        Projector behaviour (``projector`` argument):
-          - ``None`` (default): fit UMAP from scratch over all embeddings after encoding.
-          - ``"<name>"``: resolve a saved projector approximator by name — check
-            ``models_dir/<name>`` on the node, then fall back to MLflow.
-          - ``"false"`` / ``"0"``: skip projections entirely; write NaN.
-
-        Classifier (``classifier`` argument):
-          - ``None`` (default): no classification; ``label`` column is NULL.
-          - ``"<name>"``: resolve a saved classifier by name — check
-            ``models_dir/<name>`` on the node, then fall back to MLflow.
+        Provide exactly one image source: ``run_path``, ``images``, ``npy_path``,
+        or ``inputs``.  If none are given, dummy images are generated on the node.
         """
         py_script = _render_inference_script(
-            model_name=model_name,
-            models_dir=self.models_dir,
-            batch_size=batch_size,
-            run_path=run_path,
-            image_key=image_key,
-            inputs=inputs,
-            output=output,
-            mlflow_version=mlflow_version,
-            thumb_mode=thumb_mode,
-            param_specs=param_specs,
-            projector=projector,
-            classifier=classifier,
+            model_name=model_name, models_dir=self.models_dir,
+            batch_size=batch_size, run_path=run_path, image_key=image_key,
+            inputs=inputs, output=output, mlflow_version=mlflow_version,
+            thumb_mode=thumb_mode, param_specs=param_specs,
+            projector=projector, classifier=classifier,
         )
 
         if images is not None:
             buf = io.BytesIO()
             np.save(buf, images)
-            raw = buf.getvalue()
-            b64 = base64.b64encode(raw).decode()
-            _MAX_EMBED_BYTES = 10 * 1024 * 1024  # 10 MB — Orion API request size limit
-            if len(b64) > _MAX_EMBED_BYTES:
+            b64 = base64.b64encode(buf.getvalue()).decode()
+            if len(b64) > 10 * 1024 * 1024:
                 raise ValueError(
-                    f"Image payload too large to embed ({len(raw) / 1024 / 1024:.1f} MB raw, "
-                    f"{len(b64) / 1024 / 1024:.1f} MB base64). "
-                    "Copy the .npy file to Orion and use --npy-path instead."
+                    f"Image payload too large ({len(buf.getvalue()) / 1024 / 1024:.1f} MB). "
+                    "Copy the .npy to Orion and use --npy-path instead."
                 )
             script_kwargs: dict[str, Any] = {"payload_b64": b64}
         elif npy_path:
@@ -434,77 +512,14 @@ class OrionBackend(ComputeBackend):
             script_kwargs = {"tiled_input": True}
 
         script = _build_sbatch_script(
-            working_dir=self.working_dir,
-            python_script=py_script,
-            project_dir=self.project_dir,
-            job_name=f"emblase-{model_name}",
+            working_dir=self.working_dir, python_script=py_script,
+            project_dir=self.project_dir, job_name=f"emblase-{model_name}",
             **script_kwargs,
         )
-
-        environment = self._build_environment(require_tiled=bool(run_path or inputs or output))
-
-        job_id = await self.client.submit_job(
-            script=script,
-            working_dir=self.working_dir,
-            overrides={"tres_per_job": "gres/gpu:1", "account": self.account},
-            environment=environment,
+        return await self._submit_job(
+            script, model_name, output,
+            require_tiled=bool(run_path or inputs or output),
         )
-
-        self._jobs[job_id] = {
-            "job_dir": f"{self.working_dir}/job_{job_id}",
-            "model_name": model_name,
-            "output": output,
-        }
-        return str(job_id)
-
-    async def status(self, job_id: str) -> JobStatus:
-        info = await self.client.get_job(int(job_id))
-        return _SLURM_STATE_MAP.get(info.state, JobStatus.pending)
-
-    async def result(self, job_id: str) -> JobResult:
-        st = await self.status(job_id)
-        meta = self._jobs.get(int(job_id))
-        if not meta:
-            return JobResult(
-                job_id=job_id, status=JobStatus.failed, error="Job metadata lost"
-            )
-
-        if st not in (JobStatus.completed, JobStatus.failed):
-            return JobResult(job_id=job_id, status=st)
-
-        if meta.get("output"):
-            # Results were written to Tiled on the node — nothing to return here.
-            return JobResult(job_id=job_id, status=st)
-
-        # No Tiled output — try shared filesystem.
-        output_path = Path(meta["job_dir"]) / "output.npy"
-        if output_path.exists():
-            return JobResult(
-                job_id=job_id,
-                status=JobStatus.completed,
-                output_data=np.load(str(output_path)),
-            )
-
-        return JobResult(
-            job_id=job_id,
-            status=st,
-            error=f"Output not found at {output_path}" if st == JobStatus.completed else None,
-        )
-
-    async def wait(
-        self,
-        job_id: str,
-        poll_interval: float = 5.0,
-        timeout: float = 1800.0,
-    ) -> JobStatus:
-        """Poll until the job reaches a terminal state. Returns final JobStatus."""
-        info = await self.client.wait_for_job(
-            int(job_id), poll_interval=poll_interval, timeout=timeout
-        )
-        return _SLURM_STATE_MAP.get(info.state, JobStatus.failed)
-
-    async def cancel(self, job_id: str) -> None:
-        await self.client.cancel_job(int(job_id))
 
     async def submit_streaming(
         self,
@@ -514,73 +529,59 @@ class OrionBackend(ComputeBackend):
         batch_size: int = 8,
         mlflow_version: str = "",
         thumb_mode: str = "logroi",
-        image_key: str = "pil900KW_image",
+        image_key: str = "primary.pil900KW_image",
         ws_max_size: int = 64 * 1024 * 1024,
         mem: str = "32G",
         param_specs: dict | None = None,
         projector: str | None = None,
         classifier: str | None = None,
-        **kwargs: Any,
+        **_: Any,
     ) -> str:
-        """Submit a streaming inference job that subscribes to a BlueskyRun on Orion.
-
-        Parameters
-        ----------
-        run_path:
-            Tiled path to the BlueskyRun container (e.g. ``smi/.../inputs_copy/run_xyz``).
-        output:
-            Tiled path to write embeddings into (e.g. ``smi/.../results/run_xyz``).
-        projector:
-            Projector behaviour:
-            - ``None`` (default): fit UMAP from scratch over all accumulated embeddings
-              after the run completes.
-            - ``"<name>"``: resolve a saved projector approximator by name — check
-              ``models_dir/<name>`` on the node, then fall back to MLflow.
-            - ``"false"`` / ``"0"``: skip projections entirely; write NaN.
-        classifier:
-            - ``None`` (default): no classification; ``label`` column is NULL.
-            - ``"<name>"``: resolve a saved classifier by name — check
-              ``models_dir/<name>`` on the node, then fall back to MLflow.
-        param_specs:
-            Optional dict mapping parameter names to ParamSpec dicts.
-        """
+        """Submit a streaming inference job that subscribes to a live BlueskyRun."""
         py_script = _render_streaming_inference_script(
-            model_name=model_name,
-            models_dir=self.models_dir,
-            run_path=run_path,
-            output=output,
-            batch_size=batch_size,
-            mlflow_version=mlflow_version,
-            thumb_mode=thumb_mode,
-            image_key=image_key,
-            ws_max_size=ws_max_size,
-            param_specs=param_specs,
-            projector=projector,
-            classifier=classifier,
+            model_name=model_name, models_dir=self.models_dir,
+            run_path=run_path, output=output, batch_size=batch_size,
+            mlflow_version=mlflow_version, thumb_mode=thumb_mode,
+            image_key=image_key, ws_max_size=ws_max_size,
+            param_specs=param_specs, projector=projector, classifier=classifier,
         )
-
         script = _build_sbatch_script(
-            working_dir=self.working_dir,
-            python_script=py_script,
-            project_dir=self.project_dir,
-            job_name=f"emblase-stream-{model_name}",
-            time_limit="0-02:00:00",
-            tiled_input=True,
-            mem=mem,
+            working_dir=self.working_dir, python_script=py_script,
+            project_dir=self.project_dir, job_name=f"emblase-stream-{model_name}",
+            time_limit="0-02:00:00", tiled_input=True, mem=mem,
+        )
+        return await self._submit_job(script, model_name, output, require_tiled=True, mem=mem)
+
+    async def status(self, job_id: str) -> JobStatus:
+        info = await self.client.get_job(int(job_id))
+        return _SLURM_STATE_MAP.get(info.state, JobStatus.pending)
+
+    async def result(self, job_id: str) -> JobResult:
+        st = await self.status(job_id)
+        meta = self._jobs.get(int(job_id))
+        if not meta:
+            return JobResult(job_id=job_id, status=JobStatus.failed, error="Job metadata lost")
+        if st not in _TERMINAL_STATES:
+            return JobResult(job_id=job_id, status=st)
+        if meta.get("output"):
+            return JobResult(job_id=job_id, status=st)
+        output_path = Path(meta["job_dir"]) / "output.npy"
+        if output_path.exists():
+            return JobResult(job_id=job_id, status=JobStatus.completed,
+                             output_data=np.load(str(output_path)))
+        return JobResult(
+            job_id=job_id, status=st,
+            error=f"Output not found at {output_path}" if st == JobStatus.completed else None,
         )
 
-        environment = self._build_environment(require_tiled=True)
+    async def wait(
+        self,
+        job_id: str,
+        poll_interval: float = 5.0,
+        timeout: float = 1800.0,
+    ) -> JobStatus:
+        info = await self.client.wait_for_job(int(job_id), poll_interval=poll_interval, timeout=timeout)
+        return _SLURM_STATE_MAP.get(info.state, JobStatus.failed)
 
-        job_id = await self.client.submit_job(
-            script=script,
-            working_dir=self.working_dir,
-            overrides={"tres_per_job": "gres/gpu:1", "account": self.account},
-            environment=environment,
-        )
-
-        self._jobs[job_id] = {
-            "job_dir": f"{self.working_dir}/job_{job_id}",
-            "model_name": model_name,
-            "output": output,
-        }
-        return str(job_id)
+    async def cancel(self, job_id: str) -> None:
+        await self.client.cancel_job(int(job_id))

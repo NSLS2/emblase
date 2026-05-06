@@ -1,14 +1,14 @@
 """Streaming pipeline: watch a Tiled inputs container for new BlueskyRuns and
-submit one Orion streaming-inference job per run.
+submit one streaming-inference job per run to the configured compute backend.
 
 Architecture
 ------------
 InputsWatcher (runs locally)
   └─ inputs_node.subscribe()
        on child_created(run_key) →
-           submit_streaming(run_path, output_path)  ← one Orion job per run
+           backend.submit_streaming(run_path, output_path)  ← one job per run
 
-The Orion job (streaming_inference.py.tmpl) does everything else:
+The compute job (streaming_inference.py.tmpl) does everything else:
   - subscribes to primary → image array via WebSocket on the compute node
   - encodes frames in batches as they arrive
   - writes embeddings incrementally to Tiled
@@ -18,6 +18,8 @@ Key rules
 ---------
 - inputs_node must be a **dedicated** Tiled client — not shared with any writer.
 - The watcher never touches the data; it only reacts to container-level events.
+- Any backend implementing ``ComputeBackend.submit_streaming`` is supported
+  (Orion, local, NERSC, …).
 """
 
 from __future__ import annotations
@@ -26,6 +28,7 @@ import asyncio
 import logging
 import os
 import threading
+import time
 import urllib.parse
 from typing import Any
 
@@ -70,7 +73,8 @@ class InputsWatcher:
         Tiled path of the results container.  Each run's output is placed at
         ``{output_root}/{run_key}``.
     backend:
-        ``OrionBackend`` instance with a ``submit_streaming`` coroutine.
+        A ``ComputeBackend`` instance (Orion, local, NERSC, …) with a
+        ``submit_streaming`` coroutine.
     model_name, batch_size, image_key, thumb_mode, mlflow_version:
         Forwarded to the Orion streaming job.
     param_specs:
@@ -94,7 +98,7 @@ class InputsWatcher:
         backend: Any,
         model_name: str,
         batch_size: int = 8,
-        image_key: str = "pil900KW_image",
+        image_key: str = "primary.pil900KW_image",
         thumb_mode: str = "logroi",
         mlflow_version: str = "",
         access_tags: list[str] | None = None,
@@ -185,6 +189,25 @@ class InputsWatcher:
                 projector=self.projector,
                 classifier=self.classifier,
             )
-            logger.info("Submitted Orion streaming job %s for run %s", job_id, run_path)
+            logger.info("Submitted streaming job %s for run %s", job_id, run_path)
+            self._start_log_tail(job_id, run_path)
         except Exception:
             logger.exception("Failed to submit streaming job for run %s", run_path)
+
+    def _start_log_tail(self, job_id: str, run_path: str) -> None:
+        """If the backend supports log streaming, tail the job log in a daemon thread."""
+        _stream_logs = getattr(self.backend, "stream_logs", None)
+        if _stream_logs is None:
+            return
+        run_key = run_path.rsplit("/", 1)[-1]
+        prefix = f"[job {job_id} / {run_key}]"
+
+        def _tail() -> None:
+            time.sleep(2)  # give Slurm time to create the log file
+            try:
+                for line in _stream_logs(int(job_id)):
+                    logger.info("%s %s", prefix, line)
+            except Exception as exc:
+                logger.debug("%s log tail stopped: %s", prefix, exc)
+
+        threading.Thread(target=_tail, daemon=True, name=f"emblase-logtail-{job_id}").start()

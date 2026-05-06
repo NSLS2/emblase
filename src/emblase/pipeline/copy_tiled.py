@@ -16,17 +16,18 @@ in batches with a sleep between each batch, simulating a live acquisition.
     spatial chunking (e.g. ``(294, 294, 31)`` along H).  The WS subscription
     replays one event *per physical chunk*, so ``event.data()`` contains a
     partial spatial tile (e.g. ``(288, 1, 31, 5)``) rather than a full frame.
-    The Orion job will receive malformed frames and fail.  Always use
+    The compute job will receive malformed frames and fail.  Always use
     ``batch_size=1`` when copying data for streaming inference.
 
 The stop document is always written *after* all frames, so a streaming
-Orion job subscribing with ``start=1`` will see each frame arrive and will
+job subscribing with ``start=1`` will see each frame arrive and will
 only flush + exit once the stop doc lands.
 """
 
 from __future__ import annotations
 
 import time
+from typing import Callable
 from tiled.structures.core import StructureFamily
 from tiled.client.container import Container
 
@@ -47,6 +48,17 @@ def _walk_readables(node):
         yield []
 
 
+def _array_key_name(image_key: str) -> str:
+    """Return the bare array key from a dotted 'stream.key' or plain 'key' string.
+
+    Examples::
+
+        _array_key_name("primary.pil900KW_image") -> "pil900KW_image"
+        _array_key_name("pil900KW_image")         -> "pil900KW_image"
+    """
+    return image_key.rsplit(".", 1)[-1]
+
+
 def deepcopy(
     src,
     dst,
@@ -54,7 +66,8 @@ def deepcopy(
     access_tags=None,
     batch_size: int | None = 1,
     batch_delay: float = 0.0,
-    image_key: str = "pil900KW_image",
+    image_key: str = "primary.pil900KW_image",
+    on_progress: Callable[[int, int], None] | None = None,
 ):
     """Copy src into dst, cp-style.
 
@@ -74,11 +87,18 @@ def deepcopy(
         Seconds to sleep between consecutive batches of the image array
         identified by *image_key*.  0 means copy as fast as possible.
     image_key:
-        Name of the array that should be written incrementally.
+        Name of the array that should be written incrementally.  Accepts
+        either a plain key (``"pil900KW_image"``) or a dotted
+        ``"stream.key"`` form (``"primary.pil900KW_image"``); only the
+        trailing key name is matched against the node tree.
         All other arrays are copied in one shot.
+    on_progress:
+        Optional callback invoked after each batch of the image array is
+        written.  Called as ``on_progress(rows_written, total_rows)``.
     """
     src = src.new_variation(structure_clients="numpy")
     src_key = rename or src.item["id"]
+    _img_array_name = _array_key_name(image_key)
 
     for path in _walk_readables(src):
         s = Container.__getitem__(src, tuple(path)) if path else src
@@ -89,12 +109,13 @@ def deepcopy(
             dst_parent = Container.__getitem__(dst, (src_key, *path[:-1]))
         copy_func = _registry[s.structure_family]
         key = path[-1] if path else src_key
-        is_image = key == image_key and s.structure_family == StructureFamily.array
+        is_image = key == _img_array_name and s.structure_family == StructureFamily.array
         copy_func(
             s, dst_parent, key,
             access_tags=access_tags,
             batch_size=batch_size if is_image else None,
             batch_delay=batch_delay if is_image else 0.0,
+            on_progress=on_progress if is_image else None,
         )
 
     if "stop" in src.metadata:
@@ -118,6 +139,7 @@ def copy_array(
     access_tags=None,
     batch_size: int | None = 1,
     batch_delay: float = 0.0,
+    on_progress: Callable[[int, int], None] | None = None,
 ):
     n_rows = src.shape[0]
     # batch_size=None/0 → write entire array at once
@@ -129,6 +151,8 @@ def copy_array(
             specs=src.specs,
             access_tags=access_tags or src.access_blob.get("tags", None),
         )
+        if on_progress:
+            on_progress(n_rows, n_rows)
         return
 
     # Incremental: write first batch, then patch the rest batch_size rows at a time
@@ -140,6 +164,8 @@ def copy_array(
         specs=src.specs,
         access_tags=access_tags or src.access_blob.get("tags", None),
     )
+    if on_progress:
+        on_progress(min(bs, n_rows), n_rows)
     row = bs
     while row < n_rows:
         if batch_delay > 0:
@@ -147,10 +173,12 @@ def copy_array(
         end = min(row + bs, n_rows)
         arr.patch(src[row:end, ...], offset=row, extend=True)
         row = end
+        if on_progress:
+            on_progress(row, n_rows)
 
 
 @_register(StructureFamily.container)
-def copy_container(src, dst, key, access_tags=None, batch_size=None, batch_delay: float = 0.0):
+def copy_container(src, dst, key, access_tags=None, batch_size=None, batch_delay: float = 0.0, on_progress=None):
     dst.create_container(
         key=key,
         metadata={k: v for k, v in src.metadata.items() if k != "stop"},
@@ -160,7 +188,7 @@ def copy_container(src, dst, key, access_tags=None, batch_size=None, batch_delay
 
 
 @_register(StructureFamily.table)
-def copy_table(src, dst, key, access_tags=None, batch_size=None, batch_delay: float = 0.0):
+def copy_table(src, dst, key, access_tags=None, batch_size=None, batch_delay: float = 0.0, on_progress=None):
     base = dst.base if any(spec.name == "composite" for spec in src.specs) else dst
     if key in base:
         base.delete_contents(key, external_only=False, recursive=True)
