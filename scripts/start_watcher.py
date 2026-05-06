@@ -121,6 +121,10 @@ def main() -> None:
         format="%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
         datefmt="%H:%M:%S",
     )
+    # Suppress noisy HTTP-level logs from httpx/httpcore unless DEBUG is requested.
+    if args.log_level != "DEBUG":
+        for _noisy in ("httpx", "httpcore", "hpack"):
+            logging.getLogger(_noisy).setLevel(logging.WARNING)
 
     if not settings.tiled_server_uri:
         sys.exit("EMBLASE_TILED_SERVER_URI is not set — check your .env file.")
