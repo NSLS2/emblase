@@ -28,7 +28,6 @@ import asyncio
 import logging
 import os
 import threading
-import time
 import urllib.parse
 from typing import Any
 
@@ -189,25 +188,22 @@ class InputsWatcher:
                 projector=self.projector,
                 classifier=self.classifier,
             )
+            run_key = run_path.rsplit("/", 1)[-1]
             logger.info("Submitted streaming job %s for run %s", job_id, run_path)
-            self._start_log_tail(job_id, run_path)
+            self._start_job_monitor(job_id, run_key)
         except Exception:
             logger.exception("Failed to submit streaming job for run %s", run_path)
 
-    def _start_log_tail(self, job_id: str, run_path: str) -> None:
-        """If the backend supports log streaming, tail the job log in a daemon thread."""
-        _stream_logs = getattr(self.backend, "stream_logs", None)
-        if _stream_logs is None:
+    def _start_job_monitor(self, job_id: str, run_key: str) -> None:
+        """If the backend supports job monitoring, start it in a daemon thread."""
+        monitor = getattr(self.backend, "monitor_job", None)
+        if monitor is None:
             return
-        run_key = run_path.rsplit("/", 1)[-1]
-        prefix = f"[job {job_id} / {run_key}]"
 
-        def _tail() -> None:
-            time.sleep(2)  # give Slurm time to create the log file
+        def _run() -> None:
             try:
-                for line in _stream_logs(int(job_id)):
-                    logger.info("%s %s", prefix, line)
+                monitor(job_id, log_prefix=f"[job {job_id} / {run_key}]")
             except Exception as exc:
-                logger.debug("%s log tail stopped: %s", prefix, exc)
+                logger.debug("[job %s] monitor stopped: %s", job_id, exc)
 
-        threading.Thread(target=_tail, daemon=True, name=f"emblase-logtail-{job_id}").start()
+        threading.Thread(target=_run, daemon=True, name=f"emblase-monitor-{job_id}").start()

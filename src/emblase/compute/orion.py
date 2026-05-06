@@ -6,6 +6,7 @@ import asyncio
 import base64
 import io
 import json
+import logging
 import os
 import subprocess
 import time
@@ -19,6 +20,8 @@ import numpy as np
 
 from ..config import settings
 from .base import ComputeBackend, JobResult, JobStatus
+
+logger = logging.getLogger(__name__)
 
 _TEMPLATE = (Path(__file__).parent.parent / "worker" / "inference.py.tmpl").read_text()
 _STREAMING_TEMPLATE = (Path(__file__).parent.parent / "worker" / "streaming_inference.py.tmpl").read_text()
@@ -360,7 +363,7 @@ def stream_logs(
         "ssh", "-o", "StrictHostKeyChecking=accept-new",
         destination, f"tail -f -n {tail_n} -- {_log_path(job_id)}",
     ]
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                             text=True, bufsize=1)
     try:
         for line in proc.stdout:  # type: ignore[union-attr]
@@ -414,6 +417,74 @@ class OrionBackend(ComputeBackend):
     ) -> Generator[str, None, None]:
         """Stream the Slurm log for *job_id* via SSH. See module-level ``stream_logs``."""
         return stream_logs(job_id, tail_n=tail_n, ssh_host=ssh_host, ssh_user=ssh_user)
+
+    def monitor_job(
+        self,
+        job_id: str | int,
+        *,
+        poll_interval: float = 10.0,
+        log_startup_delay: float = 2.0,
+        log_prefix: str = "",
+        on_status: Any = None,
+    ) -> None:
+        """Block until *job_id* reaches a terminal state, printing status and streaming logs.
+
+        Starts the SSH log tail in a background thread immediately, then polls
+        the Orion API every *poll_interval* seconds and prints the current state
+        and node.  Returns once the job completes or fails.
+
+        Parameters
+        ----------
+        job_id:
+            Slurm job ID (int or str).
+        poll_interval:
+            Seconds between Orion API status polls (default 10 s).
+        log_startup_delay:
+            Seconds to wait before connecting the SSH log tail, giving Slurm
+            time to create the log file (default 2 s).
+        log_prefix:
+            Optional string prepended to every status line (e.g. ``"[run_xyz]"``).
+        on_status:
+            Optional ``callable(state: str, node: str | None, elapsed_s: int)``
+            invoked after each poll.  Useful for custom formatting.
+        """
+        job_id = int(job_id)
+        prefix = f"{log_prefix} " if log_prefix else ""
+        stop_log = threading.Event()
+
+        def _tail() -> None:
+            time.sleep(log_startup_delay)
+            try:
+                for line in stream_logs(job_id):
+                    if stop_log.is_set():
+                        break
+                    logger.info("%s[log] %s", prefix, line)
+            except Exception as exc:
+                logger.debug("%slog tail stopped: %s", prefix, exc)
+
+        threading.Thread(target=_tail, daemon=True, name=f"emblase-logtail-{job_id}").start()
+
+        t0 = time.monotonic()
+        _loop = asyncio.new_event_loop()
+        try:
+            while True:
+                time.sleep(poll_interval)
+                try:
+                    info = _loop.run_until_complete(self.client.get_job(job_id))
+                except Exception as exc:
+                    logger.warning("%sCould not poll job %s: %s", prefix, job_id, exc)
+                    continue
+                elapsed = int(time.monotonic() - t0)
+                logger.info("%s[%4ds] state=%s  node=%s",
+                            prefix, elapsed, info.state, info.node or "(queued)")
+                if on_status:
+                    on_status(info.state, info.node, elapsed)
+                if _SLURM_STATE_MAP.get(info.state) in _TERMINAL_STATES:
+                    logger.info("%sJob %s finished: %s", prefix, job_id, info.state)
+                    break
+        finally:
+            stop_log.set()
+            _loop.close()
 
     # -- internal helpers ----------------------------------------------------
 

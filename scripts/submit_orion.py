@@ -47,7 +47,6 @@ import argparse
 import asyncio
 import sys
 import threading
-import time
 from pathlib import Path
 
 import numpy as np
@@ -77,7 +76,10 @@ echo '=== done ==='
 
 
 def _stream_logs_bg(backend: OrionBackend, job_id: str) -> threading.Event:
-    """Tail *job_id*'s log in a daemon thread. Returns a stop event."""
+    """Tail *job_id*'s log in a daemon thread. Returns a stop event.
+
+    Used only by the ``logs`` subcommand; ``infer`` now calls ``backend.monitor_job``.
+    """
     stop = threading.Event()
 
     def _tail() -> None:
@@ -134,23 +136,12 @@ async def _infer(args: argparse.Namespace) -> None:
         print("(not waiting — use 'status <id>' or 'logs <id>' to check)")
         return
 
-    stop_logs = _stream_logs_bg(backend, job_id)
     print("Polling job state every 10 s — live log lines appear above ...")
-    t0 = time.monotonic()
-    info = None
-    try:
-        while True:
-            await asyncio.sleep(10)
-            async with OrionClient() as client:
-                info = await client.get_job(int(job_id))
-            elapsed = int(time.monotonic() - t0)
-            print(f"  [{elapsed:>4}s] state={info.state}  node={info.node or '(queued)'}")
-            if _SLURM_STATE_MAP.get(info.state) in (JobStatus.completed, JobStatus.failed):
-                break
-    finally:
-        stop_logs.set()
+    await asyncio.to_thread(backend.monitor_job, job_id)
 
-    final = _SLURM_STATE_MAP.get(info.state, JobStatus.failed)
+    final = _SLURM_STATE_MAP.get(
+        (await backend.client.get_job(int(job_id))).state, JobStatus.failed
+    )
     print(f"\nJob {job_id} finished: {final.value}")
     if final != JobStatus.completed:
         print("Job did not complete successfully.")
