@@ -402,68 +402,36 @@ class OrionBackend(ComputeBackend):
         self.path = path or settings.orion_path
         self._jobs: dict[int, dict[str, Any]] = {}
 
-    # -- log streaming -------------------------------------------------------
-
-    @staticmethod
-    def log_path(job_id: int) -> str:
-        return _log_path(job_id)
-
-    @staticmethod
-    def stream_logs(
-        job_id: int,
-        tail_n: int = 50,
-        ssh_host: str | None = None,
-        ssh_user: str | None = None,
-    ) -> Generator[str, None, None]:
-        """Stream the Slurm log for *job_id* via SSH. See module-level ``stream_logs``."""
-        return stream_logs(job_id, tail_n=tail_n, ssh_host=ssh_host, ssh_user=ssh_user)
+    # -- job monitoring (REST API only, no SSH) --------------------------------
 
     def monitor_job(
         self,
         job_id: str | int,
         *,
         poll_interval: float = 10.0,
-        log_startup_delay: float = 2.0,
         log_prefix: str = "",
         on_status: Any = None,
     ) -> None:
-        """Block until *job_id* reaches a terminal state, printing status and streaming logs.
+        """Block until *job_id* reaches a terminal state, logging state after each poll.
 
-        Starts the SSH log tail in a background thread immediately, then polls
-        the Orion API every *poll_interval* seconds and prints the current state
-        and node.  Returns once the job completes or fails.
+        Polls the Orion REST API every *poll_interval* seconds and logs the
+        current state and node.  Returns once the job completes or fails.
+        No SSH connection is made.
 
         Parameters
         ----------
         job_id:
             Slurm job ID (int or str).
         poll_interval:
-            Seconds between Orion API status polls (default 10 s).
-        log_startup_delay:
-            Seconds to wait before connecting the SSH log tail, giving Slurm
-            time to create the log file (default 2 s).
+            Seconds between API polls (default 10 s).
         log_prefix:
             Optional string prepended to every status line (e.g. ``"[run_xyz]"``).
         on_status:
             Optional ``callable(state: str, node: str | None, elapsed_s: int)``
-            invoked after each poll.  Useful for custom formatting.
+            invoked after each poll.
         """
         job_id = int(job_id)
         prefix = f"{log_prefix} " if log_prefix else ""
-        stop_log = threading.Event()
-
-        def _tail() -> None:
-            time.sleep(log_startup_delay)
-            try:
-                for line in stream_logs(job_id):
-                    if stop_log.is_set():
-                        break
-                    logger.info("%s[log] %s", prefix, line)
-            except Exception as exc:
-                logger.debug("%slog tail stopped: %s", prefix, exc)
-
-        threading.Thread(target=_tail, daemon=True, name=f"emblase-logtail-{job_id}").start()
-
         t0 = time.monotonic()
         _loop = asyncio.new_event_loop()
         try:
@@ -483,7 +451,6 @@ class OrionBackend(ComputeBackend):
                     logger.info("%sJob %s finished: %s", prefix, job_id, info.state)
                     break
         finally:
-            stop_log.set()
             _loop.close()
 
     # -- internal helpers ----------------------------------------------------

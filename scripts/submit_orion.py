@@ -46,7 +46,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
-import threading
 from pathlib import Path
 
 import numpy as np
@@ -73,26 +72,6 @@ python3 -c 'import torch; print(f"torch={torch.__version__}, cuda={torch.cuda.is
 nvidia-smi 2>/dev/null || echo 'no GPU'
 echo '=== done ==='
 """
-
-
-def _stream_logs_bg(backend: OrionBackend, job_id: str) -> threading.Event:
-    """Tail *job_id*'s log in a daemon thread. Returns a stop event.
-
-    Used only by the ``logs`` subcommand; ``infer`` now calls ``backend.monitor_job``.
-    """
-    stop = threading.Event()
-
-    def _tail() -> None:
-        try:
-            for line in backend.stream_logs(int(job_id)):
-                if stop.is_set():
-                    break
-                print(f"  [log] {line}")
-        except Exception as exc:
-            print(f"  [log] (stream stopped: {exc})")
-
-    threading.Thread(target=_tail, daemon=True, name=f"emblase-logs-{job_id}").start()
-    return stop
 
 
 async def _infer(args: argparse.Namespace) -> None:
@@ -267,17 +246,16 @@ def main() -> None:
         asyncio.run(_cancel())
 
     elif args.command == "logs":
-        backend = OrionBackend()
-        log_file = backend.log_path(args.job_id)
-        from emblase.compute.orion import _ssh_host, _ssh_user
+        from emblase.compute.orion import _log_path, _ssh_host, _ssh_user, stream_logs  # noqa: E402
         host = args.host or _ssh_host()
         user = args.user or _ssh_user()
+        log_file = _log_path(args.job_id)
         print(f"Streaming {user}@{host}:{log_file}")
         print("(Ctrl+C to stop)\n")
         try:
-            for line in backend.stream_logs(args.job_id, tail_n=args.tail,
-                                            ssh_host=args.host or None,
-                                            ssh_user=args.user or None):
+            for line in stream_logs(args.job_id, tail_n=args.tail,
+                                    ssh_host=args.host or None,
+                                    ssh_user=args.user or None):
                 print(line)
         except KeyboardInterrupt:
             pass
