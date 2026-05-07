@@ -33,12 +33,15 @@ def __getattr__(name: str):
     """Lazily import backend classes on first attribute access."""
     if name in ("LocalBackend",):
         from .local import LocalBackend
+
         return LocalBackend
     if name in ("OrionBackend", "OrionClient", "OrionJob"):
         from . import orion as _orion
+
         return getattr(_orion, name)
     if name in ("NERSCBackend", "NERSCClient", "NERSCJob"):
         from . import nersc as _nersc
+
         return getattr(_nersc, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
@@ -68,11 +71,14 @@ def build_backend(name: str) -> ComputeBackend:
     """Instantiate a compute backend by name (``"orion"``, ``"local"``, ``"nersc"``)."""
     if name == "orion":
         from .orion import OrionBackend
+
         return OrionBackend()
     if name == "local":
         from .local import LocalBackend
+
         return LocalBackend()
     if name == "nersc":
         from .nersc import NERSCBackend
+
         return NERSCBackend()
     sys.exit(f"Unknown backend: {name!r}  (choices: orion, local, nersc)")

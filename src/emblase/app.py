@@ -13,11 +13,14 @@ from .schemas import EvaluateRequest, EvaluateResponse
 def _create_backend() -> ComputeBackend:
     if settings.compute_backend == "orion":
         from .compute.orion import OrionBackend
+
         return OrionBackend()
     if settings.compute_backend == "nersc":
         from .compute.nersc import NERSCBackend
+
         return NERSCBackend()
     from .compute.local import LocalBackend
+
     return LocalBackend()
 
 
