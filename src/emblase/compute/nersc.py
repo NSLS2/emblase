@@ -158,8 +158,11 @@ class NERSCClient:
     # Filesystem helpers
     # ------------------------------------------------------------------
 
-    async def _poll_task(self, task_id: str, timeout: float = 30.0) -> dict[str, Any]:
-        """Poll /task/{task_id} until complete and return the result dict."""
+    async def _poll_task(self, task_id: str, timeout: float = 60.0) -> dict[str, Any]:
+        """Poll /task/{task_id} until complete and return the result dict.
+
+        Raises ``RuntimeError`` if the task fails.
+        """
         import asyncio as _asyncio
         client = await self._ensure_client()
         deadline = _asyncio.get_event_loop().time() + timeout
@@ -168,11 +171,16 @@ class NERSCClient:
             resp.raise_for_status()
             data = resp.json()
             status = data.get("status", "pending")
-            if status not in ("pending", "running"):
-                return data.get("result") or {}
+            if status not in ("pending", "active", "running"):
+                result = data.get("result") or {}
+                if status == "failed" or "error" in result:
+                    raise RuntimeError(
+                        result.get("error") or f"Task {task_id} failed: {result}"
+                    )
+                return result
             if _asyncio.get_event_loop().time() > deadline:
                 raise TimeoutError(f"Task {task_id} did not complete within {timeout}s")
-            await _asyncio.sleep(1.0)
+            await _asyncio.sleep(2.0)
 
     async def read_file_tail(
         self,
