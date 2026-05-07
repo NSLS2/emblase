@@ -1,4 +1,4 @@
-"""Tests for NERSCBackend — script rendering, sbatch construction, and environment injection.
+"""Tests for NERSCBackend — script rendering, job submission, and environment injection.
 
 Mirrors the structure of test_orion_backend.py.  All tests use fake NERSCClient
 implementations so no real API calls are made.
@@ -13,7 +13,6 @@ from emblase.compute.nersc import (
     NERSCBackend,
     NERSCJob,
     _NERSC_STATE_MAP,
-    _build_nersc_script,
 )
 from emblase.compute.orion import (
     _render_inference_script,
@@ -22,73 +21,48 @@ from emblase.compute.orion import (
 
 
 # ---------------------------------------------------------------------------
-# Sbatch script structure
-# ---------------------------------------------------------------------------
-
-
-def test_build_nersc_script_structure():
-    script = _build_nersc_script(
-        working_dir="/pscratch/jobs",
-        script_path="/pscratch/jobs/scripts/123/inference.py",
-        container_image="ghcr.io/nsls2/emblase:latest",
-        job_name="emblase-vit",
-        time_limit="00:30:00",
-        constraint="gpu",
-        account="nslsii",
-    )
-    assert script.startswith("#!/bin/bash")
-    assert "#SBATCH --job-name=emblase-vit" in script
-    assert "#SBATCH --time=00:30:00" in script
-    assert "#SBATCH --constraint=gpu" in script
-    assert "#SBATCH --account=nslsii" in script
-    assert "#SBATCH --output=/pscratch/jobs/slurm-%j.out" in script
-    assert "shifter --image=ghcr.io/nsls2/emblase:latest" in script
-    assert "inference.py" in script
-    assert "module load shifter" in script
-
-
-def test_build_nersc_script_no_account():
-    script = _build_nersc_script(
-        working_dir="/pscratch/jobs",
-        script_path="/pscratch/jobs/scripts/123/inference.py",
-        container_image="ghcr.io/nsls2/emblase:latest",
-    )
-    assert "#SBATCH --account" not in script
-
-
-def test_build_nersc_script_creates_job_dir():
-    script = _build_nersc_script(
-        working_dir="/pscratch/jobs",
-        script_path="/pscratch/jobs/scripts/123/inference.py",
-        container_image="ghcr.io/nsls2/emblase:latest",
-    )
-    assert "mkdir -p" in script
-    assert "JOB_DIR" in script
-
-
-# ---------------------------------------------------------------------------
 # State mapping
 # ---------------------------------------------------------------------------
 
 
-def test_nersc_state_map_covers_slurm_states():
-    for state in ("PENDING", "RUNNING", "COMPLETED", "FAILED", "CANCELLED", "TIMEOUT"):
+def test_nersc_state_map_covers_iri_states():
+    for state in ("new", "queued", "held", "active", "completed", "failed", "canceled"):
         assert state in _NERSC_STATE_MAP, f"Missing state: {state}"
 
 
 def test_nersc_state_map_completed():
-    assert _NERSC_STATE_MAP["COMPLETED"] == JobStatus.completed
     assert _NERSC_STATE_MAP["completed"] == JobStatus.completed
 
 
 def test_nersc_state_map_failed_variants():
-    for state in ("FAILED", "CANCELLED", "TIMEOUT", "NODE_FAIL", "OUT_OF_MEMORY"):
+    for state in ("failed", "canceled"):
         assert _NERSC_STATE_MAP[state] == JobStatus.failed
 
 
 def test_nersc_state_map_pending_variants():
-    for state in ("PENDING", "CONFIGURING", "queued"):
+    for state in ("new", "queued", "held"):
         assert _NERSC_STATE_MAP[state] == JobStatus.pending
+
+
+def test_nersc_state_map_running():
+    assert _NERSC_STATE_MAP["active"] == JobStatus.running
+
+
+# ---------------------------------------------------------------------------
+# _parse_time_limit
+# ---------------------------------------------------------------------------
+
+
+def test_parse_time_limit_hhmmss():
+    assert NERSCBackend._parse_time_limit("01:30:00") == 5400
+
+
+def test_parse_time_limit_mmss():
+    assert NERSCBackend._parse_time_limit("30:00") == 1800
+
+
+def test_parse_time_limit_seconds_only():
+    assert NERSCBackend._parse_time_limit("3600") == 3600
 
 
 # ---------------------------------------------------------------------------
@@ -99,8 +73,8 @@ def test_nersc_state_map_pending_variants():
 class _FakeClient:
     """Minimal fake NERSCClient for unit tests — no real HTTP calls."""
 
-    def __init__(self, task_id="42", state="COMPLETED"):
-        self._task_id = task_id
+    def __init__(self, job_id="42", state="completed"):
+        self._job_id = job_id
         self._state = state
         self.submitted: dict = {}
         self.uploaded: list[tuple[str, str]] = []
@@ -113,23 +87,42 @@ class _FakeClient:
     async def upload(self, remote_path: str, content: str) -> None:
         self.uploaded.append((remote_path, content))
 
-    async def submit_job(self, script: str, working_dir: str,
-                         environment: dict | None = None) -> str:
+    async def submit_job(
+        self,
+        executable: str,
+        arguments: list[str],
+        working_dir: str,
+        container_image: str,
+        name: str = "emblase",
+        account: str = "",
+        time_limit_s: int = 1800,
+        nodes: int = 1,
+        gpus_per_process: int = 1,
+        constraint: str = "gpu",
+        environment: dict | None = None,
+        pre_launch: str = "",
+    ) -> str:
         self.submitted = {
-            "script": script,
+            "executable": executable,
+            "arguments": arguments,
             "working_dir": working_dir,
+            "container_image": container_image,
+            "name": name,
+            "account": account,
+            "time_limit_s": time_limit_s,
+            "constraint": constraint,
             "environment": environment,
         }
-        return self._task_id
+        return self._job_id
 
-    async def get_job(self, task_id: str) -> NERSCJob:
-        return NERSCJob(job_id=task_id, state=self._state)
+    async def get_job(self, job_id: str) -> NERSCJob:
+        return NERSCJob(job_id=job_id, state=self._state)
 
-    async def wait_for_job(self, task_id: str, poll_interval=10.0, timeout=1800.0) -> NERSCJob:
-        return NERSCJob(job_id=task_id, state=self._state)
+    async def wait_for_job(self, job_id: str, poll_interval=15.0, timeout=1800.0) -> NERSCJob:
+        return NERSCJob(job_id=job_id, state=self._state)
 
-    async def cancel_job(self, task_id: str) -> None:
-        self.submitted["cancelled"] = task_id
+    async def cancel_job(self, job_id: str) -> None:
+        self.submitted["cancelled"] = job_id
 
 
 # ---------------------------------------------------------------------------
@@ -139,7 +132,7 @@ class _FakeClient:
 
 @pytest.mark.asyncio
 async def test_nersc_backend_submit_calls_client():
-    client = _FakeClient(task_id="99")
+    client = _FakeClient(job_id="99")
     backend = NERSCBackend(
         client=client,
         working_dir="/pscratch/jobs",
@@ -147,18 +140,20 @@ async def test_nersc_backend_submit_calls_client():
         account="nslsii",
         container_image="ghcr.io/nsls2/emblase:latest",
     )
-    task_id = await backend.submit(model_name="vit")
+    job_id = await backend.submit(model_name="vit")
 
-    assert task_id == "99"
+    assert job_id == "99"
     assert "99" in backend._jobs
     assert backend._jobs["99"]["model_name"] == "vit"
     # Script uploaded before submission
     assert len(client.uploaded) == 1
     _, uploaded_content = client.uploaded[0]
     assert "vit" in uploaded_content
-    # Sbatch script submitted to NERSC contains account and shifter
-    assert "shifter" in client.submitted["script"]
-    assert "#SBATCH --account=nslsii" in client.submitted["script"]
+    # Structured job spec passed to submit_job
+    assert client.submitted["executable"] == "python"
+    assert any("inference.py" in a for a in client.submitted["arguments"])
+    assert client.submitted["container_image"] == "ghcr.io/nsls2/emblase:latest"
+    assert client.submitted["account"] == "nslsii"
 
 
 @pytest.mark.asyncio
@@ -241,6 +236,20 @@ async def test_nersc_backend_submit_injects_mlflow_env(monkeypatch):
     assert env.get("EMBLASE_MODEL_CACHE_DIR") == "/pscratch/cache"
 
 
+@pytest.mark.asyncio
+async def test_nersc_backend_submit_time_limit_converted():
+    """time_limit HH:MM:SS is converted to seconds in the job spec."""
+    client = _FakeClient()
+    backend = NERSCBackend(
+        client=client,
+        working_dir="/pscratch/jobs",
+        models_dir="/pscratch/models",
+        time_limit="00:45:00",
+    )
+    await backend.submit(model_name="vit")
+    assert client.submitted["time_limit_s"] == 2700
+
+
 # ---------------------------------------------------------------------------
 # NERSCBackend.submit_streaming
 # ---------------------------------------------------------------------------
@@ -274,25 +283,25 @@ async def test_nersc_backend_submit_streaming_injects_tiled_env(monkeypatch):
     monkeypatch.setattr(nersc_module.settings, "tiled_api_key", "secret")
     monkeypatch.setattr(nersc_module.settings, "tiled_access_tags", "")
 
-    client = _FakeClient(task_id="77")
+    client = _FakeClient(job_id="77")
     backend = NERSCBackend(
         client=client,
         working_dir="/pscratch/jobs",
         models_dir="/pscratch/models",
     )
-    task_id = await backend.submit_streaming(
+    job_id = await backend.submit_streaming(
         run_path="smi/sandbox/run_xyz",
         output="smi/sandbox/results/run_xyz",
         model_name="vit",
     )
 
-    assert task_id == "77"
+    assert job_id == "77"
     env = client.submitted["environment"]
     assert env.get("EMBLASE_TILED_SERVER_URI") == "https://tiled.example.com"
     assert env.get("EMBLASE_TILED_API_KEY") == "secret"
     # Uploaded script must contain streaming-specific markers
     _, uploaded_content = client.uploaded[0]
-    assert "streaming_inference" in uploaded_content or "_on_new_image_data" in uploaded_content
+    assert "_on_new_image_data" in uploaded_content or "streaming" in uploaded_content
 
 
 @pytest.mark.asyncio
@@ -308,15 +317,15 @@ async def test_nersc_backend_submit_streaming_uses_extended_time_limit(monkeypat
         client=client,
         working_dir="/pscratch/jobs",
         models_dir="/pscratch/models",
-        time_limit="00:30:00",  # default batch limit; streaming should override
+        time_limit="00:30:00",  # default batch limit; streaming should use 2h
     )
     await backend.submit_streaming(
         run_path="smi/sandbox/run_xyz",
         output="smi/sandbox/results/run_xyz",
         model_name="vit",
     )
-    # Streaming hard-codes 2-hour limit in the sbatch script
-    assert "02:00:00" in client.submitted["script"]
+    # Streaming defaults to 2-hour limit → 7200 seconds
+    assert client.submitted["time_limit_s"] == 7200
 
 
 # ---------------------------------------------------------------------------
@@ -326,7 +335,7 @@ async def test_nersc_backend_submit_streaming_uses_extended_time_limit(monkeypat
 
 @pytest.mark.asyncio
 async def test_nersc_backend_status_completed():
-    client = _FakeClient(task_id="1", state="COMPLETED")
+    client = _FakeClient(job_id="1", state="completed")
     backend = NERSCBackend(client=client, working_dir="/j", models_dir="/m")
     st = await backend.status("1")
     assert st == JobStatus.completed
@@ -334,7 +343,7 @@ async def test_nersc_backend_status_completed():
 
 @pytest.mark.asyncio
 async def test_nersc_backend_status_failed():
-    client = _FakeClient(task_id="2", state="FAILED")
+    client = _FakeClient(job_id="2", state="failed")
     backend = NERSCBackend(client=client, working_dir="/j", models_dir="/m")
     st = await backend.status("2")
     assert st == JobStatus.failed
@@ -342,7 +351,7 @@ async def test_nersc_backend_status_failed():
 
 @pytest.mark.asyncio
 async def test_nersc_backend_status_pending():
-    client = _FakeClient(task_id="3", state="PENDING")
+    client = _FakeClient(job_id="3", state="queued")
     backend = NERSCBackend(client=client, working_dir="/j", models_dir="/m")
     st = await backend.status("3")
     assert st == JobStatus.pending
@@ -350,7 +359,7 @@ async def test_nersc_backend_status_pending():
 
 @pytest.mark.asyncio
 async def test_nersc_backend_wait_returns_completed():
-    client = _FakeClient(task_id="4", state="COMPLETED")
+    client = _FakeClient(job_id="4", state="completed")
     backend = NERSCBackend(client=client, working_dir="/j", models_dir="/m")
     st = await backend.wait("4", poll_interval=0, timeout=10)
     assert st == JobStatus.completed
@@ -358,7 +367,7 @@ async def test_nersc_backend_wait_returns_completed():
 
 @pytest.mark.asyncio
 async def test_nersc_backend_wait_returns_failed():
-    client = _FakeClient(task_id="5", state="FAILED")
+    client = _FakeClient(job_id="5", state="failed")
     backend = NERSCBackend(client=client, working_dir="/j", models_dir="/m")
     st = await backend.wait("5", poll_interval=0, timeout=10)
     assert st == JobStatus.failed
@@ -366,7 +375,7 @@ async def test_nersc_backend_wait_returns_failed():
 
 @pytest.mark.asyncio
 async def test_nersc_backend_result_no_metadata():
-    client = _FakeClient(task_id="6", state="COMPLETED")
+    client = _FakeClient(job_id="6", state="completed")
     backend = NERSCBackend(client=client, working_dir="/j", models_dir="/m")
     result = await backend.result("6")
     assert result.status == JobStatus.failed
@@ -381,7 +390,7 @@ async def test_nersc_backend_result_with_output(monkeypatch):
     monkeypatch.setattr(nersc_module.settings, "tiled_api_key", "")
     monkeypatch.setattr(nersc_module.settings, "tiled_access_tags", "")
 
-    client = _FakeClient(task_id="7", state="COMPLETED")
+    client = _FakeClient(job_id="7", state="completed")
     backend = NERSCBackend(client=client, working_dir="/j", models_dir="/m")
     await backend.submit(model_name="vit", output="results/scan1")
 
@@ -392,7 +401,7 @@ async def test_nersc_backend_result_with_output(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_nersc_backend_cancel():
-    client = _FakeClient(task_id="8")
+    client = _FakeClient(job_id="8")
     backend = NERSCBackend(client=client, working_dir="/j", models_dir="/m")
     await backend.cancel("8")
     assert client.submitted.get("cancelled") == "8"
@@ -461,16 +470,14 @@ def test_render_inference_script_image_key_default():
 
 def test_monitor_job_polls_until_terminal():
     """monitor_job returns once the job reaches a terminal state."""
-    import asyncio
-
-    states = ["PENDING", "RUNNING", "COMPLETED"]
+    states = ["queued", "active", "completed"]
     calls: list[str] = []
 
     class _SequentialClient(_FakeClient):
-        async def get_job(self, task_id: str) -> NERSCJob:
-            state = states.pop(0) if states else "COMPLETED"
+        async def get_job(self, job_id: str) -> NERSCJob:
+            state = states.pop(0) if states else "completed"
             calls.append(state)
-            return NERSCJob(job_id=task_id, state=state)
+            return NERSCJob(job_id=job_id, state=state)
 
     backend = NERSCBackend(
         client=_SequentialClient(),
@@ -479,7 +486,7 @@ def test_monitor_job_polls_until_terminal():
     )
     backend.monitor_job("42", poll_interval=0.0)
 
-    assert calls[-1] == "COMPLETED"
+    assert calls[-1] == "completed"
     assert len(calls) == 3
 
 
@@ -488,8 +495,8 @@ def test_monitor_job_calls_on_status():
     status_log: list[tuple] = []
 
     class _TerminalClient(_FakeClient):
-        async def get_job(self, task_id: str) -> NERSCJob:
-            return NERSCJob(job_id=task_id, state="COMPLETED")
+        async def get_job(self, job_id: str) -> NERSCJob:
+            return NERSCJob(job_id=job_id, state="completed")
 
     backend = NERSCBackend(
         client=_TerminalClient(),
@@ -502,7 +509,7 @@ def test_monitor_job_calls_on_status():
 
     backend.monitor_job("42", poll_interval=0.0, on_status=_on_status)
     assert len(status_log) == 1
-    assert status_log[0][0] == "COMPLETED"
+    assert status_log[0][0] == "completed"
     assert status_log[0][1] is None  # NERSC has no node field
 
 

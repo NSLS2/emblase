@@ -3,14 +3,22 @@
 Auth:
     A Globus bearer token scoped to the IRI API is required.  Set
     ``EMBLASE_NERSC_API_TOKEN`` in your ``.env`` file.  The token must have
-    scope ``https://auth.globus.org/scopes/ed3e577d-f7f3-4639-b96e-ff5a8445d699/iri_api``.
+    the ``iri_api`` Globus scope — obtain it from
+    https://iris.nersc.gov → Superfacility API → Get API Token.
+
+API:
+    Base URL: ``https://api.iri.nersc.gov/api/v1``
+    Spec:     https://api.iri.nersc.gov/openapi.json  (Swagger UI at /docs)
 
 Job delivery:
     The rendered Python inference script is uploaded to
-    ``{nersc_working_dir}/job_{task_id}/inference.py`` via the IRI filesystem
-    upload endpoint, then executed inside a Shifter container::
+    ``{nersc_working_dir}/scripts/<ts>/inference.py`` via the IRI filesystem
+    upload endpoint.  A structured ``JobSpec`` is then submitted which runs
+    the script inside a container::
 
-        shifter --image=<container_image> python /path/to/inference.py
+        container: {image: <container_image>}
+        executable: python
+        arguments: [/path/to/inference.py]
 
 Resource discovery:
     Call ``await NERSCClient.discover_resources()`` to list available resource
@@ -21,47 +29,35 @@ Resource discovery:
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import time
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 import httpx
-import numpy as np
 
 from ..config import settings
 from .base import ComputeBackend, JobResult, JobStatus
 from .orion import (
-    _projector_mode_and_name,
     _render_inference_script,
     _render_streaming_inference_script,
 )
 
-_IRI_BASE = "https://api.nersc.gov/api/v1.2"
+_IRI_BASE = "https://api.iri.nersc.gov/api/v1"
 logger = logging.getLogger(__name__)
 
-_TERMINAL_STATES = {JobStatus.completed, JobStatus.failed}
-
+# IRI JobState enum values → our JobStatus
 _NERSC_STATE_MAP: dict[str, JobStatus] = {
-    # SLURM states forwarded by IRI
-    "PENDING": JobStatus.pending,
-    "CONFIGURING": JobStatus.pending,
-    "RUNNING": JobStatus.running,
-    "COMPLETING": JobStatus.running,
-    "COMPLETED": JobStatus.completed,
-    "FAILED": JobStatus.failed,
-    "CANCELLED": JobStatus.failed,
-    "TIMEOUT": JobStatus.failed,
-    "NODE_FAIL": JobStatus.failed,
-    "OUT_OF_MEMORY": JobStatus.failed,
-    # IRI wrapper states
-    "queued": JobStatus.pending,
-    "running": JobStatus.running,
+    "new":       JobStatus.pending,
+    "queued":    JobStatus.pending,
+    "held":      JobStatus.pending,
+    "active":    JobStatus.running,
     "completed": JobStatus.completed,
-    "failed": JobStatus.failed,
+    "failed":    JobStatus.failed,
+    "canceled":  JobStatus.failed,
 }
+
+_TERMINAL_STATES = {JobStatus.completed, JobStatus.failed}
 
 
 @dataclass
@@ -74,14 +70,14 @@ class NERSCJob:
 
 
 class NERSCClient:
-    """Async HTTP client for the NERSC IRI REST API.
+    """Async HTTP client for the NERSC IRI REST API (api.iri.nersc.gov/api/v1).
 
     Usage::
 
         async with NERSCClient() as client:
             resources = await client.discover_resources()
-            task_id = await client.submit_job(script="#!/bin/bash\\nhostname")
-            info = await client.get_job(task_id)
+            job_id = await client.submit_job(...)
+            info = await client.get_job(job_id)
     """
 
     def __init__(
@@ -115,7 +111,6 @@ class NERSCClient:
                 timeout=60.0,
                 headers={
                     "Authorization": f"Bearer {self.api_token}",
-                    "Content-Type": "application/json",
                     "Accept": "application/json",
                 },
             )
@@ -126,14 +121,14 @@ class NERSCClient:
     # ------------------------------------------------------------------
 
     async def discover_resources(self) -> list[dict[str, Any]]:
-        """Return the list of available compute resources (IDs, names, etc.)."""
+        """Return the list of available compute resources."""
         client = await self._ensure_client()
-        resp = await client.get(f"{self.base_url}/status")
+        resp = await client.get(f"{self.base_url}/status/resources")
         resp.raise_for_status()
         data = resp.json()
-        # IRI v1.2 returns a list under the top-level key, or the list itself
         if isinstance(data, list):
             return data
+        # paginated response has items under a key
         return data.get("items", [data])
 
     # ------------------------------------------------------------------
@@ -141,22 +136,23 @@ class NERSCClient:
     # ------------------------------------------------------------------
 
     async def mkdir(self, remote_path: str) -> None:
-        """Create a directory on the NERSC filesystem (no-op if it exists)."""
+        """Create a directory on the NERSC filesystem (creates parents too)."""
         client = await self._ensure_client()
-        resp = await client.put(
-            f"{self.base_url}/utilities/command/{self.resource_id}",
-            json={"command": f"mkdir -p {remote_path}"},
+        resp = await client.post(
+            f"{self.base_url}/filesystem/mkdir/{self.resource_id}",
+            json={"path": remote_path, "parent": True},
         )
         resp.raise_for_status()
 
     async def upload(self, remote_path: str, content: str) -> None:
-        """Upload a text file to *remote_path* on the NERSC filesystem.
+        """Upload a text file to *remote_path* on the NERSC filesystem (max 5 MB).
 
-        Uses the IRI ``/utilities/upload`` endpoint (max 5 MB).  The
-        containing directory must already exist (call ``mkdir`` first).
+        The IRI upload endpoint takes the destination path as a query parameter
+        and the file content as a ``multipart/form-data`` ``file`` field.
         """
         client = await self._ensure_client()
-        # IRI upload is a multipart form — we need to send raw bytes.
+        # Build a separate client without Content-Type: application/json so that
+        # httpx can set the correct multipart boundary automatically.
         upload_client = httpx.AsyncClient(
             timeout=60.0,
             headers={
@@ -166,8 +162,8 @@ class NERSCClient:
         )
         async with upload_client:
             resp = await upload_client.post(
-                f"{self.base_url}/utilities/upload/{self.resource_id}",
-                data={"target_path": remote_path},
+                f"{self.base_url}/filesystem/upload/{self.resource_id}",
+                params={"path": remote_path},
                 files={"file": ("inference.py", content.encode(), "text/plain")},
             )
         resp.raise_for_status()
@@ -178,145 +174,108 @@ class NERSCClient:
 
     async def submit_job(
         self,
-        script: str,
+        executable: str,
+        arguments: list[str],
         working_dir: str,
+        container_image: str,
+        name: str = "emblase",
+        account: str = "",
+        time_limit_s: int = 1800,
+        nodes: int = 1,
+        gpus_per_process: int = 1,
+        constraint: str = "gpu",
         environment: dict[str, str] | None = None,
+        pre_launch: str = "",
     ) -> str:
-        """Submit a job to NERSC via the IRI compute API.  Returns the task ID.
-
-        The batch script must contain all ``#SBATCH`` directives (constraint,
-        account, time limit, nodes).  The IRI API honours the embedded
-        directives when ``isPath`` is ``False``.
-        """
+        """Submit a job via the IRI structured JobSpec.  Returns the job ID."""
         client = await self._ensure_client()
+
+        attributes: dict[str, Any] = {
+            "duration": time_limit_s,
+            "custom_attributes": {"constraint": constraint},
+        }
+        if account:
+            attributes["account"] = account
+
+        resources: dict[str, Any] = {
+            "node_count": nodes,
+            "gpu_cores_per_process": gpus_per_process,
+        }
+
         payload: dict[str, Any] = {
-            "script": script,
-            "isPath": False,
+            "name": name,
+            "executable": executable,
+            "arguments": arguments,
+            "directory": working_dir,
+            "container": {"image": container_image},
+            "resources": resources,
+            "attributes": attributes,
         }
         if environment:
-            payload["env_vars"] = environment
+            payload["environment"] = environment
+        if pre_launch:
+            payload["pre_launch"] = pre_launch
 
         resp = await client.post(
-            f"{self.base_url}/compute/jobs/{self.resource_id}",
+            f"{self.base_url}/compute/job/{self.resource_id}",
             json=payload,
         )
         resp.raise_for_status()
         data = resp.json()
-        # IRI wraps the Slurm job_id in a task; return the task_id for polling.
-        return str(data.get("task_id", data.get("jobid", "")))
+        return str(data["id"])
 
-    async def get_task(self, task_id: str) -> dict[str, Any]:
-        """Return the raw task dict (task status + optional Slurm job info)."""
+    async def get_job(self, job_id: str) -> NERSCJob:
+        """Return a ``NERSCJob`` for *job_id*."""
         client = await self._ensure_client()
-        resp = await client.get(f"{self.base_url}/tasks/{task_id}")
+        resp = await client.get(
+            f"{self.base_url}/compute/status/{self.resource_id}/{job_id}"
+        )
         resp.raise_for_status()
-        return resp.json()
+        data = resp.json()
+        state = ""
+        status_obj = data.get("status")
+        if isinstance(status_obj, dict):
+            state = status_obj.get("state", "")
+        return NERSCJob(job_id=job_id, state=state, raw=data)
 
-    async def get_job(self, task_id: str) -> NERSCJob:
-        """Return a ``NERSCJob`` for the given task ID."""
-        data = await self.get_task(task_id)
-        # IRI task status is under "status"; Slurm state may be in "result"
-        status_raw = data.get("status", "")
-        result = data.get("result") or {}
-        if isinstance(result, str):
-            try:
-                result = json.loads(result)
-            except Exception:
-                result = {}
-        slurm_state = ""
-        if isinstance(result, dict):
-            slurm_state = result.get("status", result.get("state", ""))
-        # Prefer the Slurm state if available and mapped
-        state = slurm_state if slurm_state in _NERSC_STATE_MAP else status_raw
-        return NERSCJob(job_id=task_id, state=state, raw=data)
-
-    async def cancel_job(self, task_id: str) -> None:
-        """Cancel a running job (deletes the Slurm job)."""
+    async def cancel_job(self, job_id: str) -> None:
+        """Cancel a running job."""
         client = await self._ensure_client()
-        task_data = await self.get_task(task_id)
-        result = task_data.get("result") or {}
-        if isinstance(result, str):
-            try:
-                result = json.loads(result)
-            except Exception:
-                result = {}
-        slurm_id = result.get("jobid", result.get("job_id", "")) if isinstance(result, dict) else ""
-        if slurm_id:
-            resp = await client.delete(
-                f"{self.base_url}/compute/jobs/{self.resource_id}/{slurm_id}"
-            )
-            resp.raise_for_status()
+        resp = await client.delete(
+            f"{self.base_url}/compute/cancel/{self.resource_id}/{job_id}"
+        )
+        resp.raise_for_status()
 
     async def wait_for_job(
         self,
-        task_id: str,
-        poll_interval: float = 10.0,
+        job_id: str,
+        poll_interval: float = 15.0,
         timeout: float = 1800.0,
     ) -> NERSCJob:
         """Poll until the job reaches a terminal state."""
         deadline = time.monotonic() + timeout
         info: NERSCJob | None = None
         while time.monotonic() < deadline:
-            info = await self.get_job(task_id)
-            if _NERSC_STATE_MAP.get(info.state) in (JobStatus.completed, JobStatus.failed):
+            info = await self.get_job(job_id)
+            if _NERSC_STATE_MAP.get(info.state) in _TERMINAL_STATES:
                 return info
             await asyncio.sleep(poll_interval)
         raise TimeoutError(
-            f"NERSC job {task_id} did not complete within {timeout}s "
+            f"NERSC job {job_id} did not complete within {timeout}s "
             f"(last state: {info.state if info else 'unknown'})"
         )
 
 
-def _build_nersc_script(
-    working_dir: str,
-    script_path: str,
-    container_image: str,
-    job_name: str = "emblase",
-    time_limit: str = "00:30:00",
-    constraint: str = "gpu",
-    account: str = "",
-    nodes: int = 1,
-    ntasks: int = 1,
-) -> str:
-    """Build the NERSC Slurm batch script that runs the inference script in Shifter.
-
-    The rendered Python inference/streaming script is already uploaded to
-    *script_path* on the NERSC filesystem before this is submitted.
-    """
-    account_line = f"#SBATCH --account={account}" if account else ""
-    return f"""\
-#!/bin/bash
-#SBATCH --job-name={job_name}
-#SBATCH --time={time_limit}
-#SBATCH --nodes={nodes}
-#SBATCH --ntasks-per-node={ntasks}
-#SBATCH --constraint={constraint}
-#SBATCH --gpus=1
-#SBATCH --output={working_dir}/slurm-%j.out
-#SBATCH --error={working_dir}/slurm-%j.out
-{account_line}
-
-set -euo pipefail
-set -x
-
-JOB_DIR={working_dir}/job_${{SLURM_JOB_ID}}
-export JOB_DIR
-mkdir -p "$JOB_DIR"
-
-module load shifter
-
-shifter --image={container_image} python {script_path}
-"""
-
-
 class NERSCBackend(ComputeBackend):
-    """Submit inference jobs to NERSC (Perlmutter) via the IRI REST API + Shifter.
+    """Submit inference jobs to NERSC (Perlmutter) via the IRI REST API.
 
     The rendered Python inference script is uploaded to
     ``{working_dir}/scripts/<timestamp>/inference.py`` on the NERSC
-    filesystem, then executed inside a Shifter container with the emblase
-    image.  All secrets (Tiled URI, MLflow URI, API keys) are injected as
-    environment variables into the Slurm job.
+    filesystem via the IRI upload endpoint, then submitted as a structured
+    ``JobSpec`` that runs the script inside a container image.
+
+    All secrets (Tiled URI, MLflow URI, API keys) are injected as
+    ``environment`` in the job spec.
     """
 
     def __init__(
@@ -337,6 +296,18 @@ class NERSCBackend(ComputeBackend):
         self.time_limit = time_limit or settings.nersc_time_limit
         self.constraint = constraint or settings.nersc_constraint
         self._jobs: dict[str, dict[str, Any]] = {}
+
+    @staticmethod
+    def _parse_time_limit(time_limit: str) -> int:
+        """Convert ``HH:MM:SS`` time limit string to seconds."""
+        parts = time_limit.split(":")
+        if len(parts) == 3:
+            h, m, s = int(parts[0]), int(parts[1]), int(parts[2])
+        elif len(parts) == 2:
+            h, m, s = 0, int(parts[0]), int(parts[1])
+        else:
+            return int(parts[0])
+        return h * 3600 + m * 60 + s
 
     def _build_environment(self, *, require_tiled: bool = False) -> dict[str, str]:
         """Build the environment variable dict for a NERSC job."""
@@ -385,11 +356,6 @@ class NERSCBackend(ComputeBackend):
     ) -> str:
         """Submit a batch inference job to NERSC.
 
-        Image source — at least one of ``run_path``, ``inputs``, or neither
-        (dummy images generated on the node) must be provided.  Unlike the
-        Orion backend, direct numpy array upload is not supported — use Tiled
-        or write a .npy to ``$PSCRATCH`` and pass via ``run_path``.
-
         See :meth:`OrionBackend.submit` for parameter documentation.
         """
         py_script = _render_inference_script(
@@ -408,29 +374,25 @@ class NERSCBackend(ComputeBackend):
         )
 
         script_path = await self._upload_script(py_script, model_name)
-        sbatch = _build_nersc_script(
-            working_dir=self.working_dir,
-            script_path=script_path,
-            container_image=self.container_image,
-            job_name=f"emblase-{model_name}",
-            time_limit=self.time_limit,
-            constraint=self.constraint,
-            account=self.account,
-        )
-
         environment = self._build_environment(require_tiled=bool(run_path or inputs or output))
-        task_id = await self.client.submit_job(
-            script=sbatch,
+        job_id = await self.client.submit_job(
+            executable="python",
+            arguments=[script_path],
             working_dir=self.working_dir,
+            container_image=self.container_image,
+            name=f"emblase-{model_name}",
+            account=self.account,
+            time_limit_s=self._parse_time_limit(self.time_limit),
+            constraint=self.constraint,
             environment=environment,
         )
 
-        self._jobs[task_id] = {
+        self._jobs[job_id] = {
             "model_name": model_name,
             "output": output,
             "script_path": script_path,
         }
-        return task_id
+        return job_id
 
     async def submit_streaming(
         self,
@@ -448,7 +410,7 @@ class NERSCBackend(ComputeBackend):
         time_limit: str | None = None,
         **kwargs: Any,
     ) -> str:
-        """Submit a streaming inference job to NERSC (full parity with Orion).
+        """Submit a streaming inference job to NERSC.
 
         See :meth:`OrionBackend.submit_streaming` for parameter documentation.
         """
@@ -468,29 +430,26 @@ class NERSCBackend(ComputeBackend):
         )
 
         script_path = await self._upload_script(py_script, f"stream-{model_name}")
-        sbatch = _build_nersc_script(
-            working_dir=self.working_dir,
-            script_path=script_path,
-            container_image=self.container_image,
-            job_name=f"emblase-stream-{model_name}",
-            time_limit=time_limit or "02:00:00",
-            constraint=self.constraint,
-            account=self.account,
-        )
-
         environment = self._build_environment(require_tiled=True)
-        task_id = await self.client.submit_job(
-            script=sbatch,
+        effective_limit = time_limit or "02:00:00"
+        job_id = await self.client.submit_job(
+            executable="python",
+            arguments=[script_path],
             working_dir=self.working_dir,
+            container_image=self.container_image,
+            name=f"emblase-stream-{model_name}",
+            account=self.account,
+            time_limit_s=self._parse_time_limit(effective_limit),
+            constraint=self.constraint,
             environment=environment,
         )
 
-        self._jobs[task_id] = {
+        self._jobs[job_id] = {
             "model_name": model_name,
             "output": output,
             "script_path": script_path,
         }
-        return task_id
+        return job_id
 
     async def status(self, job_id: str) -> JobStatus:
         info = await self.client.get_job(job_id)
@@ -519,7 +478,7 @@ class NERSCBackend(ComputeBackend):
     async def wait(
         self,
         job_id: str,
-        poll_interval: float = 10.0,
+        poll_interval: float = 15.0,
         timeout: float = 1800.0,
     ) -> JobStatus:
         """Poll until the job reaches a terminal state. Returns final JobStatus."""
@@ -539,18 +498,17 @@ class NERSCBackend(ComputeBackend):
     ) -> None:
         """Block until *job_id* reaches a terminal state, logging state after each poll.
 
-        Polls the NERSC IRI REST API every *poll_interval* seconds and logs the
-        current state.  Returns once the job completes or fails.  No SSH used.
+        Polls the NERSC IRI REST API every *poll_interval* seconds.  Returns
+        once the job completes or fails.  No SSH used.
 
         Parameters
         ----------
         job_id:
-            NERSC IRI task ID (string).
+            NERSC IRI job ID (string returned by ``submit()``).
         poll_interval:
-            Seconds between API polls (default 15 s — IRI tasks are slower to
-            transition than Slurm-direct polls).
+            Seconds between API polls (default 15 s).
         log_prefix:
-            Optional string prepended to every status line (e.g. ``"[run_xyz]"``).
+            Optional string prepended to every status line.
         on_status:
             Optional ``callable(state: str, node: None, elapsed_s: int)``
             invoked after each poll.
