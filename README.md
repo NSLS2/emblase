@@ -78,29 +78,31 @@ ssh orion-staging.nsls2.bnl.gov \
 ## Streaming Pipeline
 
 The pipeline watches a Tiled container for new BlueskyRuns and submits one
-Orion (Slurm) job per run to encode frames and write embeddings incrementally
-as data arrives.
+compute job per run to encode frames and write embeddings incrementally as data
+arrives.  The backend is selected with `--backend` (default: `orion`).
 
 > **Order is critical.** Start the watcher *before* data arrives. The watcher
 > fires on the `child_created` WebSocket event when a run container is first
-> created. If the run is already complete before the Orion job starts, WS events
-> are not replayed and the job will hang forever.
+> created. If the run is already complete before the compute job starts, WS
+> events are not replayed and the job will hang forever.
 
 **Terminal 1 — start the watcher:**
 
 ```bash
-pixi run python scripts/stream_pipeline.py \
+pixi run python scripts/start_watcher.py \
   --inputs     smi/sandbox/confab26_demo/inputs_copy \
   --output     smi/sandbox/confab26_demo/results \
+  --backend    orion \
   --model      bnl-nsls2-smi-vit \
-  --batch-size 5 \
+  --image-key  pil900KW_image \
+  --batch-size 1 \
   --thumb-mode logroi \
   --param      temperature:primary.LinkamThermal_temperature_current:float:°C \
   --param      piezo_x:primary.piezo_x:float:μm \
   --no-replay
 ```
 
-Wait until `Watching … for new runs` appears before proceeding.
+Wait until `Press Ctrl+C to stop` appears before proceeding.
 
 **Terminal 2 — simulate acquisition (after watcher is ready):**
 
@@ -119,9 +121,17 @@ watcher), then writes frames one at a time. A Unix timestamp is appended to
 env + model load), well before the copy finishes
 (`0.5 s/frame × 288 frames ≈ 144 s`).
 
+### `--backend` options
+
+| Value | Description |
+|---|---|
+| `orion` (default) | Submits a Slurm job via the Orion REST API. Requires `EMBLASE_ORION_API_KEY`. |
+| `local` | Runs inference in-process. Useful for development; no HPC account needed. |
+| `nersc` | Submits to NERSC Perlmutter via the IRI API + Shifter. Requires `EMBLASE_NERSC_API_TOKEN`. |
+
 ### Batch vs. streaming
 
-| | Batch (`submit_orion.py infer`) | Streaming (`stream_pipeline.py`) |
+| | Batch (`submit_orion.py infer`) | Streaming (`start_watcher.py`) |
 |---|---|---|
 | **When to use** | Complete runs, model iteration | Live acquisition |
 | **Params** | ✓ (`--param`) | ✓ (`--param`) |
@@ -286,10 +296,11 @@ src/emblase/
     ├── inference.py.tmpl           # batch inference node script (params + projector)
     └── streaming_inference.py.tmpl # streaming inference node script (params + projector)
 scripts/
-├── stream_pipeline.py      # CLI: watch inputs_copy → submit streaming jobs
+├── start_watcher.py        # CLI: watch inputs_copy → submit streaming jobs (--backend orion/local/nersc)
 ├── simulate_acquisition.py # CLI: copy a run into inputs_copy frame-by-frame
 ├── simulate_results.py     # CLI/lib: replay a LSE container into a local Tiled (WebUI dev)
-├── submit_orion.py         # CLI: submit batch jobs (infer / status / cancel)
+├── submit_orion.py         # CLI: submit batch jobs to Orion (infer / status / cancel)
+├── submit_nersc.py         # CLI: submit batch/streaming jobs to NERSC (infer / stream / status / cancel / resources)
 ├── compute_projector.py    # post-process: apply projector approximator → write projections
 ├── train_projector.py      # fit UMAP + train MLP projector approximator on existing embeddings
 └── train_classifier.py     # fit clustering → MLP classifier on existing embeddings

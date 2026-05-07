@@ -25,12 +25,12 @@ def test_render_inference_script_substitutes_all_placeholders():
     )
     assert "/models" in script
     assert '"vae"' in script
-    assert 'inputs         = []' in script
-    assert 'output         = ""' in script
+    assert 'inputs          = []' in script
+    assert 'output          = ""' in script
     assert 'os.environ["JOB_DIR"]' in script
-    assert 'param_specs    = ' in script
-    assert 'projector_mode = ' in script
-    assert 'projector_name = ' in script
+    assert 'param_specs     = ' in script
+    assert 'projector_mode  = ' in script
+    assert 'projector_name  = ' in script
 
 
 def test_render_inference_script_with_output():
@@ -275,14 +275,14 @@ def test_render_streaming_inference_script_substitutes_all_placeholders():
         image_key="pil900KW_image",
         ws_max_size=8 * 1024 * 1024,
     )
-    assert 'model_name     = "noop"' in script
-    assert 'models_dir = "/models"' in script
-    assert 'run_path       = "smi/sandbox/run_xyz"' in script
-    assert 'output         = "smi/sandbox/results/run_xyz"' in script
-    assert "batch_size     = 4" in script
-    assert 'thumb_mode     = "logroi"' in script
-    assert 'image_key      = "pil900KW_image"' in script
-    assert f"ws_max_size    = {8 * 1024 * 1024}" in script
+    assert 'model_name      = "noop"' in script
+    assert 'models_dir      = "/models"' in script
+    assert 'run_path        = "smi/sandbox/run_xyz"' in script
+    assert 'output          = "smi/sandbox/results/run_xyz"' in script
+    assert "batch_size      = 4" in script
+    assert 'thumb_mode      = "logroi"' in script
+    assert 'image_key       = "pil900KW_image"' in script
+    assert f"ws_max_size     = {8 * 1024 * 1024}" in script
 
 
 def test_render_streaming_inference_script_contains_valid_python():

@@ -166,3 +166,42 @@ def test_copy_embedding_raises_on_wrong_type():
     """Passing a non-LatentSpaceEmbedding as src raises TypeError."""
     with pytest.raises(TypeError, match="LatentSpaceEmbedding"):
         copy_embedding(MagicMock(), MagicMock())
+
+
+@patch("emblase.tiled.client.create_embedding_container")
+def test_copy_embedding_pandas_na_in_slice_and_label(mock_create):
+    """pd.NA values in 'slice' and 'label' columns must not raise ArrowTypeError.
+
+    Tiled returns nullable-string columns where missing values are pd.NA, not
+    Python None.  PyArrow rejects pd.NA for string fields → the copy must
+    normalise these to None before building the Arrow table.
+    """
+    n = 3
+    src, embeddings, thumbnails, projections = _make_src(n=n, dim=4)
+
+    # Patch the _index table to include pd.NA in slice and label
+    df = src.base["_index"].read()
+    df = df.copy()
+    df["slice"] = pd.array([pd.NA, "1", pd.NA], dtype=pd.StringDtype())
+    df["label"] = pd.array([pd.NA, pd.NA, pd.NA], dtype=pd.StringDtype())
+    src.base.__getitem__ = MagicMock(return_value=MagicMock(read=lambda: df))
+
+    captured = []
+
+    def capture_append(emb, thu, **kwargs):
+        captured.append(kwargs)
+        return len(captured)
+
+    dst = MagicMock()
+    dst.append = MagicMock(side_effect=capture_append)
+    mock_create.return_value = dst
+
+    # Should not raise ArrowTypeError
+    copy_embedding(src, MagicMock(), batch_size=n)
+
+    assert dst.append.call_count == 1
+    call = captured[0]
+    # pd.NA slice values must become None
+    assert call["slices"] == [None, "1", None]
+    # All-null label column → labels=None passed to append
+    assert call["labels"] is None

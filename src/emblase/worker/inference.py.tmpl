@@ -5,30 +5,24 @@ Filled by _render_inference_script():
     {model_name}        — short name ("vae", "vit") or MLflow registry name
     {batch_size}        — number of images per encode call (default 1)
     {run_path}          — Tiled path to a BlueskyRun container; when non-empty the
-                          image array is read as run_path/primary/<image_key> and
-                          param arrays are sliced from the same primary stream.
+                          image array is read as run_path/<image_stream>/<image_array_key>
+                          and param arrays are sliced from the same stream.
                           Mutually exclusive with inputs.
-    {image_key}         — array key within primary stream (default "pil900KW_image")
+    {image_key}         — dotted key of the image array, e.g. "primary.pil900KW_image"
     {inputs}            — repr of list[str | tuple[str,str]] of Tiled (path[, slice])
                           entries; used when run_path is empty (legacy raw-entry mode).
     {output}            — Tiled container path to write embeddings (empty → output.npy)
     {mlflow_version}    — MLflow model version, or "" for latest
     {thumb_mode}        — thumbnail mode ("default" or "logroi")
     {param_specs_json}  — JSON dict mapping param name → ParamSpec
-                          (source must be "primary.<array_key>")
     {projector_mode}    — one of: "name" | "scratch" | "false"
     {projector_name}    — projector model name when projector_mode=="name", else ""
     {classifier_name}   — classifier model name, or "" to skip classification
 
 Projector behaviour:
-    projector_mode="name"    — resolve saved approximator: check models_dir/<projector_name>,
-                               then fall back to MLflow.  Apply per-batch after encoding.
-    projector_mode="scratch" — fit a fresh UMAP (umap-learn) over all embeddings at the end;
-                               projections written as a second pass via write_output.
-    projector_mode="false"   — skip entirely; write NaN projections.
-
-job_dir is read from the JOB_DIR environment variable (set by the sbatch script
-to working_dir/job_$SLURM_JOB_ID), so the folder name always matches slurm-<id>.out.
+    projector_mode="name"    — resolve saved approximator; apply after encoding.
+    projector_mode="scratch" — fit a fresh UMAP over all embeddings at the end.
+    projector_mode="false"   — skip; write NaN projections.
 """
 
 import json
@@ -49,50 +43,50 @@ logging.basicConfig(
 )
 log = logging.getLogger("emblase.inference")
 
-# --- job parameters (substituted by _render_inference_script) ---
-job_dir        = os.environ["JOB_DIR"]
-model_name     = "{model_name}"
-batch_size     = {batch_size}
-run_path       = "{run_path}"
-image_key      = "{image_key}"
-inputs         = {inputs}
-output         = "{output}"
-mlflow_version = "{mlflow_version}" or None
-thumb_mode     = "{thumb_mode}"
-param_specs    = json.loads('{param_specs_json}')
-projector_mode = "{projector_mode}"   # "name" | "scratch" | "false"
-projector_name = "{projector_name}"   # non-empty only when projector_mode=="name"
-classifier_name = "{classifier_name}" # non-empty to apply classifier after encoding
+# --- job parameters (substituted at render time) ---
+job_dir         = os.environ["JOB_DIR"]
+model_name      = "{model_name}"
+batch_size      = {batch_size}
+run_path        = "{run_path}"
+image_key       = "{image_key}"
+inputs          = {inputs}
+output          = "{output}"
+mlflow_version  = "{mlflow_version}" or None
+thumb_mode      = "{thumb_mode}"
+param_specs     = json.loads('{param_specs_json}')
+projector_mode  = "{projector_mode}"   # "name" | "scratch" | "false"
+projector_name  = "{projector_name}"
+classifier_name = "{classifier_name}"
+models_dir      = "{models_dir}"
+
+# Resolve image_key → (stream, array_key)
+_ik = image_key.split(".", 1)
+image_stream    = _ik[0] if len(_ik) == 2 else "primary"
+image_array_key = _ik[1] if len(_ik) == 2 else _ik[0]
 
 _raw_tags = os.environ.get("EMBLASE_TILED_ACCESS_TAGS", "").strip()
 access_tags: list[str] | None = [t.strip() for t in _raw_tags.split(",") if t.strip()] or None
 
 log.info("=== Emblase inference job ===")
 log.info("job_dir    : %s", job_dir)
-log.info("model      : %s", model_name)
-log.info("mlflow_ver : %s", mlflow_version or "latest")
-log.info("batch_size : %d", batch_size)
-log.info("thumb_mode : %s", thumb_mode)
-log.info("run_path   : %s", run_path or "(none — using raw inputs)")
-log.info("image_key  : %s", image_key)
-log.info("inputs     : %s", inputs or "(none)")
+log.info("model      : %s  ver=%s", model_name, mlflow_version or "latest")
+log.info("batch_size : %d  thumb_mode=%s", batch_size, thumb_mode)
+log.info("run_path   : %s", run_path or "(none)")
+log.info("image_key  : %s  (stream=%r  array=%r)", image_key, image_stream, image_array_key)
 log.info("output     : %s", output or "(none — saving output.npy)")
 log.info("access_tags: %s", access_tags or "(none)")
 log.info("param_specs: %s", list(param_specs.keys()))
-log.info("projector_mode: %s", projector_mode)
-log.info("projector_name: %s", projector_name or "(n/a)")
-log.info("classifier   : %s", classifier_name or "(none)")
+log.info("projector  : mode=%s  name=%r", projector_mode, projector_name or "(n/a)")
+log.info("classifier : %s", classifier_name or "(none)")
 
-models_dir = "{models_dir}"
 if models_dir not in sys.path:
     sys.path.insert(0, models_dir)
 
 from emblase.models import encode, load_model  # noqa: E402
+from emblase.worker.utils import load_classifier_dir, load_projector  # noqa: E402
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-log.info("device     : %s", device)
-if device.type == "cuda":
-    log.info("GPU        : %s", torch.cuda.get_device_name(device))
+log.info("device: %s%s", device, f"  GPU={{torch.cuda.get_device_name(device)}}" if device.type == "cuda" else "")
 
 log.info("Loading model %r ...", model_name)
 t0 = time.perf_counter()
@@ -105,77 +99,46 @@ model = load_model(
 log.info("Model loaded in %.1f s", time.perf_counter() - t0)
 
 # ---------------------------------------------------------------------------
-# Projector approximator — resolved by name (local dir or MLflow)
+# Projector approximator
 # ---------------------------------------------------------------------------
-_projector_model = None
-_projector_scaler = None
+_projector_model = _projector_scaler = None
 
 if projector_mode == "name":
     try:
-        import joblib
-        from pathlib import Path as _Path
-        _ud = _Path(models_dir) / projector_name
-        if not _ud.is_dir():
-            # Fall back to MLflow — download to the same cache as the main model
-            log.info("Projector model %r not found locally — pulling from MLflow", projector_name)
-            from emblase import mlflow_registry
-            import os as _os
-            _cache_root = _Path(
-                _os.environ.get("EMBLASE_MODEL_CACHE_DIR", "")
-                or _Path.home() / ".cache" / "emblase" / "models"
-            )
-            _version = mlflow_registry.resolve_version(
-                projector_name,
-                tracking_uri=_os.environ.get("EMBLASE_MLFLOW_TRACKING_URI") or None,
-                api_key=_os.environ.get("EMBLASE_MLFLOW_API_KEY") or None,
-            )
-            _ud = _cache_root / projector_name / f"v{{_version}}" / "model"
-            if not (_ud / "umap_approximator.pth").exists():
-                mlflow_registry.download_model_weights(
-                    model_name=projector_name, version=_version,
-                    dest_dir=_ud.parent,
-                    tracking_uri=_os.environ.get("EMBLASE_MLFLOW_TRACKING_URI") or None,
-                    api_key=_os.environ.get("EMBLASE_MLFLOW_API_KEY") or None,
-                )
-        _ud_str = str(_ud)
-        if _ud_str not in sys.path:
-            sys.path.insert(0, _ud_str)
-        from neural_dimred_wrapper import SimpleDimRedApproximator
-        _scaler_path = _ud / "scaler.pkl"
-        _projector_scaler = joblib.load(_scaler_path) if _scaler_path.exists() else None
-        _sd = torch.load(_ud / "umap_approximator.pth", map_location=device, weights_only=True)
-        _weight_keys = sorted(k for k in _sd if k.startswith("network.") and k.endswith(".weight"))
-        _hidden_dims = [_sd[k].shape[0] for k in _weight_keys[:-1]]
-        _projector_model = SimpleDimRedApproximator(
-            input_dim=_sd["network.0.weight"].shape[1], hidden_dims=_hidden_dims
-        )
-        _projector_model.load_state_dict(_sd)
-        _projector_model.eval().to(device)
-        log.info("Projector approximator loaded from %s", _ud)
+        _projector_model, _projector_scaler = load_projector(projector_name, models_dir, device)
     except Exception as _exc:
-        log.warning("Projector approximator not loaded — projections will be NaN: %s", _exc)
-        _projector_model = None
+        log.warning("Projector not loaded — projections will be NaN: %s", _exc)
 
 
 def _compute_projections(embeddings: np.ndarray) -> np.ndarray | None:
-    """Return (N, 2) projections, or None to signal 'write NaN'."""
-    if projector_mode == "false":
+    if projector_mode == "false" or _projector_model is None:
         return None
-    if _projector_model is None:
-        return None   # name mode but load failed — caller writes NaN
     X = embeddings.astype("float32")
     if _projector_scaler is not None:
         X = _projector_scaler.transform(X)
     with torch.no_grad():
-        coords = _projector_model(torch.tensor(X, dtype=torch.float32, device=device)).cpu().numpy()
-    return coords.astype("float32")
+        return _projector_model(
+            torch.tensor(X, dtype=torch.float32, device=device)
+        ).cpu().numpy().astype("float32")
+
 
 # ---------------------------------------------------------------------------
-# Connect to Tiled
+# Classifier
+# ---------------------------------------------------------------------------
+_classifier_dir = None
+
+if classifier_name:
+    try:
+        _classifier_dir = load_classifier_dir(classifier_name, models_dir)
+    except Exception as _exc:
+        log.warning("Classifier not loaded — labels will be null: %s", _exc)
+
+# ---------------------------------------------------------------------------
+# Tiled client
 # ---------------------------------------------------------------------------
 tiled_client = None
 if run_path or inputs or output:
-    from tiled.client import from_uri
+    from tiled.client import from_uri  # noqa: E402
     tiled_server = os.environ["EMBLASE_TILED_SERVER_URI"]
     log.info("Connecting to Tiled: %s", tiled_server)
     tiled_client = from_uri(tiled_server, api_key=os.environ.get("EMBLASE_TILED_API_KEY") or None)
@@ -183,16 +146,15 @@ if run_path or inputs or output:
 # ---------------------------------------------------------------------------
 # Load input frames
 # ---------------------------------------------------------------------------
-images: list[np.ndarray] | torch.Tensor
+images = None
 frame_entries = None
 frame_indices: list[int] = []
 
 if run_path:
-    # Run-path mode: read all frames from primary/<image_key>
     from emblase.tiled.client import read_images  # noqa: E402
     run_segments = [s for s in run_path.split("/") if s]
     run_node = tiled_client[tuple(run_segments)]
-    image_tiled_path = run_path.rstrip("/") + f"/primary/{image_key}"
+    image_tiled_path = run_path.rstrip("/") + f"/{{image_stream}}/{{image_array_key}}"
     log.info("Reading frames from %s", image_tiled_path)
     t0 = time.perf_counter()
     images, frame_entries = read_images(tiled_client, [image_tiled_path])
@@ -205,19 +167,19 @@ elif inputs:
     t0 = time.perf_counter()
     images, frame_entries = read_images(tiled_client, inputs)
     frame_indices = list(range(len(images)))
-    unique_shapes = sorted(set(img.shape for img in images))
-    log.info("Read %d frame(s) in %.1f s  (shapes: %s)", len(images), time.perf_counter() - t0, unique_shapes)
+    log.info("Read %d frame(s) in %.1f s  shapes=%s",
+             len(images), time.perf_counter() - t0,
+             sorted({{img.shape for img in images}}))
 
 else:
     input_path = os.path.join(job_dir, "input.npy")
-    log.info("Loading input from %s ...", input_path)
+    log.info("Loading %s ...", input_path)
     arr = np.load(input_path)
-    log.info("Loaded array: shape=%s  dtype=%s", arr.shape, arr.dtype)
     if arr.ndim == 3:
-        arr = arr[:, np.newaxis, :, :]
-        log.info("Reshaped to (N, 1, H, W): %s", arr.shape)
+        arr = arr[:, np.newaxis]
     images = torch.from_numpy(arr).float()
     frame_indices = list(range(len(images)))
+    log.info("Loaded: shape=%s  dtype=%s", arr.shape, arr.dtype)
 
 # ---------------------------------------------------------------------------
 # Load param arrays (run-path mode only)
@@ -226,25 +188,25 @@ batch_params: dict | None = None
 
 if param_specs and run_path:
     try:
-        primary = run_node["primary"]
+        _stream_cache: dict = {{}}
         raw_params: dict[str, np.ndarray] = {{}}
         for name, spec in param_specs.items():
             source = spec.get("source", "")
             parts = source.split(".", 1)
-            if len(parts) != 2 or parts[0] != "primary":
-                log.warning("Param %r: unsupported source %r — skipping", name, source)
+            if len(parts) != 2:
+                log.warning("Param %r: invalid source %r — skipping", name, source)
                 continue
-            arr = primary[parts[1]].read()
-            raw_params[name] = np.asarray(arr)
-            log.info("Loaded param %r shape=%s", name, raw_params[name].shape)
+            sname, akey = parts
+            if sname not in _stream_cache:
+                _stream_cache[sname] = run_node[sname]
+            raw_params[name] = np.asarray(_stream_cache[sname][akey].read())
+            log.info("Loaded param %r from %s  shape=%s", name, source, raw_params[name].shape)
         batch_params = {{
             name: [raw_params[name][i].item() for i in frame_indices]
-            for name in param_specs
-            if name in raw_params
+            for name in param_specs if name in raw_params
         }}
     except Exception as exc:
         log.exception("Failed to load param arrays — params will be null: %s", exc)
-        batch_params = None
 
 elif param_specs:
     log.warning("param_specs provided but run_path is empty — params require run_path mode")
@@ -255,86 +217,53 @@ elif param_specs:
 log.info("Encoding (batch_size=%d) ...", batch_size)
 t0 = time.perf_counter()
 embeddings = encode(model, images, batch_size=batch_size)
-log.info("Encoded in %.1f s  →  shape: %s", time.perf_counter() - t0, embeddings.shape)
+log.info("Encoded in %.1f s  shape=%s", time.perf_counter() - t0, embeddings.shape)
 
 # ---------------------------------------------------------------------------
-# Projector (UMAP) pass
+# Projections
 # ---------------------------------------------------------------------------
+projections = None
 if projector_mode == "scratch":
     log.info("Fitting UMAP from scratch over %d embeddings ...", len(embeddings))
     try:
-        import umap as _umap_lib
-        _reducer = _umap_lib.UMAP(n_components=2, random_state=42)
-        projections = _reducer.fit_transform(embeddings.astype("float32"))
-        projections = projections.astype("float32")
+        import umap as _umap  # noqa: PLC0415
+        projections = _umap.UMAP(n_components=2, random_state=42).fit_transform(
+            embeddings.astype("float32")
+        ).astype("float32")
         log.info("Scratch UMAP done: %s", projections.shape)
     except Exception as _exc:
-        log.warning("Scratch projector (UMAP) failed — projections will be NaN: %s", _exc)
-        projections = None
+        log.warning("Scratch UMAP failed — projections will be NaN: %s", _exc)
 elif projector_mode == "false":
     log.info("Projector disabled — projections will be NaN")
-    projections = None
 else:
     projections = _compute_projections(embeddings)
-    if projections is not None:
-        log.info("Projections: %s", projections.shape)
 
 # ---------------------------------------------------------------------------
-# Classifier — resolved by name (local dir or MLflow), applied after encoding
+# Classifier labels
 # ---------------------------------------------------------------------------
 _classifier_labels: list[str] | None = None
-
-if classifier_name:
+if _classifier_dir is not None:
     try:
-        from pathlib import Path as _CPath
-        _cd = _CPath(models_dir) / classifier_name
-        if not _cd.is_dir():
-            log.info("Classifier %r not found locally — pulling from MLflow", classifier_name)
-            from emblase import mlflow_registry
-            import os as _os
-            _cache_root = _CPath(
-                _os.environ.get("EMBLASE_MODEL_CACHE_DIR", "")
-                or _CPath.home() / ".cache" / "emblase" / "models"
-            )
-            _version = mlflow_registry.resolve_version(
-                classifier_name,
-                tracking_uri=_os.environ.get("EMBLASE_MLFLOW_TRACKING_URI") or None,
-                api_key=_os.environ.get("EMBLASE_MLFLOW_API_KEY") or None,
-            )
-            _cd = _cache_root / classifier_name / f"v{{_version}}" / "model"
-            if not (_cd / "classifier.pth").exists():
-                mlflow_registry.download_model_weights(
-                    model_name=classifier_name, version=_version,
-                    dest_dir=_cd.parent,
-                    tracking_uri=_os.environ.get("EMBLASE_MLFLOW_TRACKING_URI") or None,
-                    api_key=_os.environ.get("EMBLASE_MLFLOW_API_KEY") or None,
-                )
-        from emblase.classifier import apply_classifier
-        _classifier_labels = list(apply_classifier(embeddings, classifier_dir=_cd))
-        log.info("Classifier labels: %s unique values", len(set(_classifier_labels)))
+        from emblase.classifier import apply_classifier  # noqa: E402
+        _classifier_labels = list(apply_classifier(embeddings, classifier_dir=_classifier_dir))
+        log.info("Classifier: %d unique labels", len(set(_classifier_labels)))
     except Exception as _exc:
         log.warning("Classifier failed — labels will be null: %s", _exc)
-        _classifier_labels = None
 
 # ---------------------------------------------------------------------------
-# Save output.npy (only when not writing to Tiled)
+# Save / write output
 # ---------------------------------------------------------------------------
 if not output:
     output_path = os.path.join(job_dir, "output.npy")
     np.save(output_path, embeddings)
     log.info("output.npy saved: %s", output_path)
 
-# ---------------------------------------------------------------------------
-# Write to Tiled
-# ---------------------------------------------------------------------------
 if output:
     from emblase.tiled.client import write_output  # noqa: E402
-    log.info("Writing embeddings to Tiled: %s  shape=%s", output, embeddings.shape)
+    log.info("Writing to Tiled: %s  shape=%s", output, embeddings.shape)
     t0 = time.perf_counter()
     write_output(
-        tiled_client,
-        output,
-        embeddings,
+        tiled_client, output, embeddings,
         images=images if isinstance(images, list) else None,
         source_entries=frame_entries,
         model_name=model_name,
@@ -345,6 +274,6 @@ if output:
         projections=projections,
         labels=_classifier_labels,
     )
-    log.info("Written to Tiled in %.1f s", time.perf_counter() - t0)
+    log.info("Written in %.1f s", time.perf_counter() - t0)
 
 log.info("=== Done ===")

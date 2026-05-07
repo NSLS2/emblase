@@ -102,6 +102,30 @@ interface ChatMessage {
 // Base URL of the Tiled proxy endpoints for chat
 const CHAT_PROXY = `${window.location.origin}/custom/emblase`;
 
+// Genesis Mission logo (150×42px) baked in as base64 so no extra HTTP request
+// is needed. To update: resize the new PNG to ~42px tall, base64-encode it,
+// and replace the string below. The source file is at
+// ui/embedding-view/assets/genesis-logo.png in the emblase repo.
+const GENESIS_LOGO_SRC = "data:image/png;base64,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";
+
+function GenesisLogo() {
+  return React.createElement(
+    "a",
+    {
+      href: "https://www.energy.gov/undersecretaryforscience/genesis-mission/genesis-mission",
+      target: "_blank",
+      rel: "noopener noreferrer",
+      style: { display: "block", marginLeft: 12, flexShrink: 0 },
+    },
+    React.createElement("img", {
+      src: GENESIS_LOGO_SRC,
+      alt: "Genesis Mission",
+      style: { height: 42, opacity: 0.75, display: "block" },
+    }),
+  );
+}
+
+
 interface ViewState {
   offsetX: number;
   offsetY: number;
@@ -558,6 +582,12 @@ function EmbeddingScatter({
   const [toolMode, setToolMode] = React.useState<ToolMode>("pan");
   const [lassoPath, setLassoPath] = React.useState<{ x: number; y: number }[]>([]);
   const [lassoSelected, setLassoSelected] = React.useState<Set<number>>(new Set());
+  // Map from point index → user_label for lasso-selected points (loaded async)
+  const [lassoUserLabels, setLassoUserLabels] = React.useState<Record<number, string>>({});
+  const [lassoBulkLabel, setLassoBulkLabel] = React.useState("");
+  const [lassoBulkSaving, setLassoBulkSaving] = React.useState(false);
+  const [lassoBulkSaveError, setLassoBulkSaveError] = React.useState<string | null>(null);
+  const [lassoBulkSaved, setLassoBulkSaved] = React.useState(false);
   const lassoDrawing = React.useRef(false);
   const didDragRef = React.useRef(false);
   const dragRef = React.useRef<{
@@ -1438,6 +1468,60 @@ function EmbeddingScatter({
     return { count: selectedPts.length, labelCounts, points: selectedPts };
   }, [lassoSelected, points]);
 
+  // Fetch user_labels for all lasso-selected points whenever selection changes
+  React.useEffect(() => {
+    if (lassoSelected.size === 0) {
+      setLassoUserLabels({});
+      setLassoBulkLabel("");
+      setLassoBulkSaveError(null);
+      setLassoBulkSaved(false);
+      return;
+    }
+    const indices = Array.from(lassoSelected);
+    Promise.all(
+      indices.map((idx) =>
+        fetchStringValue(apiUrl, nodePath, "user_labels", idx).then((v) => [idx, v] as [number, string]),
+      ),
+    ).then((pairs) => {
+      const map: Record<number, string> = {};
+      for (const [idx, v] of pairs) map[idx] = v;
+      setLassoUserLabels(map);
+    });
+  }, [lassoSelected, apiUrl, nodePath]);
+
+  const handleLassoBulkSave = React.useCallback(async () => {
+    if (lassoBulkSaving || lassoBulkLabel.trim() === "") return;
+    setLassoBulkSaving(true);
+    setLassoBulkSaveError(null);
+    setLassoBulkSaved(false);
+    const indices = Array.from(lassoSelected);
+    const label = lassoBulkLabel;
+    let firstError: Response | null = null;
+    await Promise.all(
+      indices.map((idx) =>
+        patchStringArray(apiUrl, nodePath, "user_labels", idx, label, USER_LABEL_MAX_LEN).then((r) => {
+          if (r.ok) {
+            // Update this point's label in the list as soon as its save completes
+            setLassoUserLabels((prev) => ({ ...prev, [idx]: label }));
+          } else if (!firstError) {
+            firstError = r;
+          }
+        }),
+      ),
+    );
+    setLassoBulkSaving(false);
+    if (firstError) {
+      const status = (firstError as Response).status;
+      setLassoBulkSaveError(
+        status === 401 || status === 403
+          ? (window.__TILED_ACCESS_TOKEN__ ? "No write permission." : "Login required.")
+          : "Save failed.",
+      );
+    } else {
+      setLassoBulkSaved(true);
+    }
+  }, [lassoBulkSaving, lassoBulkLabel, lassoSelected, apiUrl, nodePath]);
+
   if (error) {
     return React.createElement(
       "div",
@@ -1781,7 +1865,18 @@ function EmbeddingScatter({
             React.createElement(
               "button",
               {
-                onClick: () => { setSelected(null); setSaveError(null); },
+                onClick: () => {
+                  // If this point is part of a lasso selection, sync its user
+                  // label back into lassoUserLabels so the list stays fresh.
+                  if (selected && lassoSelected.has(selected.point.index)) {
+                    setLassoUserLabels((prev) => ({
+                      ...prev,
+                      [selected.point.index]: selected.userLabel,
+                    }));
+                  }
+                  setSelected(null);
+                  setSaveError(null);
+                },
                 style: {
                   position: "absolute" as const,
                   top: 6,
@@ -1855,7 +1950,7 @@ function EmbeddingScatter({
             React.createElement(
               "label",
               { style: { display: "block", fontSize: 11, color: "#777", marginBottom: 2 } },
-              "User label",
+               "Annotation",
             ),
             React.createElement("input", {
               type: "text",
@@ -2220,13 +2315,14 @@ function EmbeddingScatter({
                   style: {
                     background: "none",
                     border: "none",
-                    fontSize: 12,
+                    fontSize: 18,
                     color: "#999",
                     cursor: "pointer",
                     padding: 0,
+                    lineHeight: 1,
                   },
                 },
-                "Clear",
+                "\u00D7",
               ),
             ),
             // Label breakdown
@@ -2268,12 +2364,87 @@ function EmbeddingScatter({
                         flexShrink: 0,
                       },
                     }),
-                    React.createElement("span", { style: { flex: 1 } }, label),
-                    React.createElement("span", { style: { color: "#999" } }, String(count)),
-                  ),
-                ),
-            ),
-            // Point list (scrollable)
+                     React.createElement("span", { style: { flex: 1 } }, label),
+                     React.createElement("span", { style: { color: "#999" } }, String(count)),
+                   ),
+                 ),
+             ),
+             // Bulk user label assignment
+             React.createElement(
+               "div",
+               {
+                 style: {
+                   padding: "10px 16px",
+                   borderBottom: "1px solid #eee",
+                   flexShrink: 0,
+                 },
+               },
+               React.createElement(
+                 "div",
+                 { style: { fontSize: 11, color: "#777", marginBottom: 4 } },
+                 "Assign annotation to all selected",
+               ),
+               React.createElement(
+                 "div",
+                 { style: { display: "flex", gap: 6, alignItems: "center" } },
+                 React.createElement("input", {
+                   type: "text",
+                   value: lassoBulkLabel,
+                   maxLength: USER_LABEL_MAX_LEN,
+                   placeholder: "Annotation…",
+                   onChange: (e: React.ChangeEvent<HTMLInputElement>) => {
+                     setLassoBulkLabel(e.target.value);
+                     setLassoBulkSaved(false);
+                     setLassoBulkSaveError(null);
+                   },
+                   onKeyDown: async (e: React.KeyboardEvent) => {
+                     if (e.key !== "Enter") return;
+                     handleLassoBulkSave();
+                   },
+                   style: {
+                     flex: 1,
+                     padding: "4px 8px",
+                     border: "1px solid #ccc",
+                     borderRadius: 4,
+                     fontSize: 12,
+                     boxSizing: "border-box" as const,
+                   },
+                 }),
+                 React.createElement(
+                   "button",
+                   {
+                     disabled: lassoBulkSaving || lassoBulkLabel.trim() === "",
+                     onClick: handleLassoBulkSave,
+                     style: {
+                       padding: "4px 10px",
+                       fontSize: 12,
+                       border: "1px solid #ccc",
+                       borderRadius: 4,
+                       background: lassoBulkLabel.trim() ? "#1976d2" : "#eee",
+                       color: lassoBulkLabel.trim() ? "white" : "#aaa",
+                       cursor: lassoBulkLabel.trim() ? "pointer" : "default",
+                       flexShrink: 0,
+                     },
+                   },
+                   lassoBulkSaving ? "Saving…" : "Apply",
+                 ),
+               ),
+               lassoBulkSaveError
+                 ? React.createElement(
+                     "div",
+                     { style: { fontSize: 11, color: "#c00", marginTop: 4 } },
+                     lassoBulkSaveError,
+                   )
+                 : null,
+               lassoBulkSaved
+                 ? React.createElement(
+                     "div",
+                     { style: { fontSize: 11, color: "#2e7d32", marginTop: 4 } },
+                     `Saved to ${lassoSelected.size} point${lassoSelected.size !== 1 ? "s" : ""}.`,
+                   )
+                 : null,
+             ),
+             // Point list (scrollable)
             React.createElement(
               "div",
               {
@@ -2282,13 +2453,8 @@ function EmbeddingScatter({
                   overflowY: "auto" as const,
                   padding: "8px 16px",
                 },
-              },
-              React.createElement(
-                "div",
-                { style: { fontSize: 11, color: "#777", marginBottom: 6 } },
-                "Points",
-              ),
-              ...lassoSummary.points.map((p) =>
+               },
+               ...lassoSummary.points.map((p) =>
                 React.createElement(
                   "div",
                   {
@@ -2329,6 +2495,16 @@ function EmbeddingScatter({
                         p.label,
                       )
                     : null,
+                  (() => {
+                    const ul = lassoUserLabels[p.index];
+                    return ul
+                      ? React.createElement(
+                          "span",
+                          { style: { color: "#777", fontSize: 11 } },
+                          `\u2013 ${ul}`,
+                        )
+                      : null;
+                  })(),
                 ),
               ),
             ),
@@ -2349,39 +2525,43 @@ function EmbeddingScatter({
                   gap: 8,
                   fontSize: 12,
                   alignItems: "center",
+                  justifyContent: "space-between",
                 },
               },
-              React.createElement("span", { style: { color: "#777", fontSize: 11 } }, "Toggle:"),
-              ...uniqueLabels.map((label) => {
-                const hidden = hiddenLabels.has(label);
-                return React.createElement(
-                  "button",
-                  {
-                    key: label,
-                    onClick: () => {
-                      setHiddenLabels((prev) => {
-                        const next = new Set(prev);
-                        if (next.has(label)) next.delete(label);
-                        else next.add(label);
-                        return next;
-                      });
+              React.createElement(
+                "div",
+                { style: { display: "flex", flexWrap: "wrap" as const, gap: 8, alignItems: "center", flex: 1 } },
+                React.createElement("span", { style: { color: "#777", fontSize: 11 } }, "Toggle:"),
+                ...uniqueLabels.map((label) => {
+                  const hidden = hiddenLabels.has(label);
+                  return React.createElement(
+                    "button",
+                    {
+                      key: label,
+                      onClick: () => {
+                        setHiddenLabels((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(label)) next.delete(label);
+                          else next.add(label);
+                          return next;
+                        });
+                      },
+                      title: hidden ? `Show ${label}` : `Hide ${label}`,
+                      style: {
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 5,
+                        padding: "3px 8px",
+                        border: "1px solid #ccc",
+                        borderRadius: 12,
+                        background: hidden ? "#f5f5f5" : "white",
+                        cursor: "pointer",
+                        fontSize: 12,
+                        opacity: hidden ? 0.45 : 1,
+                        transition: "opacity 0.15s",
+                      },
                     },
-                    title: hidden ? `Show ${label}` : `Hide ${label}`,
-                    style: {
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 5,
-                      padding: "3px 8px",
-                      border: "1px solid #ccc",
-                      borderRadius: 12,
-                      background: hidden ? "#f5f5f5" : "white",
-                      cursor: "pointer",
-                      fontSize: 12,
-                      opacity: hidden ? 0.45 : 1,
-                      transition: "opacity 0.15s",
-                    },
-                  },
-                  React.createElement("div", {
+                    React.createElement("div", {
                     style: {
                       width: 9,
                       height: 9,
@@ -2411,6 +2591,8 @@ function EmbeddingScatter({
                     "Show all",
                   )
                 : null,
+              ),
+              GenesisLogo(),
             )
           : null
       : // Continuous param: colorbar + dual-handle range slider
@@ -2429,11 +2611,16 @@ function EmbeddingScatter({
             precision: paramSpecs[colorBy]?.precision ?? 2,
           }),
         ),
-    // Instructions
+    // Instructions + logo (logo shown here only for continuous/slider mode)
     React.createElement(
       "div",
-      { style: { marginTop: 6, fontSize: 11, color: "#999" } },
-      "Scroll to zoom. Pan mode: drag to pan, click point to inspect. Lasso mode: draw to select points.",
+      { style: { marginTop: 6, display: "flex", alignItems: "center", justifyContent: "space-between" } },
+      React.createElement(
+        "span",
+        { style: { fontSize: 11, color: "#999" } },
+        "Scroll to zoom. Pan mode: drag to pan, click point to inspect. Lasso mode: draw to select points.",
+      ),
+      colorBy !== "label" ? GenesisLogo() : null,
     ),
   );
 }
