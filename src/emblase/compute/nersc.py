@@ -199,8 +199,9 @@ class NERSCClient:
 
         resources: dict[str, Any] = {
             "node_count": nodes,
-            "gpu_cores_per_process": gpus_per_process,
         }
+        if gpus_per_process >= 1:
+            resources["gpu_cores_per_process"] = gpus_per_process
 
         payload: dict[str, Any] = {
             "name": name,
