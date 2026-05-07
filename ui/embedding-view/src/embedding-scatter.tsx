@@ -1489,6 +1489,39 @@ function EmbeddingScatter({
     });
   }, [lassoSelected, apiUrl, nodePath]);
 
+  const handleLassoBulkSave = React.useCallback(async () => {
+    if (lassoBulkSaving || lassoBulkLabel.trim() === "") return;
+    setLassoBulkSaving(true);
+    setLassoBulkSaveError(null);
+    setLassoBulkSaved(false);
+    const indices = Array.from(lassoSelected);
+    const label = lassoBulkLabel;
+    let firstError: Response | null = null;
+    await Promise.all(
+      indices.map((idx) =>
+        patchStringArray(apiUrl, nodePath, "user_labels", idx, label, USER_LABEL_MAX_LEN).then((r) => {
+          if (r.ok) {
+            // Update this point's label in the list as soon as its save completes
+            setLassoUserLabels((prev) => ({ ...prev, [idx]: label }));
+          } else if (!firstError) {
+            firstError = r;
+          }
+        }),
+      ),
+    );
+    setLassoBulkSaving(false);
+    if (firstError) {
+      const status = (firstError as Response).status;
+      setLassoBulkSaveError(
+        status === 401 || status === 403
+          ? (window.__TILED_ACCESS_TOKEN__ ? "No write permission." : "Login required.")
+          : "Save failed.",
+      );
+    } else {
+      setLassoBulkSaved(true);
+    }
+  }, [lassoBulkSaving, lassoBulkLabel, lassoSelected, apiUrl, nodePath]);
+
   if (error) {
     return React.createElement(
       "div",
@@ -1832,7 +1865,18 @@ function EmbeddingScatter({
             React.createElement(
               "button",
               {
-                onClick: () => { setSelected(null); setSaveError(null); },
+                onClick: () => {
+                  // If this point is part of a lasso selection, sync its user
+                  // label back into lassoUserLabels so the list stays fresh.
+                  if (selected && lassoSelected.has(selected.point.index)) {
+                    setLassoUserLabels((prev) => ({
+                      ...prev,
+                      [selected.point.index]: selected.userLabel,
+                    }));
+                  }
+                  setSelected(null);
+                  setSaveError(null);
+                },
                 style: {
                   position: "absolute" as const,
                   top: 6,
@@ -2046,7 +2090,7 @@ function EmbeddingScatter({
                           padding: 0,
                         },
                       },
-                      "Close",
+                      "Clear",
                     )
                   : null,
                 // Close button
@@ -2271,13 +2315,14 @@ function EmbeddingScatter({
                   style: {
                     background: "none",
                     border: "none",
-                    fontSize: 12,
+                    fontSize: 18,
                     color: "#999",
                     cursor: "pointer",
                     padding: 0,
+                    lineHeight: 1,
                   },
                 },
-                "Clear",
+                "\u00D7",
               ),
             ),
             // Label breakdown
@@ -2353,37 +2398,8 @@ function EmbeddingScatter({
                      setLassoBulkSaveError(null);
                    },
                    onKeyDown: async (e: React.KeyboardEvent) => {
-                     if (e.key !== "Enter" || lassoBulkSaving) return;
-                     setLassoBulkSaving(true);
-                     setLassoBulkSaveError(null);
-                     setLassoBulkSaved(false);
-                     const indices = Array.from(lassoSelected);
-                     const results = await Promise.all(
-                       indices.map((idx) =>
-                         patchStringArray(apiUrl, nodePath, "user_labels", idx, lassoBulkLabel, USER_LABEL_MAX_LEN),
-                       ),
-                     );
-                     setLassoBulkSaving(false);
-                     const failed = results.find((r) => !r.ok);
-                     if (failed) {
-                       if (failed.status === 401 || failed.status === 403) {
-                         setLassoBulkSaveError(
-                           window.__TILED_ACCESS_TOKEN__
-                             ? "No write permission."
-                             : "Login required.",
-                         );
-                       } else {
-                         setLassoBulkSaveError("Save failed.");
-                       }
-                     } else {
-                       // Update local cache so point list reflects the new labels immediately
-                       setLassoUserLabels((prev) => {
-                         const next = { ...prev };
-                         for (const idx of indices) next[idx] = lassoBulkLabel;
-                         return next;
-                       });
-                       setLassoBulkSaved(true);
-                     }
+                     if (e.key !== "Enter") return;
+                     handleLassoBulkSave();
                    },
                    style: {
                      flex: 1,
@@ -2398,38 +2414,7 @@ function EmbeddingScatter({
                    "button",
                    {
                      disabled: lassoBulkSaving || lassoBulkLabel.trim() === "",
-                     onClick: async () => {
-                       if (lassoBulkSaving) return;
-                       setLassoBulkSaving(true);
-                       setLassoBulkSaveError(null);
-                       setLassoBulkSaved(false);
-                       const indices = Array.from(lassoSelected);
-                       const results = await Promise.all(
-                         indices.map((idx) =>
-                           patchStringArray(apiUrl, nodePath, "user_labels", idx, lassoBulkLabel, USER_LABEL_MAX_LEN),
-                         ),
-                       );
-                       setLassoBulkSaving(false);
-                       const failed = results.find((r) => !r.ok);
-                       if (failed) {
-                         if (failed.status === 401 || failed.status === 403) {
-                           setLassoBulkSaveError(
-                             window.__TILED_ACCESS_TOKEN__
-                               ? "No write permission."
-                               : "Login required.",
-                           );
-                         } else {
-                           setLassoBulkSaveError("Save failed.");
-                         }
-                       } else {
-                         setLassoUserLabels((prev) => {
-                           const next = { ...prev };
-                           for (const idx of indices) next[idx] = lassoBulkLabel;
-                           return next;
-                         });
-                         setLassoBulkSaved(true);
-                       }
-                     },
+                     onClick: handleLassoBulkSave,
                      style: {
                        padding: "4px 10px",
                        fontSize: 12,
@@ -2468,13 +2453,8 @@ function EmbeddingScatter({
                   overflowY: "auto" as const,
                   padding: "8px 16px",
                 },
-              },
-              React.createElement(
-                "div",
-                { style: { fontSize: 11, color: "#777", marginBottom: 6 } },
-                "Points",
-              ),
-              ...lassoSummary.points.map((p) =>
+               },
+               ...lassoSummary.points.map((p) =>
                 React.createElement(
                   "div",
                   {
