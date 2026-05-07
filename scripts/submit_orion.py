@@ -300,6 +300,9 @@ def main() -> None:
         format="%(asctime)s %(levelname)-8s %(message)s",
         datefmt="%H:%M:%S",
     )
+    # httpx logs every request at INFO; only show at DEBUG
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
 
     if args.command in ("run", "test"):
         script = (
