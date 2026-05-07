@@ -300,9 +300,10 @@ def main() -> None:
         format="%(asctime)s %(levelname)-8s %(message)s",
         datefmt="%H:%M:%S",
     )
-    # httpx logs every request at INFO; only show at DEBUG
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    # httpx/httpcore/hpack log every request at INFO; suppress unless DEBUG
+    if args.log_level != "DEBUG":
+        for _noisy in ("httpx", "httpcore", "hpack"):
+            logging.getLogger(_noisy).setLevel(logging.WARNING)
 
     if args.command in ("run", "test"):
         script = (
