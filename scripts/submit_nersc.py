@@ -67,7 +67,7 @@ except ImportError:
 
 from emblase.compute import parse_param_specs  # noqa: E402
 from emblase.compute.base import JobStatus  # noqa: E402
-from emblase.compute.nersc import NERSCBackend, NERSCClient, _NERSC_STATE_MAP  # noqa: E402
+from emblase.compute.nersc import _NERSC_STATE_MAP, NERSCBackend, NERSCClient  # noqa: E402
 
 
 def _build_parser() -> argparse.ArgumentParser:

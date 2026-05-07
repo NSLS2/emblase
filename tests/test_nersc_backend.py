@@ -10,15 +10,14 @@ import pytest
 
 from emblase.compute.base import JobStatus
 from emblase.compute.nersc import (
+    _NERSC_STATE_MAP,
     NERSCBackend,
     NERSCJob,
-    _NERSC_STATE_MAP,
 )
 from emblase.compute.orion import (
     _render_inference_script,
     _render_streaming_inference_script,
 )
-
 
 # ---------------------------------------------------------------------------
 # State mapping
@@ -411,13 +410,13 @@ async def test_nersc_backend_cancel():
 def test_render_inference_script_with_nersc_paths():
     script = _render_inference_script(
         model_name="bnl-nsls2-smi-vit",
-        models_dir="/pscratch/sd/y/ymatviych/emblase/models",
+        models_dir="/pscratch/sd/d/dallan/emblase/models",
         batch_size=1,
         run_path="smi/sandbox/run_1086139",
         output="smi/sandbox/results/run_1086139",
         thumb_mode="logroi",
     )
-    assert "/pscratch/sd/y/ymatviych/emblase/models" in script
+    assert "/pscratch/sd/d/dallan/emblase/models" in script
     assert '"bnl-nsls2-smi-vit"' in script
     assert '"smi/sandbox/run_1086139"' in script
     compile(script, "<inference_nersc>", "exec")
@@ -426,13 +425,13 @@ def test_render_inference_script_with_nersc_paths():
 def test_render_streaming_script_with_nersc_paths():
     script = _render_streaming_inference_script(
         model_name="bnl-nsls2-smi-vit",
-        models_dir="/pscratch/sd/y/ymatviych/emblase/models",
+        models_dir="/pscratch/sd/d/dallan/emblase/models",
         run_path="smi/sandbox/inputs_copy/run_xyz",
         output="smi/sandbox/results/run_xyz",
         batch_size=1,
         thumb_mode="logroi",
     )
-    assert "/pscratch/sd/y/ymatviych/emblase/models" in script
+    assert "/pscratch/sd/d/dallan/emblase/models" in script
     assert '"smi/sandbox/inputs_copy/run_xyz"' in script
     compile(script, "<streaming_nersc>", "exec")
 

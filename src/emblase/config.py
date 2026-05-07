@@ -48,14 +48,14 @@ class Settings(BaseSettings):
     # Host is derived from orion_api_url by default (same hostname, port 22).
     # Override with EMBLASE_ORION_SSH_HOST if the login node differs from the API host.
     orion_ssh_host: str = ""  # e.g. "orion-staging.nsls2.bnl.gov"
-    orion_ssh_user: str = ""  # e.g. "ymatviych"; defaults to local $USER
+    orion_ssh_user: str = ""  # e.g. "jdoe"; defaults to local $USER
 
     # NERSC compute (IRI API + Shifter)
     nersc_api_uri: str = "https://api.iri.nersc.gov"
     nersc_api_token: str = ""
     nersc_resource_id: str = "perlmutter"
-    nersc_working_dir: str = "/pscratch/sd/y/confab26_demo/emblase/jobs"
-    nersc_models_dir: str = "/pscratch/sd/y/confab26_demo/emblase/models"
+    nersc_working_dir: str = ""
+    nersc_models_dir: str = ""
     nersc_account: str = ""
     nersc_container_image: str = "ghcr.io/genematx/emblase:latest"
     nersc_time_limit: str = "00:30:00"
