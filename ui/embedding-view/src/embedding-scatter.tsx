@@ -582,6 +582,12 @@ function EmbeddingScatter({
   const [toolMode, setToolMode] = React.useState<ToolMode>("pan");
   const [lassoPath, setLassoPath] = React.useState<{ x: number; y: number }[]>([]);
   const [lassoSelected, setLassoSelected] = React.useState<Set<number>>(new Set());
+  // Map from point index → user_label for lasso-selected points (loaded async)
+  const [lassoUserLabels, setLassoUserLabels] = React.useState<Record<number, string>>({});
+  const [lassoBulkLabel, setLassoBulkLabel] = React.useState("");
+  const [lassoBulkSaving, setLassoBulkSaving] = React.useState(false);
+  const [lassoBulkSaveError, setLassoBulkSaveError] = React.useState<string | null>(null);
+  const [lassoBulkSaved, setLassoBulkSaved] = React.useState(false);
   const lassoDrawing = React.useRef(false);
   const didDragRef = React.useRef(false);
   const dragRef = React.useRef<{
@@ -1462,6 +1468,27 @@ function EmbeddingScatter({
     return { count: selectedPts.length, labelCounts, points: selectedPts };
   }, [lassoSelected, points]);
 
+  // Fetch user_labels for all lasso-selected points whenever selection changes
+  React.useEffect(() => {
+    if (lassoSelected.size === 0) {
+      setLassoUserLabels({});
+      setLassoBulkLabel("");
+      setLassoBulkSaveError(null);
+      setLassoBulkSaved(false);
+      return;
+    }
+    const indices = Array.from(lassoSelected);
+    Promise.all(
+      indices.map((idx) =>
+        fetchStringValue(apiUrl, nodePath, "user_labels", idx).then((v) => [idx, v] as [number, string]),
+      ),
+    ).then((pairs) => {
+      const map: Record<number, string> = {};
+      for (const [idx, v] of pairs) map[idx] = v;
+      setLassoUserLabels(map);
+    });
+  }, [lassoSelected, apiUrl, nodePath]);
+
   if (error) {
     return React.createElement(
       "div",
@@ -1879,7 +1906,7 @@ function EmbeddingScatter({
             React.createElement(
               "label",
               { style: { display: "block", fontSize: 11, color: "#777", marginBottom: 2 } },
-              "User label",
+               "Annotation",
             ),
             React.createElement("input", {
               type: "text",
@@ -2019,7 +2046,7 @@ function EmbeddingScatter({
                           padding: 0,
                         },
                       },
-                      "Clear",
+                      "Close",
                     )
                   : null,
                 // Close button
@@ -2292,12 +2319,147 @@ function EmbeddingScatter({
                         flexShrink: 0,
                       },
                     }),
-                    React.createElement("span", { style: { flex: 1 } }, label),
-                    React.createElement("span", { style: { color: "#999" } }, String(count)),
-                  ),
-                ),
-            ),
-            // Point list (scrollable)
+                     React.createElement("span", { style: { flex: 1 } }, label),
+                     React.createElement("span", { style: { color: "#999" } }, String(count)),
+                   ),
+                 ),
+             ),
+             // Bulk user label assignment
+             React.createElement(
+               "div",
+               {
+                 style: {
+                   padding: "10px 16px",
+                   borderBottom: "1px solid #eee",
+                   flexShrink: 0,
+                 },
+               },
+               React.createElement(
+                 "div",
+                 { style: { fontSize: 11, color: "#777", marginBottom: 4 } },
+                 "Assign annotation to all selected",
+               ),
+               React.createElement(
+                 "div",
+                 { style: { display: "flex", gap: 6, alignItems: "center" } },
+                 React.createElement("input", {
+                   type: "text",
+                   value: lassoBulkLabel,
+                   maxLength: USER_LABEL_MAX_LEN,
+                   placeholder: "Annotation…",
+                   onChange: (e: React.ChangeEvent<HTMLInputElement>) => {
+                     setLassoBulkLabel(e.target.value);
+                     setLassoBulkSaved(false);
+                     setLassoBulkSaveError(null);
+                   },
+                   onKeyDown: async (e: React.KeyboardEvent) => {
+                     if (e.key !== "Enter" || lassoBulkSaving) return;
+                     setLassoBulkSaving(true);
+                     setLassoBulkSaveError(null);
+                     setLassoBulkSaved(false);
+                     const indices = Array.from(lassoSelected);
+                     const results = await Promise.all(
+                       indices.map((idx) =>
+                         patchStringArray(apiUrl, nodePath, "user_labels", idx, lassoBulkLabel, USER_LABEL_MAX_LEN),
+                       ),
+                     );
+                     setLassoBulkSaving(false);
+                     const failed = results.find((r) => !r.ok);
+                     if (failed) {
+                       if (failed.status === 401 || failed.status === 403) {
+                         setLassoBulkSaveError(
+                           window.__TILED_ACCESS_TOKEN__
+                             ? "No write permission."
+                             : "Login required.",
+                         );
+                       } else {
+                         setLassoBulkSaveError("Save failed.");
+                       }
+                     } else {
+                       // Update local cache so point list reflects the new labels immediately
+                       setLassoUserLabels((prev) => {
+                         const next = { ...prev };
+                         for (const idx of indices) next[idx] = lassoBulkLabel;
+                         return next;
+                       });
+                       setLassoBulkSaved(true);
+                     }
+                   },
+                   style: {
+                     flex: 1,
+                     padding: "4px 8px",
+                     border: "1px solid #ccc",
+                     borderRadius: 4,
+                     fontSize: 12,
+                     boxSizing: "border-box" as const,
+                   },
+                 }),
+                 React.createElement(
+                   "button",
+                   {
+                     disabled: lassoBulkSaving || lassoBulkLabel.trim() === "",
+                     onClick: async () => {
+                       if (lassoBulkSaving) return;
+                       setLassoBulkSaving(true);
+                       setLassoBulkSaveError(null);
+                       setLassoBulkSaved(false);
+                       const indices = Array.from(lassoSelected);
+                       const results = await Promise.all(
+                         indices.map((idx) =>
+                           patchStringArray(apiUrl, nodePath, "user_labels", idx, lassoBulkLabel, USER_LABEL_MAX_LEN),
+                         ),
+                       );
+                       setLassoBulkSaving(false);
+                       const failed = results.find((r) => !r.ok);
+                       if (failed) {
+                         if (failed.status === 401 || failed.status === 403) {
+                           setLassoBulkSaveError(
+                             window.__TILED_ACCESS_TOKEN__
+                               ? "No write permission."
+                               : "Login required.",
+                           );
+                         } else {
+                           setLassoBulkSaveError("Save failed.");
+                         }
+                       } else {
+                         setLassoUserLabels((prev) => {
+                           const next = { ...prev };
+                           for (const idx of indices) next[idx] = lassoBulkLabel;
+                           return next;
+                         });
+                         setLassoBulkSaved(true);
+                       }
+                     },
+                     style: {
+                       padding: "4px 10px",
+                       fontSize: 12,
+                       border: "1px solid #ccc",
+                       borderRadius: 4,
+                       background: lassoBulkLabel.trim() ? "#1976d2" : "#eee",
+                       color: lassoBulkLabel.trim() ? "white" : "#aaa",
+                       cursor: lassoBulkLabel.trim() ? "pointer" : "default",
+                       flexShrink: 0,
+                     },
+                   },
+                   lassoBulkSaving ? "Saving…" : "Apply",
+                 ),
+               ),
+               lassoBulkSaveError
+                 ? React.createElement(
+                     "div",
+                     { style: { fontSize: 11, color: "#c00", marginTop: 4 } },
+                     lassoBulkSaveError,
+                   )
+                 : null,
+               lassoBulkSaved
+                 ? React.createElement(
+                     "div",
+                     { style: { fontSize: 11, color: "#2e7d32", marginTop: 4 } },
+                     `Saved to ${lassoSelected.size} point${lassoSelected.size !== 1 ? "s" : ""}.`,
+                   )
+                 : null,
+             ),
+             // Point list (scrollable)
             React.createElement(
               "div",
               {
@@ -2353,6 +2515,16 @@ function EmbeddingScatter({
                         p.label,
                       )
                     : null,
+                  (() => {
+                    const ul = lassoUserLabels[p.index];
+                    return ul
+                      ? React.createElement(
+                          "span",
+                          { style: { color: "#777", fontSize: 11 } },
+                          `\u2013\u2013 ${ul}`,
+                        )
+                      : null;
+                  })(),
                 ),
               ),
             ),
