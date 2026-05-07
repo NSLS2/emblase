@@ -60,6 +60,11 @@ class Settings(BaseSettings):
     nersc_container_image: str = "ghcr.io/genematx/emblase:latest"
     nersc_time_limit: str = "00:30:00"
     nersc_constraint: str = ""  # empty = no constraint, let Perlmutter pick any GPU node
+    # Queue/partition for job submission.
+    # "shared" → shared_gpu_ss11 / gpu_shared QOS — fastest for single-GPU jobs.
+    # "debug"  → gpu_ss11 / gpu_debug QOS — fast, but capped at 30 min.
+    # ""       → let the scheduler pick (lands on gpu_debug by default).
+    nersc_queue: str = "shared"
 
     # Compute backend selection: "local", "orion", or "nersc"
     compute_backend: str = "local"

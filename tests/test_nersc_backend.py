@@ -89,11 +89,13 @@ class _FakeClient:
         time_limit_s: int = 1800,
         nodes: int = 1,
         gpus_per_process: int = 1,
-        constraint: str = "gpu",
+        constraint: str = "",
+        queue_name: str = "",
         environment: dict | None = None,
         pre_launch: str = "",
         stdout_path: str = "",
         stderr_path: str = "",
+        volume_mounts: list | None = None,
     ) -> str:
         self.submitted = {
             "executable": executable,
@@ -104,10 +106,12 @@ class _FakeClient:
             "account": account,
             "time_limit_s": time_limit_s,
             "constraint": constraint,
+            "queue_name": queue_name,
             "environment": environment,
             "pre_launch": pre_launch,
             "stdout_path": stdout_path,
             "stderr_path": stderr_path,
+            "volume_mounts": volume_mounts,
         }
         return self._job_id
 
@@ -243,6 +247,70 @@ async def test_nersc_backend_submit_time_limit_converted():
     )
     await backend.submit(model_name="vit")
     assert client.submitted["time_limit_s"] == 2700
+
+
+@pytest.mark.asyncio
+async def test_nersc_backend_submit_queue_propagated():
+    """queue_name is forwarded to submit_job."""
+    client = _FakeClient()
+    backend = NERSCBackend(
+        client=client,
+        working_dir="/pscratch/jobs",
+        models_dir="/pscratch/models",
+        queue="gpu_shared",
+    )
+    await backend.submit(model_name="vit")
+    assert client.submitted["queue_name"] == "gpu_shared"
+
+
+@pytest.mark.asyncio
+async def test_nersc_client_submit_job_default_volume_mounts():
+    """NERSCClient.submit_job adds /pscratch volume mount by default."""
+    captured = {}
+
+    class _CapturingClient:
+        resource_id = "perlmutter"
+        base_url = "https://api.iri.nersc.gov/api/v1"
+
+        async def _ensure_client(self):
+            return self
+
+        async def post(self, url, json=None):
+            captured["payload"] = json
+
+            class _Resp:
+                def raise_for_status(self):
+                    pass
+
+                def json(self):
+                    return {"id": "42"}
+
+            return _Resp()
+
+    from emblase.compute.nersc import NERSCClient
+
+    real_client = NERSCClient.__new__(NERSCClient)
+    real_client.resource_id = "perlmutter"
+    real_client.base_url = "https://api.iri.nersc.gov/api/v1"
+    real_client._ensure_client = _CapturingClient()._ensure_client
+    real_client._http = _CapturingClient()
+
+    # Patch _ensure_client to return our capturing mock
+    async def _fake_ensure():
+        return _CapturingClient()
+
+    real_client._ensure_client = _fake_ensure
+
+    await real_client.submit_job(
+        executable="python",
+        arguments=["/pscratch/jobs/inference.py"],
+        working_dir="/pscratch/jobs",
+        container_image="ghcr.io/test/emblase:latest",
+    )
+
+    mounts = captured["payload"]["container"]["volume_mounts"]
+    assert any(m["source"] == "/pscratch" for m in mounts)
+    assert not any(m["source"] == "/global/cfs" for m in mounts)
 
 
 # ---------------------------------------------------------------------------

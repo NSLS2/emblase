@@ -31,9 +31,33 @@ Job delivery:
     are needed.  A structured ``JobSpec`` runs the script inside a container::
 
         pre_launch: "cat > /path/to/inference.py << '__EMBLASE_EOF__' ..."
-        container:  {image: <container_image>}
+        container:  {image: <container_image>, volume_mounts: [{/pscratch → /pscratch}]}
         executable: python
         arguments:  [/path/to/inference.py]
+
+    The ``pre_launch`` script runs on the host node *before* the container
+    starts, and ``/pscratch`` is mounted into the container at the same path
+    so the written script is visible inside.
+
+Perlmutter queues:
+    The ``queue_name`` field in the IRI JobSpec maps to Slurm partition names.
+    Valid values and their resulting Slurm partition/QOS:
+
+    ============  ====================  ============  ============================
+    queue_name    Slurm partition       Slurm QOS     Notes
+    ============  ====================  ============  ============================
+    ``"shared"``  ``shared_gpu_ss11``   gpu_shared    **Best for single-GPU jobs**
+                                                      — shares nodes, lowest wait
+    ``"debug"``   ``gpu_ss11``          gpu_debug     Fast dispatch, ≤ 30 min cap
+    ``""``        ``gpu_ss11``          gpu_debug     Scheduler default (= debug)
+    ``"regular"`` ``gpu_ss11``          gpu_regular   Standard, longer queue
+    ============  ====================  ============  ============================
+
+    Default: ``"shared"`` (set via ``EMBLASE_NERSC_QUEUE``).
+
+    Account note: GPU jobs on Perlmutter require the ``_g`` suffix on the
+    project code (e.g. ``m3792_g``, not ``m3792``).  Set
+    ``EMBLASE_NERSC_ACCOUNT=<project>_g`` in your ``.env``.
 
 Resource discovery:
     Call ``await NERSCClient.discover_resources()`` to list available resource
@@ -212,11 +236,13 @@ class NERSCClient:
         time_limit_s: int = 1800,
         nodes: int = 1,
         gpus_per_process: int = 1,
-        constraint: str = "gpu",
+        constraint: str = "",
+        queue_name: str = "",
         environment: dict[str, str] | None = None,
         pre_launch: str = "",
         stdout_path: str = "",
         stderr_path: str = "",
+        volume_mounts: list[dict] | None = None,
     ) -> str:
         """Submit a job via the IRI structured JobSpec.  Returns the job ID."""
         client = await self._ensure_client()
@@ -224,8 +250,13 @@ class NERSCClient:
         attributes: dict[str, Any] = {
             "duration": time_limit_s,
         }
+        custom: dict[str, str] = {}
         if constraint:
-            attributes["custom_attributes"] = {"constraint": constraint}
+            custom["constraint"] = constraint
+        if queue_name:
+            attributes["queue_name"] = queue_name
+        if custom:
+            attributes["custom_attributes"] = custom
         if account:
             attributes["account"] = account
 
@@ -235,12 +266,24 @@ class NERSCClient:
         if gpus_per_process >= 1:
             resources["gpu_cores_per_process"] = gpus_per_process
 
+        # Mount /pscratch into the Shifter container at the same path so that
+        # pre_launch-written scripts and model weights are visible inside the
+        # container.  /global/cfs is omitted — it is not always available on
+        # GPU nodes and an invalid mount path fails the job at startup.
+        if volume_mounts is None:
+            volume_mounts = [
+                {"source": "/pscratch", "target": "/pscratch", "read_only": False},
+            ]
+
         payload: dict[str, Any] = {
             "name": name,
             "executable": executable,
             "arguments": arguments,
             "directory": working_dir,
-            "container": {"image": container_image},
+            "container": {
+                "image": container_image,
+                "volume_mounts": volume_mounts,
+            },
             "resources": resources,
             "attributes": attributes,
         }
@@ -320,6 +363,7 @@ class NERSCBackend(ComputeBackend):
         container_image: str | None = None,
         time_limit: str | None = None,
         constraint: str | None = None,
+        queue: str | None = None,
     ):
         self.client = client or NERSCClient()
         self.working_dir = working_dir or settings.nersc_working_dir
@@ -328,6 +372,7 @@ class NERSCBackend(ComputeBackend):
         self.container_image = container_image or settings.nersc_container_image
         self.time_limit = time_limit or settings.nersc_time_limit
         self.constraint = constraint or settings.nersc_constraint
+        self.queue = queue if queue is not None else settings.nersc_queue
         self._jobs: dict[str, dict[str, Any]] = {}
 
     @staticmethod
@@ -424,6 +469,7 @@ class NERSCBackend(ComputeBackend):
             account=self.account,
             time_limit_s=self._parse_time_limit(self.time_limit),
             constraint=self.constraint,
+            queue_name=self.queue,
             environment=environment,
             pre_launch=pre_launch,
             stdout_path=log_path,
@@ -436,6 +482,15 @@ class NERSCBackend(ComputeBackend):
             "script_path": script_path,
             "log_path": log_path,
         }
+        logger.info(
+            "Submitted batch job %s  model=%r  queue=%s  account=%s  limit=%s  log=%s",
+            job_id,
+            model_name,
+            self.queue or "(default)",
+            self.account,
+            self.time_limit,
+            log_path,
+        )
         return job_id
 
     async def submit_streaming(
@@ -488,6 +543,7 @@ class NERSCBackend(ComputeBackend):
             account=self.account,
             time_limit_s=self._parse_time_limit(effective_limit),
             constraint=self.constraint,
+            queue_name=self.queue,
             environment=environment,
             pre_launch=pre_launch,
             stdout_path=log_path,
@@ -500,6 +556,15 @@ class NERSCBackend(ComputeBackend):
             "script_path": script_path,
             "log_path": log_path,
         }
+        logger.info(
+            "Submitted streaming job %s  model=%r  queue=%s  account=%s  limit=%s  log=%s",
+            job_id,
+            model_name,
+            self.queue or "(default)",
+            self.account,
+            effective_limit,
+            log_path,
+        )
         return job_id
 
     async def status(self, job_id: str) -> JobStatus:

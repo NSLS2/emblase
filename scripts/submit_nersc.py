@@ -186,6 +186,10 @@ async def _infer(args: argparse.Namespace) -> None:
     print(f"Models dir      : {backend.models_dir}")
     print(f"Container image : {backend.container_image}")
     print(f"Resource        : {backend.client.resource_id}")
+    print(f"Account         : {backend.account}")
+    print(f"Queue           : {backend.queue or '(scheduler default)'}")
+    print(f"Constraint      : {backend.constraint or '(none)'}")
+    print(f"Time limit      : {backend.time_limit}")
 
     param_specs = parse_param_specs(args.params)
 
@@ -202,7 +206,8 @@ async def _infer(args: argparse.Namespace) -> None:
         run_path=args.run or "",
         image_key=args.image_key,
     )
-    print(f"Task submitted: {task_id}")
+    print(f"Task submitted  : {task_id}")
+    print(f"Log path        : {backend._jobs[task_id]['log_path']}")
 
     if args.no_wait:
         print("(not waiting — use 'status <task_id>' to check)")
@@ -217,6 +222,10 @@ async def _stream(args: argparse.Namespace) -> None:
     print(f"Models dir      : {backend.models_dir}")
     print(f"Container image : {backend.container_image}")
     print(f"Resource        : {backend.client.resource_id}")
+    print(f"Account         : {backend.account}")
+    print(f"Queue           : {backend.queue or '(scheduler default)'}")
+    print(f"Constraint      : {backend.constraint or '(none)'}")
+    print(f"Time limit      : {backend.time_limit}")
 
     param_specs = parse_param_specs(args.params)
 
@@ -233,7 +242,8 @@ async def _stream(args: argparse.Namespace) -> None:
         projector=args.projector,
         classifier=args.classifier,
     )
-    print(f"Task submitted: {task_id}")
+    print(f"Task submitted  : {task_id}")
+    print(f"Log path        : {backend._jobs[task_id]['log_path']}")
 
     if args.no_wait:
         print("(not waiting — use 'status <task_id>' to check)")
