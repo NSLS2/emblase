@@ -45,6 +45,16 @@ from .orion import (
 
 _IRI_BASE = "https://api.iri.nersc.gov/api/v1"
 logger = logging.getLogger(__name__)
+_TERMINAL_STATES = {JobStatus.completed, JobStatus.failed}
+
+
+def _iri_base() -> str:
+    """Return the IRI API base URL from settings, ensuring /api/v1 suffix."""
+    uri = (settings.nersc_api_uri or _IRI_BASE).rstrip("/")
+    if not uri.endswith("/api/v1"):
+        uri = f"{uri}/api/v1"
+    return uri
+
 
 # IRI JobState enum values → our JobStatus
 _NERSC_STATE_MAP: dict[str, JobStatus] = {
@@ -56,8 +66,6 @@ _NERSC_STATE_MAP: dict[str, JobStatus] = {
     "failed":    JobStatus.failed,
     "canceled":  JobStatus.failed,
 }
-
-_TERMINAL_STATES = {JobStatus.completed, JobStatus.failed}
 
 
 @dataclass
@@ -84,11 +92,11 @@ class NERSCClient:
         self,
         api_token: str | None = None,
         resource_id: str | None = None,
-        base_url: str = _IRI_BASE,
+        base_url: str | None = None,
     ):
         self.api_token = api_token or settings.nersc_api_token
         self.resource_id = resource_id or settings.nersc_resource_id
-        self.base_url = base_url.rstrip("/")
+        self.base_url = (base_url or _iri_base()).rstrip("/")
         self._client: httpx.AsyncClient | None = None
 
     async def __aenter__(self) -> NERSCClient:
