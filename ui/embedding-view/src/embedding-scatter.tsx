@@ -2429,11 +2429,20 @@ function EmbeddingScatter({
             precision: paramSpecs[colorBy]?.precision ?? 2,
           }),
         ),
-    // Instructions
+    // Instructions + logo
     React.createElement(
       "div",
-      { style: { marginTop: 6, fontSize: 11, color: "#999" } },
-      "Scroll to zoom. Pan mode: drag to pan, click point to inspect. Lasso mode: draw to select points.",
+      { style: { marginTop: 6, display: "flex", alignItems: "center", justifyContent: "space-between" } },
+      React.createElement(
+        "span",
+        { style: { fontSize: 11, color: "#999" } },
+        "Scroll to zoom. Pan mode: drag to pan, click point to inspect. Lasso mode: draw to select points.",
+      ),
+      React.createElement("img", {
+        src: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAGQAAAAcCAYAAACXkxr4AAAFIUlEQVR42u2aaYhVZRjHf+feWRrH0tS0MhusxswPSWXGhJXagmWLShFoU0QL0Ur1Jdpo+9BeQstgtgtRQom0OE2Tk0boYNIULRhk2eZoojmWTs7M7cvvwMvhLiPdcQjOA4d73ve8y3Oe/7O+90BKKaVUmKIyrhOvlfNKaRDArCgAatYrSsW0fywkC/QG7aHAcPv+APYGzzJAXyrqgaOsv6OBu4FvFHjsqrqAFuCSPHNSKrOFxJZxFfA4UAO8C3wKbAWqgYnAbGAS0AFc4W/SqlIqk2U8oiWsVtgn6bKSNBP4XhDOTi1lYMC4LXBNyatdEAAq/a0BPjKmHKdFZlJx/jfKKMiJCrYbaNY6pgInAtcYS3LAdc6rDkD5CVhfBJDsIMWbJD/R/yEzjAX0su7nZ+B2YHyesc8JyswEKGfZP7uI0DN5wMoEY6NgTCbPmKhAmxL9pWJp5LxMgXZSVpkS/JYl6B8EdCrUboHJAU84pjoY+zmwIcEQwEYTABJCBrgX+AxYA9xlX8U+ajd52icD7xUR3kqgKVjvUmAtUA8sBU4tAVwFsMI4GhXho2xFeCy4GQLQBkyw5rjTvnmOOcBNL7T/+MBKIuAZYHvAbEUQl34EjgGOFswZPpsCnO99LVBn3ykBj5MdE/NaD8wFhgGjgMvsPxaYAxxsewiwBegBxtn3sbxPMW0fo8uda9YY11xzjIm4/iHenxPwNsp1pwWyiMplIWNlcETi+ddqSBjIx1qXNAZAAdzoyw5PANIBXB1Y4jj3uRZo1Q02AdOBnd5vVRHmAZ8I9ku6yvXA/cArttuAWcA64AHgLaDKvVYDq4Dr3bfN+adpPedaUz0EvK+irAQeBD4QuDXACcBrwNu2bwUWANuAxcAO4Mz+xMiKfgLTpfB3BPN6gN2BwGPqLbBxb8Kcc8G4bu9vUcgvAvOBH0wIrgS+An4zadgFXCT4m4FNJhZrXa9KAfYBBwYWkQWWy3tO7V9kWn64c85zXK3vWa0FtMjPULW/BfhFRTwDaNA6JwDvAEuA71S20QLSWspKSgWb+PlUAXlVRnuAi/WdbySC8kQ3/TYQfAQcBfwF/JlYe4VAVFtsDtNV7BKAdcDrzu0J9un2+t0xS9xzoSAtVEAZxzzlsU6TQO5WUM0K/Gataow8ZwVkkYXvDcDlwJPGu5tUmr/lo1LlPAz4x3fbHShmv46PSllIX+BWuvSXcTw5Alhm9lXp2D7gDl1KnObG2jjLgN8rkz0+v0dBrHLeRjWvWddQp2ZuMgb16br2Ai8AjwKHKvSM1tQBfKh1bVbwjcCXKsB2eejUrSzX+rf4u8dne3Q9Wy1yv3D9TmNdO3CBvI9x7VrgPi1pp++7zfuypr3LFOIW4NkghQ0pLhznJ9LeyfY3FlGEI4GRgXvBeFMfWFTcX6W7QYuqD9apDQIwgcsamuiP14sS9daQwGXFNMmYE7bDdWNrr9Odxe9eE8TRqnID0hAcHj5vIBtpAJ6m38wBjwVBPp7broZX5Sm+8hVn5Kk1SrncQutQpH9fz/uKpdmZfQgFZQPl6SJHJ9sMrCS0ocnn00tkGSFQUYHKOSowNipSbUdFqvBC4+jHmv0dx0BU/1Hwp9NSBdyqi1pgcE/SeFPDXABUerhYZlDi62GD1QYLxNMtfhqMEzFoO0xPUzAGGBS0ijfNRJLua5OZxogUjP3/F261Rx6jTUV/9Sik0N+9KQ3gsXy2RI2TfuQwCJ8BRQU+A0o/BUoppZTKTP8CuScxLTU8p1cAAAAASUVORK5CYII=",
+        alt: "Genesis Mission",
+        style: { height: 24, opacity: 0.5, marginLeft: 12, flexShrink: 0 },
+      }),
     ),
   );
 }
