@@ -77,15 +77,7 @@ class _FakeClient:
         self._job_id = job_id
         self._state = state
         self.submitted: dict = {}
-        self.uploaded: list[tuple[str, str]] = []
-        self.mkdirs: list[str] = []
         self.resource_id = "perlmutter"
-
-    async def mkdir(self, remote_path: str) -> None:
-        self.mkdirs.append(remote_path)
-
-    async def upload(self, remote_path: str, content: str) -> None:
-        self.uploaded.append((remote_path, content))
 
     async def submit_job(
         self,

@@ -54,7 +54,6 @@ class Settings(BaseSettings):
     nersc_api_uri: str = "https://api.iri.nersc.gov"
     nersc_api_token: str = ""
     nersc_resource_id: str = "perlmutter"
-    nersc_filesystem_resource_id: str = "scratch"  # IRI resource for filesystem ops (mkdir/upload)
     nersc_working_dir: str = "/pscratch/sd/y/confab26_demo/emblase/jobs"
     nersc_models_dir: str = "/pscratch/sd/y/confab26_demo/emblase/models"
     nersc_account: str = ""

@@ -11,14 +11,14 @@ API:
     Spec:     https://api.iri.nersc.gov/openapi.json  (Swagger UI at /docs)
 
 Job delivery:
-    The rendered Python inference script is uploaded to
-    ``{nersc_working_dir}/scripts/<ts>/inference.py`` via the IRI filesystem
-    upload endpoint.  A structured ``JobSpec`` is then submitted which runs
-    the script inside a container::
+    The rendered Python inference script is embedded directly in the job
+    submission payload via a ``pre_launch`` heredoc — no filesystem API calls
+    are needed.  A structured ``JobSpec`` runs the script inside a container::
 
-        container: {image: <container_image>}
+        pre_launch: "cat > /path/to/inference.py << '__EMBLASE_EOF__' ..."
+        container:  {image: <container_image>}
         executable: python
-        arguments: [/path/to/inference.py]
+        arguments:  [/path/to/inference.py]
 
 Resource discovery:
     Call ``await NERSCClient.discover_resources()`` to list available resource
@@ -92,14 +92,10 @@ class NERSCClient:
         self,
         api_token: str | None = None,
         resource_id: str | None = None,
-        filesystem_resource_id: str | None = None,
         base_url: str | None = None,
     ):
         self.api_token = api_token or settings.nersc_api_token
         self.resource_id = resource_id or settings.nersc_resource_id
-        self.filesystem_resource_id = (
-            filesystem_resource_id or settings.nersc_filesystem_resource_id
-        )
         self.base_url = (base_url or _iri_base()).rstrip("/")
         self._client: httpx.AsyncClient | None = None
 
@@ -142,43 +138,6 @@ class NERSCClient:
             return data
         # paginated response has items under a key
         return data.get("items", [data])
-
-    # ------------------------------------------------------------------
-    # Filesystem helpers
-    # ------------------------------------------------------------------
-
-    async def mkdir(self, remote_path: str) -> None:
-        """Create a directory on the NERSC filesystem (creates parents too)."""
-        client = await self._ensure_client()
-        resp = await client.post(
-            f"{self.base_url}/filesystem/mkdir/{self.filesystem_resource_id}",
-            json={"path": remote_path, "parent": True},
-        )
-        resp.raise_for_status()
-
-    async def upload(self, remote_path: str, content: str) -> None:
-        """Upload a text file to *remote_path* on the NERSC filesystem (max 5 MB).
-
-        The IRI upload endpoint takes the destination path as a query parameter
-        and the file content as a ``multipart/form-data`` ``file`` field.
-        """
-        client = await self._ensure_client()
-        # Build a separate client without Content-Type: application/json so that
-        # httpx can set the correct multipart boundary automatically.
-        upload_client = httpx.AsyncClient(
-            timeout=60.0,
-            headers={
-                "Authorization": f"Bearer {self.api_token}",
-                "Accept": "application/json",
-            },
-        )
-        async with upload_client:
-            resp = await upload_client.post(
-                f"{self.base_url}/filesystem/upload/{self.filesystem_resource_id}",
-                params={"path": remote_path},
-                files={"file": ("inference.py", content.encode(), "text/plain")},
-            )
-        resp.raise_for_status()
 
     # ------------------------------------------------------------------
     # Job submission / management
@@ -282,10 +241,10 @@ class NERSCClient:
 class NERSCBackend(ComputeBackend):
     """Submit inference jobs to NERSC (Perlmutter) via the IRI REST API.
 
-    The rendered Python inference script is uploaded to
-    ``{working_dir}/scripts/<timestamp>/inference.py`` on the NERSC
-    filesystem via the IRI upload endpoint, then submitted as a structured
-    ``JobSpec`` that runs the script inside a container image.
+    The rendered Python inference script is embedded in the job submission
+    payload via a ``pre_launch`` heredoc and written to
+    ``{working_dir}/scripts/<timestamp>/inference.py`` on the compute node
+    at job start.  The job then runs the script inside a container image.
 
     All secrets (Tiled URI, MLflow URI, API keys) are injected as
     ``environment`` in the job spec.
