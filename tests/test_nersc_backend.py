@@ -113,14 +113,12 @@ class _FakeClient:
     async def upload(self, remote_path: str, content: str) -> None:
         self.uploaded.append((remote_path, content))
 
-    async def submit_job(self, script, working_dir, constraint="gpu", account="",
-                         time_limit="00:30:00", nodes=1, tasks_per_node=1,
-                         environment=None) -> str:
+    async def submit_job(self, script: str, working_dir: str,
+                         environment: dict | None = None) -> str:
         self.submitted = {
             "script": script,
             "working_dir": working_dir,
             "environment": environment,
-            "account": account,
         }
         return self._task_id
 
@@ -158,9 +156,9 @@ async def test_nersc_backend_submit_calls_client():
     assert len(client.uploaded) == 1
     _, uploaded_content = client.uploaded[0]
     assert "vit" in uploaded_content
-    # Sbatch script submitted to NERSC
+    # Sbatch script submitted to NERSC contains account and shifter
     assert "shifter" in client.submitted["script"]
-    assert client.submitted["account"] == "nslsii"
+    assert "#SBATCH --account=nslsii" in client.submitted["script"]
 
 
 @pytest.mark.asyncio
@@ -442,8 +440,70 @@ def test_render_inference_script_classifier_and_projector():
         projector="umap_approx",
     )
     assert 'classifier_name = "my_cls"' in script
-    assert 'projector_mode = "name"' in script
-    assert 'projector_name = "umap_approx"' in script
+    assert 'projector_mode  = "name"' in script
+    assert 'projector_name  = "umap_approx"' in script
+
+
+def test_render_inference_script_image_key_default():
+    """NERSCBackend.submit() uses 'primary.pil900KW_image' as the image_key default."""
+    script = _render_inference_script(
+        model_name="vit",
+        models_dir="/pscratch/models",
+        image_key="primary.pil900KW_image",
+    )
+    assert '"primary.pil900KW_image"' in script
+
+
+# ---------------------------------------------------------------------------
+# monitor_job
+# ---------------------------------------------------------------------------
+
+
+def test_monitor_job_polls_until_terminal():
+    """monitor_job returns once the job reaches a terminal state."""
+    import asyncio
+
+    states = ["PENDING", "RUNNING", "COMPLETED"]
+    calls: list[str] = []
+
+    class _SequentialClient(_FakeClient):
+        async def get_job(self, task_id: str) -> NERSCJob:
+            state = states.pop(0) if states else "COMPLETED"
+            calls.append(state)
+            return NERSCJob(job_id=task_id, state=state)
+
+    backend = NERSCBackend(
+        client=_SequentialClient(),
+        working_dir="/j",
+        models_dir="/m",
+    )
+    backend.monitor_job("42", poll_interval=0.0)
+
+    assert calls[-1] == "COMPLETED"
+    assert len(calls) == 3
+
+
+def test_monitor_job_calls_on_status():
+    """on_status callback is invoked after each poll."""
+    status_log: list[tuple] = []
+
+    class _TerminalClient(_FakeClient):
+        async def get_job(self, task_id: str) -> NERSCJob:
+            return NERSCJob(job_id=task_id, state="COMPLETED")
+
+    backend = NERSCBackend(
+        client=_TerminalClient(),
+        working_dir="/j",
+        models_dir="/m",
+    )
+
+    def _on_status(state, node, elapsed):
+        status_log.append((state, node, elapsed))
+
+    backend.monitor_job("42", poll_interval=0.0, on_status=_on_status)
+    assert len(status_log) == 1
+    assert status_log[0][0] == "COMPLETED"
+    assert status_log[0][1] is None  # NERSC has no node field
 
 
 # ---------------------------------------------------------------------------

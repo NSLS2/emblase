@@ -6,6 +6,7 @@ import sys
 
 from .base import ComputeBackend, JobResult, JobStatus
 from .local import LocalBackend
+from .nersc import NERSCBackend, NERSCClient, NERSCJob
 from .orion import OrionBackend, OrionClient, OrionJob
 
 __all__ = [
@@ -13,6 +14,9 @@ __all__ = [
     "JobStatus",
     "JobResult",
     "LocalBackend",
+    "NERSCBackend",
+    "NERSCClient",
+    "NERSCJob",
     "OrionClient",
     "OrionJob",
     "OrionBackend",
@@ -49,7 +53,5 @@ def build_backend(name: str) -> ComputeBackend:
     if name == "local":
         return LocalBackend()
     if name == "nersc":
-        from .nersc import NERSCBackend  # optional dependency
-
         return NERSCBackend()
     sys.exit(f"Unknown backend: {name!r}  (choices: orion, local, nersc)")

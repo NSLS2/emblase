@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -39,6 +40,9 @@ from .orion import (
 )
 
 _IRI_BASE = "https://api.nersc.gov/api/v1.2"
+logger = logging.getLogger(__name__)
+
+_TERMINAL_STATES = {JobStatus.completed, JobStatus.failed}
 
 _NERSC_STATE_MAP: dict[str, JobStatus] = {
     # SLURM states forwarded by IRI
@@ -176,25 +180,19 @@ class NERSCClient:
         self,
         script: str,
         working_dir: str,
-        constraint: str = "gpu",
-        account: str = "",
-        time_limit: str = "00:30:00",
-        nodes: int = 1,
-        tasks_per_node: int = 1,
         environment: dict[str, str] | None = None,
     ) -> str:
-        """Submit a job to NERSC via the IRI compute API.  Returns the task ID."""
+        """Submit a job to NERSC via the IRI compute API.  Returns the task ID.
+
+        The batch script must contain all ``#SBATCH`` directives (constraint,
+        account, time limit, nodes).  The IRI API honours the embedded
+        directives when ``isPath`` is ``False``.
+        """
         client = await self._ensure_client()
         payload: dict[str, Any] = {
             "script": script,
             "isPath": False,
-            "constraint": constraint,
-            "timelimit": time_limit,
-            "nnodes": nodes,
-            "tasks_per_node": tasks_per_node,
         }
-        if account:
-            payload["account"] = account
         if environment:
             payload["env_vars"] = environment
 
@@ -375,7 +373,7 @@ class NERSCBackend(ComputeBackend):
         model_name: str,
         batch_size: int = 1,
         run_path: str = "",
-        image_key: str = "pil900KW_image",
+        image_key: str = "primary.pil900KW_image",
         inputs: list[str | tuple[str, str]] | None = None,
         output: str = "",
         mlflow_version: str = "",
@@ -424,9 +422,6 @@ class NERSCBackend(ComputeBackend):
         task_id = await self.client.submit_job(
             script=sbatch,
             working_dir=self.working_dir,
-            constraint=self.constraint,
-            account=self.account,
-            time_limit=self.time_limit,
             environment=environment,
         )
 
@@ -445,7 +440,7 @@ class NERSCBackend(ComputeBackend):
         batch_size: int = 8,
         mlflow_version: str = "",
         thumb_mode: str = "logroi",
-        image_key: str = "pil900KW_image",
+        image_key: str = "primary.pil900KW_image",
         ws_max_size: int = 64 * 1024 * 1024,
         param_specs: dict | None = None,
         projector: str | None = None,
@@ -487,9 +482,6 @@ class NERSCBackend(ComputeBackend):
         task_id = await self.client.submit_job(
             script=sbatch,
             working_dir=self.working_dir,
-            constraint=self.constraint,
-            account=self.account,
-            time_limit=time_limit or "02:00:00",
             environment=environment,
         )
 
@@ -536,3 +528,50 @@ class NERSCBackend(ComputeBackend):
 
     async def cancel(self, job_id: str) -> None:
         await self.client.cancel_job(job_id)
+
+    def monitor_job(
+        self,
+        job_id: str,
+        *,
+        poll_interval: float = 15.0,
+        log_prefix: str = "",
+        on_status: Any = None,
+    ) -> None:
+        """Block until *job_id* reaches a terminal state, logging state after each poll.
+
+        Polls the NERSC IRI REST API every *poll_interval* seconds and logs the
+        current state.  Returns once the job completes or fails.  No SSH used.
+
+        Parameters
+        ----------
+        job_id:
+            NERSC IRI task ID (string).
+        poll_interval:
+            Seconds between API polls (default 15 s — IRI tasks are slower to
+            transition than Slurm-direct polls).
+        log_prefix:
+            Optional string prepended to every status line (e.g. ``"[run_xyz]"``).
+        on_status:
+            Optional ``callable(state: str, node: None, elapsed_s: int)``
+            invoked after each poll.
+        """
+        prefix = f"{log_prefix} " if log_prefix else ""
+        t0 = time.monotonic()
+        _loop = asyncio.new_event_loop()
+        try:
+            while True:
+                time.sleep(poll_interval)
+                try:
+                    info = _loop.run_until_complete(self.client.get_job(job_id))
+                except Exception as exc:
+                    logger.warning("%sCould not poll job %s: %s", prefix, job_id, exc)
+                    continue
+                elapsed = int(time.monotonic() - t0)
+                logger.info("%s[%4ds] state=%s", prefix, elapsed, info.state)
+                if on_status:
+                    on_status(info.state, None, elapsed)
+                if _NERSC_STATE_MAP.get(info.state) in _TERMINAL_STATES:
+                    logger.info("%sJob %s finished: %s", prefix, job_id, info.state)
+                    break
+        finally:
+            _loop.close()
