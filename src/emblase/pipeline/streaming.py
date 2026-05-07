@@ -36,6 +36,7 @@ from typing import Any
 # Force certifi if available and SSL_CERT_FILE not already set.
 try:
     import certifi as _certifi
+
     os.environ.setdefault("SSL_CERT_FILE", _certifi.where())
 except ImportError:
     pass
@@ -47,18 +48,20 @@ logger = logging.getLogger(__name__)
 # Path helper — used to build Tiled path strings for Orion job parameters
 # ---------------------------------------------------------------------------
 
+
 def _tiled_path(node: Any) -> str:
     """Return the slash-joined Tiled path for a node."""
     parsed = urllib.parse.urlparse(str(node.uri))
     marker = "/api/v1/metadata/"
     if marker not in parsed.path:
         raise ValueError(f"Cannot parse path from URI: {node.uri}")
-    return parsed.path[parsed.path.index(marker) + len(marker):].strip("/")
+    return parsed.path[parsed.path.index(marker) + len(marker) :].strip("/")
 
 
 # ---------------------------------------------------------------------------
 # InputsWatcher
 # ---------------------------------------------------------------------------
+
 
 class InputsWatcher:
     """Watch a Tiled inputs container; submit one Orion streaming job per new run.
@@ -169,7 +172,9 @@ class InputsWatcher:
             asyncio.run_coroutine_threadsafe(coro, self.loop)
         else:
             threading.Thread(
-                target=asyncio.run, args=(coro,), daemon=True,
+                target=asyncio.run,
+                args=(coro,),
+                daemon=True,
                 name=f"emblase-submit-{run_key}",
             ).start()
 

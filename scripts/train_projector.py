@@ -42,10 +42,15 @@ logging.basicConfig(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__,
-                                     formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--dataset", required=True, metavar="TILED_PATH",
-                        help="Tiled path to the LatentSpaceEmbedding container.")
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument(
+        "--dataset",
+        required=True,
+        metavar="TILED_PATH",
+        help="Tiled path to the LatentSpaceEmbedding container.",
+    )
     parser.add_argument(
         "--projector-dir",
         default=str(Path(__file__).parent.parent / "models" / "umap_approx"),
@@ -55,20 +60,25 @@ def main() -> None:
     parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--batch-size", type=int, default=64)
-    parser.add_argument("--hidden-dims", default="128,64",
-                        help="Comma-separated hidden layer sizes (default: 128,64).")
+    parser.add_argument(
+        "--hidden-dims",
+        default="128,64",
+        help="Comma-separated hidden layer sizes (default: 128,64).",
+    )
     parser.add_argument("--n-neighbors", type=int, default=15)
     parser.add_argument("--min-dist", type=float, default=0.1)
     args = parser.parse_args()
 
     try:
         import certifi
+
         os.environ.setdefault("SSL_CERT_FILE", certifi.where())
     except ImportError:
         pass
 
-    from emblase.config import settings
     from tiled.client import from_uri
+
+    from emblase.config import settings
     from emblase.projector import train_projector
 
     tiled_uri = settings.tiled_server_uri

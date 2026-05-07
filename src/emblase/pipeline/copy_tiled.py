@@ -28,8 +28,9 @@ from __future__ import annotations
 
 import time
 from typing import Callable
-from tiled.structures.core import StructureFamily
+
 from tiled.client.container import Container
+from tiled.structures.core import StructureFamily
 
 
 def _walk_readables(node):
@@ -111,7 +112,9 @@ def deepcopy(
         key = path[-1] if path else src_key
         is_image = key == _img_array_name and s.structure_family == StructureFamily.array
         copy_func(
-            s, dst_parent, key,
+            s,
+            dst_parent,
+            key,
             access_tags=access_tags,
             batch_size=batch_size if is_image else None,
             batch_delay=batch_delay if is_image else 0.0,
@@ -135,7 +138,9 @@ def _register(structure_family: StructureFamily):
 
 @_register(StructureFamily.array)
 def copy_array(
-    src, dst, key,
+    src,
+    dst,
+    key,
     access_tags=None,
     batch_size: int | None = 1,
     batch_delay: float = 0.0,
@@ -178,7 +183,15 @@ def copy_array(
 
 
 @_register(StructureFamily.container)
-def copy_container(src, dst, key, access_tags=None, batch_size=None, batch_delay: float = 0.0, on_progress=None):
+def copy_container(
+    src,
+    dst,
+    key,
+    access_tags=None,
+    batch_size=None,
+    batch_delay: float = 0.0,
+    on_progress=None,
+):
     dst.create_container(
         key=key,
         metadata={k: v for k, v in src.metadata.items() if k != "stop"},
@@ -188,7 +201,15 @@ def copy_container(src, dst, key, access_tags=None, batch_size=None, batch_delay
 
 
 @_register(StructureFamily.table)
-def copy_table(src, dst, key, access_tags=None, batch_size=None, batch_delay: float = 0.0, on_progress=None):
+def copy_table(
+    src,
+    dst,
+    key,
+    access_tags=None,
+    batch_size=None,
+    batch_delay: float = 0.0,
+    on_progress=None,
+):
     base = dst.base if any(spec.name == "composite" for spec in src.specs) else dst
     if key in base:
         base.delete_contents(key, external_only=False, recursive=True)
@@ -205,6 +226,7 @@ def copy_table(src, dst, key, access_tags=None, batch_size=None, batch_delay: fl
 # LatentSpaceEmbedding copy
 # ---------------------------------------------------------------------------
 
+
 def _nullable_str_list(series) -> list[str | None]:
     """Convert a pandas Series to a list of str-or-None, replacing NA/NaN with None.
 
@@ -213,6 +235,7 @@ def _nullable_str_list(series) -> list[str | None]:
     ``float('nan')`` to ``None`` so the conversion is always safe.
     """
     import pandas as pd
+
     result = []
     for v in series:
         if v is None or v is pd.NA:
@@ -231,6 +254,7 @@ def _nullable_str_list(series) -> list[str | None]:
 def _nullable_list(series) -> list:
     """Convert a pandas Series to a plain list, replacing NA/NaN with None."""
     import pandas as pd
+
     result = []
     for v in series:
         if v is None or v is pd.NA:
@@ -253,7 +277,7 @@ def copy_embedding(
     batch_size: int = 16,
     batch_delay: float = 0.0,
     access_tags: list[str] | None = None,
-) -> "LatentSpaceEmbedding":
+) -> "LatentSpaceEmbedding":  # noqa: F821
     """Copy a ``LatentSpaceEmbedding`` container into *dst_parent*, batch by batch.
 
     *src* and *dst_parent* may point to different Tiled servers — the function
@@ -292,12 +316,11 @@ def copy_embedding(
         Client for the newly created destination container.
     """
     import numpy as np
+
     from ..tiled.client import LatentSpaceEmbedding, create_embedding_container
 
     if not isinstance(src, LatentSpaceEmbedding):
-        raise TypeError(
-            f"src must be a LatentSpaceEmbedding, got {type(src).__name__!r}"
-        )
+        raise TypeError(f"src must be a LatentSpaceEmbedding, got {type(src).__name__!r}")
 
     src_meta = src.metadata
     param_specs = src_meta.get("param_specs") or {}
@@ -310,8 +333,8 @@ def copy_embedding(
     dst_key = f"{base_name}_{int(time.time())}"
 
     # Read all source data up front
-    embeddings = src["embeddings"].read()    # (N, D)
-    thumbnails = src["thumbnails"].read()    # (N, *thumb_shape)
+    embeddings = src["embeddings"].read()  # (N, D)
+    thumbnails = src["thumbnails"].read()  # (N, *thumb_shape)
     projections = src["projections"].read()  # (N, P)
     idx_df = src.base["_index"].read()
 
@@ -384,4 +407,3 @@ def copy_embedding(
             time.sleep(batch_delay)
 
     return dst
-

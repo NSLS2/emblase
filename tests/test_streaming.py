@@ -6,8 +6,6 @@ import time
 import types
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
-
 from emblase.pipeline.streaming import InputsWatcher
 
 
@@ -75,9 +73,11 @@ def test_concurrent_duplicate_child_created_submits_once():
     barrier = threading.Barrier(10)
     threads = []
     for _ in range(10):
+
         def _fire(b=barrier, w=watcher):
             b.wait()  # all threads start at the same time
             w._on_child_created(_make_event("run_abc"))
+
         threads.append(threading.Thread(target=_fire))
 
     for t in threads:

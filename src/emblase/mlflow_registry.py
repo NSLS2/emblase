@@ -155,8 +155,7 @@ def _get_client(tracking_uri: str | None = None, api_key: str | None = None):
     uri = tracking_uri or settings.mlflow_tracking_uri
     if not uri:
         raise ValueError(
-            "No MLflow tracking URI set. "
-            "Set EMBLASE_MLFLOW_TRACKING_URI or pass --tracking-uri."
+            "No MLflow tracking URI set. Set EMBLASE_MLFLOW_TRACKING_URI or pass --tracking-uri."
         )
     mlflow.set_tracking_uri(uri)
 
@@ -257,13 +256,9 @@ def push(
         if file_path.is_dir():
             for child in sorted(file_path.iterdir()):
                 if child.is_file():
-                    _log_artifact_chunked(
-                        child, artifact_path="model", chunk_size=chunk_size
-                    )
+                    _log_artifact_chunked(child, artifact_path="model", chunk_size=chunk_size)
         else:
-            _log_artifact_chunked(
-                file_path, artifact_path="model", chunk_size=chunk_size
-            )
+            _log_artifact_chunked(file_path, artifact_path="model", chunk_size=chunk_size)
         artifact_uri = f"{run.info.artifact_uri}/model"
 
     try:
@@ -323,7 +318,9 @@ def pull(
     out.mkdir(parents=True, exist_ok=True)
     client = _get_client(tracking_uri, api_key)
 
-    version = resolve_version(model_name, version=version, tracking_uri=tracking_uri, api_key=api_key)
+    version = resolve_version(
+        model_name, version=version, tracking_uri=tracking_uri, api_key=api_key
+    )
 
     mv = client.get_model_version(model_name, str(version))
     print(f"Pulling '{model_name}' v{version} → {out}")
@@ -337,9 +334,7 @@ def pull(
 # ── list ──────────────────────────────────────────────────────────────────────
 
 
-def list_models(
-    tracking_uri: str | None = None, api_key: str | None = None
-) -> list[ModelInfo]:
+def list_models(tracking_uri: str | None = None, api_key: str | None = None) -> list[ModelInfo]:
     """Return a list of :class:`ModelInfo` for every registered model."""
     client = _get_client(tracking_uri, api_key)
     models = client.search_registered_models(filter_string="")
@@ -347,9 +342,7 @@ def list_models(
         [
             ModelInfo(
                 name=m.name,
-                latest_version=max(
-                    (int(v.version) for v in m.latest_versions), default=None
-                ),
+                latest_version=max((int(v.version) for v in m.latest_versions), default=None),
                 description=m.description,
             )
             for m in models
@@ -361,9 +354,7 @@ def list_models(
 # ── delete ────────────────────────────────────────────────────────────────────
 
 
-def delete(
-    model_name: str, tracking_uri: str | None = None, api_key: str | None = None
-) -> None:
+def delete(model_name: str, tracking_uri: str | None = None, api_key: str | None = None) -> None:
     """Delete a registered model and all its versions."""
     client = _get_client(tracking_uri, api_key)
     try:

@@ -89,9 +89,7 @@ def _pull(args: argparse.Namespace) -> None:
 
 
 def _list(args: argparse.Namespace) -> None:
-    models = mlflow_registry.list_models(
-        tracking_uri=args.tracking_uri, api_key=args.api_key
-    )
+    models = mlflow_registry.list_models(tracking_uri=args.tracking_uri, api_key=args.api_key)
     if not models:
         print("No registered models found.")
         return
@@ -120,16 +118,10 @@ def main() -> None:
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    push_p = sub.add_parser(
-        "push", help="Upload and register a model file or directory"
-    )
+    push_p = sub.add_parser("push", help="Upload and register a model file or directory")
     push_p.add_argument("path", help="Local file or directory to upload")
-    push_p.add_argument(
-        "--name", default=None, help="Registry name (default: derived from path)"
-    )
-    push_p.add_argument(
-        "--description", default=None, help="Human-readable description"
-    )
+    push_p.add_argument("--name", default=None, help="Registry name (default: derived from path)")
+    push_p.add_argument("--description", default=None, help="Human-readable description")
     push_p.add_argument(
         "--chunk-size",
         type=int,
@@ -142,9 +134,7 @@ def main() -> None:
 
     pull_p = sub.add_parser("pull", help="Download a registered model")
     pull_p.add_argument("model_name", help="Registered model name")
-    pull_p.add_argument(
-        "--version", default=None, help="Version to download (default: latest)"
-    )
+    pull_p.add_argument("--version", default=None, help="Version to download (default: latest)")
     pull_p.add_argument("--output", default=".", help="Output directory (default: .)")
     _add_common(pull_p)
 

@@ -48,7 +48,9 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
-        "--dataset", required=True, metavar="TILED_PATH",
+        "--dataset",
+        required=True,
+        metavar="TILED_PATH",
         help="Tiled path to the LatentSpaceEmbedding container.",
     )
     parser.add_argument(
@@ -100,13 +102,15 @@ def main() -> None:
 
     try:
         import certifi
+
         os.environ.setdefault("SSL_CERT_FILE", certifi.where())
     except ImportError:
         pass
 
-    from emblase.config import settings
     from tiled.client import from_uri
+
     from emblase.classifier import train_classifier
+    from emblase.config import settings
 
     tiled_uri = settings.tiled_server_uri
     tiled_key = settings.tiled_api_key

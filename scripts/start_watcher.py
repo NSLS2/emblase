@@ -80,36 +80,92 @@ def _build_parser() -> argparse.ArgumentParser:
         description="Watch a Tiled inputs container and submit streaming inference jobs.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p.add_argument("--inputs", required=True, metavar="TILED_PATH",
-                   help="Tiled path of the inputs container to watch.")
-    p.add_argument("--output", required=True, metavar="TILED_PATH",
-                   help="Tiled path of the results container (run output at OUTPUT/<run_key>).")
-    p.add_argument("--backend", default="orion", choices=["orion", "local", "nersc"],
-                   help="Compute backend (default: orion).")
-    p.add_argument("--model", default="bnl-nsls2-smi-vit", metavar="MODEL_NAME",
-                   help="Model name: short architecture or MLflow registry name.")
-    p.add_argument("--mlflow-version", default="", metavar="VERSION",
-                   help="MLflow model version (default: latest).")
-    p.add_argument("--image-key", default="primary.pil900KW_image", metavar="KEY",
-                   help="Dotted image-array key, e.g. 'primary.pil900KW_image'.")
-    p.add_argument("--batch-size", type=int, default=1, metavar="N",
-                   help="Frames per encode call on the compute node (default: 1).")
-    p.add_argument("--thumb-mode", default="logroi", choices=["default", "logroi"],
-                   help="Thumbnail mode (default: logroi).")
-    p.add_argument("--projector", default=None, metavar="NAME|false",
-                   help="Projector: omit=scratch, NAME=saved approx, false=NaN.")
-    p.add_argument("--classifier", default=None, metavar="NAME",
-                   help="Classifier name (omit = no labels).")
-    p.add_argument("--param", action="append", default=[], dest="params",
-                   metavar="name:source[:dtype[:units]]",
-                   help="Scalar param to store per embedding. Repeat for multiple.")
-    p.add_argument("--access-tags", default="", metavar="TAG1,TAG2",
-                   help="Comma-separated Tiled access tags for output containers.")
-    p.add_argument("--no-replay", action="store_true",
-                   help="Skip runs already present in --inputs on startup.")
-    p.add_argument("--log-level", default="INFO",
-                   choices=["DEBUG", "INFO", "WARNING", "ERROR"],
-                   help="Logging verbosity (default: INFO).")
+    p.add_argument(
+        "--inputs",
+        required=True,
+        metavar="TILED_PATH",
+        help="Tiled path of the inputs container to watch.",
+    )
+    p.add_argument(
+        "--output",
+        required=True,
+        metavar="TILED_PATH",
+        help="Tiled path of the results container (run output at OUTPUT/<run_key>).",
+    )
+    p.add_argument(
+        "--backend",
+        default="orion",
+        choices=["orion", "local", "nersc"],
+        help="Compute backend (default: orion).",
+    )
+    p.add_argument(
+        "--model",
+        default="bnl-nsls2-smi-vit",
+        metavar="MODEL_NAME",
+        help="Model name: short architecture or MLflow registry name.",
+    )
+    p.add_argument(
+        "--mlflow-version",
+        default="",
+        metavar="VERSION",
+        help="MLflow model version (default: latest).",
+    )
+    p.add_argument(
+        "--image-key",
+        default="primary.pil900KW_image",
+        metavar="KEY",
+        help="Dotted image-array key, e.g. 'primary.pil900KW_image'.",
+    )
+    p.add_argument(
+        "--batch-size",
+        type=int,
+        default=1,
+        metavar="N",
+        help="Frames per encode call on the compute node (default: 1).",
+    )
+    p.add_argument(
+        "--thumb-mode",
+        default="logroi",
+        choices=["default", "logroi"],
+        help="Thumbnail mode (default: logroi).",
+    )
+    p.add_argument(
+        "--projector",
+        default=None,
+        metavar="NAME|false",
+        help="Projector: omit=scratch, NAME=saved approx, false=NaN.",
+    )
+    p.add_argument(
+        "--classifier",
+        default=None,
+        metavar="NAME",
+        help="Classifier name (omit = no labels).",
+    )
+    p.add_argument(
+        "--param",
+        action="append",
+        default=[],
+        dest="params",
+        metavar="name:source[:dtype[:units]]",
+        help="Scalar param to store per embedding. Repeat for multiple.",
+    )
+    p.add_argument(
+        "--access-tags",
+        default="",
+        metavar="TAG1,TAG2",
+        help="Comma-separated Tiled access tags for output containers.",
+    )
+    p.add_argument(
+        "--no-replay",
+        action="store_true",
+        help="Skip runs already present in --inputs on startup.",
+    )
+    p.add_argument(
+        "--log-level",
+        default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        help="Logging verbosity (default: INFO).",
+    )
     return p
 
 

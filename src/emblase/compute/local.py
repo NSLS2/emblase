@@ -39,16 +39,12 @@ class LocalBackend(ComputeBackend):
             size = image_size or imgs.shape[-2:]
             model = load_model(model_name, latent_dim=latent_dim, image_size=size)
             output = encode(model, torch.from_numpy(imgs).float())
-            return JobResult(
-                job_id=job_id, status=JobStatus.completed, output_data=output
-            )
+            return JobResult(job_id=job_id, status=JobStatus.completed, output_data=output)
 
         try:
             self._jobs[job_id] = await asyncio.to_thread(_run)
         except Exception as e:
-            self._jobs[job_id] = JobResult(
-                job_id=job_id, status=JobStatus.failed, error=str(e)
-            )
+            self._jobs[job_id] = JobResult(job_id=job_id, status=JobStatus.failed, error=str(e))
 
         return job_id
 
@@ -61,6 +57,4 @@ class LocalBackend(ComputeBackend):
     async def cancel(self, job_id: str) -> None:
         if job_id not in self._jobs:
             raise KeyError(f"Unknown job_id: {job_id!r}")
-        self._jobs[job_id] = JobResult(
-            job_id=job_id, status=JobStatus.failed, error="Cancelled"
-        )
+        self._jobs[job_id] = JobResult(job_id=job_id, status=JobStatus.failed, error="Cancelled")

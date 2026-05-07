@@ -17,10 +17,8 @@ from __future__ import annotations
 
 import warnings
 
-from emblase.projector import (
-    apply_projector as apply_umap,
-    train_projector as train_umap,
-)
+from emblase.projector import apply_projector as apply_umap
+from emblase.projector import train_projector as train_umap
 
 __all__ = ["train_umap", "apply_umap"]
 

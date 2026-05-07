@@ -50,5 +50,6 @@ def build_backend(name: str) -> ComputeBackend:
         return LocalBackend()
     if name == "nersc":
         from .nersc import NERSCBackend  # optional dependency
+
         return NERSCBackend()
     sys.exit(f"Unknown backend: {name!r}  (choices: orion, local, nersc)")

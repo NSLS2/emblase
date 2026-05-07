@@ -72,8 +72,7 @@ def _load_from_mlflow(model_name: str, **kwargs) -> torch.nn.Module:
     requested_version = kwargs.get("mlflow_version")
 
     cache_root = kwargs.get("cache_dir") or Path(
-        os.environ.get("EMBLASE_MODEL_CACHE_DIR")
-        or Path.home() / ".cache" / "emblase" / "models"
+        os.environ.get("EMBLASE_MODEL_CACHE_DIR") or Path.home() / ".cache" / "emblase" / "models"
     )
 
     # Cache-first: if no specific version is requested, scan the local cache
@@ -83,8 +82,10 @@ def _load_from_mlflow(model_name: str, **kwargs) -> torch.nn.Module:
     if requested_version is not None:
         # Explicit version requested — resolve (no-op, just stringifies) then check cache.
         version = mlflow_registry.resolve_version(
-            model_name, version=requested_version,
-            tracking_uri=tracking_uri, api_key=api_key,
+            model_name,
+            version=requested_version,
+            tracking_uri=tracking_uri,
+            api_key=api_key,
         )
     else:
         # Look for any cached versions: <cache_root>/<model_name>/v<N>/model/loader.py
@@ -98,13 +99,16 @@ def _load_from_mlflow(model_name: str, **kwargs) -> torch.nn.Module:
             version = str(max(cached_versions))
             log.info(
                 "Cache-first: using cached '%s' v%s (skip MLflow API call)",
-                model_name, version,
+                model_name,
+                version,
             )
         else:
             # No cache — must resolve from MLflow.
             version = mlflow_registry.resolve_version(
-                model_name, version=None,
-                tracking_uri=tracking_uri, api_key=api_key,
+                model_name,
+                version=None,
+                tracking_uri=tracking_uri,
+                api_key=api_key,
             )
 
     # weights_dir is always <cache_root>/<model_name>/v<version>/model/
@@ -175,6 +179,7 @@ def encode(
         if input_size is None:
             return t
         import torch.nn.functional as F
+
         target_H, target_W = input_size
         _, _, h, w = t.shape
         if h == target_H and w == target_W:
@@ -193,7 +198,9 @@ def encode(
 
         log.debug(
             "Resized %s → %s then padded to %s",
-            (h, w), (new_h, new_w), (target_H, target_W),
+            (h, w),
+            (new_h, new_w),
+            (target_H, target_W),
         )
         return padded
 
@@ -218,7 +225,10 @@ def encode(
                 n_batches = (len(images) + batch_size - 1) // batch_size
                 log.info(
                     "Encoding %d frames %s in %d batch(es) of %d",
-                    len(images), tuple(shapes)[0], n_batches, batch_size,
+                    len(images),
+                    tuple(shapes)[0],
+                    n_batches,
+                    batch_size,
                 )
                 for i in range(0, len(tensor), batch_size):
                     results.append(_forward(tensor[i : i + batch_size]))
@@ -226,7 +236,8 @@ def encode(
                 # Truly ragged — must process one at a time.
                 log.info(
                     "Encoding %d ragged frames (%d distinct shapes) one at a time",
-                    len(images), len(shapes),
+                    len(images),
+                    len(shapes),
                 )
                 for i, frame in enumerate(images):
                     t = torch.from_numpy(np.asarray(frame, dtype=np.float32))[None, None].to(device)
@@ -235,7 +246,9 @@ def encode(
             n_batches = (len(images) + batch_size - 1) // batch_size
             log.info(
                 "Encoding tensor %s in %d batch(es) of %d",
-                tuple(images.shape), n_batches, batch_size,
+                tuple(images.shape),
+                n_batches,
+                batch_size,
             )
             for i in range(0, len(images), batch_size):
                 results.append(_forward(images[i : i + batch_size].to(device)))

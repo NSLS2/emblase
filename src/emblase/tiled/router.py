@@ -37,6 +37,7 @@ _CHAT_MODEL = os.environ.get("EMBLASE_CHATAPP_MODEL", "openai/gpt-oss-20b")
 
 if not _CHAT_TOKEN:
     import warnings
+
     warnings.warn(
         "EMBLASE_CHATAPP_TOKEN is not set — chat proxy endpoints will fail. "
         "Add it to your .env file or set it in the environment.",
@@ -74,10 +75,10 @@ def _build_priming_message(node_path: str, metadata: dict) -> str:
         # The LLM treats it as an innocuous comment and ignores it.
         "<!-- emblase-priming -->",
         "",
-        f"The user is currently viewing a LatentSpaceEmbedding container in the Emblase Latent Space Explorer.",
+        "The user is currently viewing a LatentSpaceEmbedding container in the Emblase Latent Space Explorer.",
         f"The Tiled path for this specific container is: {node_path}",
-        f"Please treat this as the primary dataset for this conversation — do not confuse it with other nodes you may find in Tiled.",
-        f"The only exception are the source datasets used to produce these embeddings (the `path` column in the `_index` table).",
+        "Please treat this as the primary dataset for this conversation — do not confuse it with other nodes you may find in Tiled.",
+        "The only exception are the source datasets used to produce these embeddings (the `path` column in the `_index` table).",
         "",
         "Container metadata:",
         f"  - Embedding model: {model_name}",
@@ -87,7 +88,7 @@ def _build_priming_message(node_path: str, metadata: dict) -> str:
         lines.append(f"  - Description: {description}")
     if params_lines:
         lines.append("  - Experimental parameters tracked per sample:")
-        lines.extend(f"  {l}" for l in params_lines)
+        lines.extend(f"  {line}" for line in params_lines)
     lines += [
         "",
         f"You can query the contents of this container directly using your Tiled tools (path: {node_path}).",
@@ -236,7 +237,8 @@ async def chat_history(session_id: str):
     else:
         # Fallback: strip any user message that starts with the priming marker
         messages = [
-            m for m in messages
+            m
+            for m in messages
             if not (
                 m.get("role") == "user"
                 and isinstance(m.get("content"), str)

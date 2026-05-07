@@ -68,6 +68,7 @@ def load_projector(
     model_dir = resolve_model_dir(projector_name, models_dir)
     model_dir_str = str(model_dir)
     import sys
+
     if model_dir_str not in sys.path:
         sys.path.insert(0, model_dir_str)
 

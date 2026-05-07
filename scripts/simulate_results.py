@@ -59,6 +59,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 try:
     import certifi as _certifi
+
     os.environ.setdefault("SSL_CERT_FILE", _certifi.where())
 except ImportError:
     pass
@@ -142,10 +143,7 @@ def main() -> None:
     except KeyError:
         sys.exit(f"Source not found: {args.src}")
     if not isinstance(src_node, LatentSpaceEmbedding):
-        sys.exit(
-            f"{args.src!r} is not a LatentSpaceEmbedding "
-            f"(got {type(src_node).__name__})"
-        )
+        sys.exit(f"{args.src!r} is not a LatentSpaceEmbedding (got {type(src_node).__name__})")
 
     # --- connect to local destination ---
     local = from_uri(args.local_uri, api_key=args.local_api_key)

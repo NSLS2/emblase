@@ -1,19 +1,19 @@
 """Tests for emblase.tiled.client — read_images and write_output."""
 
-import numpy as np
-import pytest
 from unittest.mock import MagicMock, patch
 
+import numpy as np
+import pytest
+
 from emblase.tiled.client import (
-    read_images,
-    write_output,
-    _log_thumb_fn,
     _LOG_THUMB_ROI,
-    _infer_param_specs,
-    _make_index_schema,
     THUMB_MODES,
     LatentSpaceEmbedding,
-    ParamSpec,
+    _infer_param_specs,
+    _log_thumb_fn,
+    _make_index_schema,
+    read_images,
+    write_output,
 )
 
 
@@ -44,6 +44,7 @@ def _make_client(nodes: dict) -> MagicMock:
 # ---------------------------------------------------------------------------
 # read_images — bare path (str entries)
 # ---------------------------------------------------------------------------
+
 
 def test_read_images_2d():
     """A single 2-D array (bare path) yields one frame and one provenance entry."""
@@ -111,6 +112,7 @@ def test_read_images_1d_raises():
 # read_images — (path, slice) tuple entries
 # ---------------------------------------------------------------------------
 
+
 def test_read_images_with_slice():
     """(path, slice) tuple passes a slice object to node.read()."""
     full = np.arange(5 * 32 * 32, dtype=np.float32).reshape(5, 32, 32)
@@ -146,6 +148,7 @@ def test_read_images_mixed_str_and_tuple():
 # write_output
 # ---------------------------------------------------------------------------
 
+
 @patch("emblase.tiled.client.create_embedding_container")
 @patch("emblase.tiled.client.LatentSpaceEmbedding")
 def test_write_output_creates_container_when_missing(mock_lse_cls, mock_create):
@@ -170,8 +173,9 @@ def test_write_output_creates_container_when_missing(mock_lse_cls, mock_create):
 @patch("emblase.tiled.client.create_embedding_container")
 def test_write_output_appends_to_existing_container(mock_create):
     """write_output appends to existing container without re-creating it."""
-    from emblase.tiled.client import LatentSpaceEmbedding
     from unittest.mock import create_autospec
+
+    from emblase.tiled.client import LatentSpaceEmbedding
 
     embeddings = np.ones((2, 4), dtype=np.float32)
     container = create_autospec(LatentSpaceEmbedding, instance=True)
@@ -304,6 +308,7 @@ def test_write_output_passes_access_tags_to_append(mock_lse_cls, mock_create):
 # _log_thumb_fn and thumb_mode tests
 # ---------------------------------------------------------------------------
 
+
 class TestLogThumbFn:
     """Unit tests for the log-normalised thumbnail function."""
 
@@ -402,8 +407,14 @@ def test_write_output_thumb_fn_overrides_mode(mock_lse_cls, mock_create):
         return np.zeros((frames.shape[0], 4, 4), dtype=np.float32)
 
     # thumb_fn supplied alongside thumb_mode="logroi" — custom_fn must win
-    write_output(root, "results", embeddings, images=images,
-                 thumb_fn=custom_fn, thumb_mode="logroi")
+    write_output(
+        root,
+        "results",
+        embeddings,
+        images=images,
+        thumb_fn=custom_fn,
+        thumb_mode="logroi",
+    )
 
     assert len(call_log) == 1 and call_log[0] is sentinel
 
@@ -450,6 +461,7 @@ def test_write_output_default_thumb_mode_resizes(mock_lse_cls, mock_create):
 # ---------------------------------------------------------------------------
 # LatentSpaceEmbedding._write_arrays — projections always present
 # ---------------------------------------------------------------------------
+
 
 class _FakeLSE:
     """Minimal stand-in for LatentSpaceEmbedding for _write_arrays testing."""
@@ -518,6 +530,7 @@ def test_write_arrays_projections_shape_matches_batch():
 # _make_index_schema — param column generation
 # ---------------------------------------------------------------------------
 
+
 class TestMakeIndexSchema:
     def test_no_params_returns_base_schema(self):
         schema = _make_index_schema()
@@ -528,6 +541,7 @@ class TestMakeIndexSchema:
 
     def test_float_param_is_float64(self):
         import pyarrow as pa
+
         schema = _make_index_schema({"temp": {"dtype": "float", "units": "°C"}})
         field = schema.field("param_temp")
         assert field.type == pa.float64()
@@ -535,16 +549,19 @@ class TestMakeIndexSchema:
 
     def test_integer_param_is_int64(self):
         import pyarrow as pa
+
         schema = _make_index_schema({"scan_id": {"dtype": "integer"}})
         assert schema.field("param_scan_id").type == pa.int64()
 
     def test_string_param_is_string(self):
         import pyarrow as pa
+
         schema = _make_index_schema({"sample": {"dtype": "string"}})
         assert schema.field("param_sample").type == pa.string()
 
     def test_boolean_param_is_bool(self):
         import pyarrow as pa
+
         schema = _make_index_schema({"is_cal": {"dtype": "boolean"}})
         assert schema.field("param_is_cal").type == pa.bool_()
 
@@ -567,6 +584,7 @@ class TestMakeIndexSchema:
 # ---------------------------------------------------------------------------
 # _infer_param_specs — dtype inference from values
 # ---------------------------------------------------------------------------
+
 
 class TestInferParamSpecs:
     def test_float_values(self):
@@ -594,9 +612,7 @@ class TestInferParamSpecs:
         assert specs["scan_id"]["dtype"] == "integer"
 
     def test_multiple_params(self):
-        specs = _infer_param_specs({
-            "temp": [25.0], "scan_id": [1], "sample": ["A"]
-        })
+        specs = _infer_param_specs({"temp": [25.0], "scan_id": [1], "sample": ["A"]})
         assert specs["temp"]["dtype"] == "float"
         assert specs["scan_id"]["dtype"] == "integer"
         assert specs["sample"]["dtype"] == "string"
@@ -605,6 +621,7 @@ class TestInferParamSpecs:
 # ---------------------------------------------------------------------------
 # LatentSpaceEmbedding.append — params validation
 # ---------------------------------------------------------------------------
+
 
 class _FakeLSEWithParams:
     """Stand-in for LatentSpaceEmbedding with param support for append() testing."""
@@ -618,7 +635,6 @@ class _FakeLSEWithParams:
         return self._num_embeddings
 
     def __init__(self, param_specs=None):
-        import pyarrow as pa
         self._param_specs = param_specs or {}
         self._index_schema = _make_index_schema(self._param_specs)
         self.metadata = {"embedding_dim": 4, "thumb_shape": [8, 8]}
@@ -645,7 +661,9 @@ def test_append_params_stored_in_index_table():
     thumbnails = np.zeros((2, 8, 8), dtype=np.float32)
 
     LatentSpaceEmbedding.append(
-        lse, embeddings, thumbnails,
+        lse,
+        embeddings,
+        thumbnails,
         paths=["a", "b"],
         params={"temp": [25.1, 25.3], "scan_id": [1, 2]},
     )
@@ -666,7 +684,9 @@ def test_append_missing_param_stored_as_null():
 
     # Only supply "temp", omit "sample"
     LatentSpaceEmbedding.append(
-        lse, embeddings, thumbnails,
+        lse,
+        embeddings,
+        thumbnails,
         paths=["a", "b"],
         params={"temp": [25.0, 26.0]},
     )
@@ -683,7 +703,9 @@ def test_append_unknown_param_raises():
 
     with pytest.raises(ValueError, match="Unknown parameter"):
         LatentSpaceEmbedding.append(
-            lse, embeddings, thumbnails,
+            lse,
+            embeddings,
+            thumbnails,
             paths=["a", "b"],
             params={"temp": [25.0, 26.0], "typo": [1, 2]},
         )
@@ -697,7 +719,9 @@ def test_append_param_wrong_length_raises():
 
     with pytest.raises(ValueError, match="expected 3 values"):
         LatentSpaceEmbedding.append(
-            lse, embeddings, thumbnails,
+            lse,
+            embeddings,
+            thumbnails,
             paths=["a", "b", "c"],
             params={"temp": [25.0, 26.0]},  # only 2, batch_size=3
         )
@@ -710,7 +734,10 @@ def test_append_no_params_ok_when_none_declared():
     thumbnails = np.zeros((2, 8, 8), dtype=np.float32)
 
     LatentSpaceEmbedding.append(
-        lse, embeddings, thumbnails, paths=["a", "b"],
+        lse,
+        embeddings,
+        thumbnails,
+        paths=["a", "b"],
     )
 
     table = lse._appended[0]
@@ -738,6 +765,7 @@ def test_append_indx_matches_array_row_offset():
 # ---------------------------------------------------------------------------
 # write_output — params forwarded correctly
 # ---------------------------------------------------------------------------
+
 
 @patch("emblase.tiled.client.create_embedding_container")
 @patch("emblase.tiled.client.LatentSpaceEmbedding")
@@ -770,8 +798,7 @@ def test_write_output_infers_param_specs_when_not_given(mock_lse_cls, mock_creat
     root = MagicMock()
     root.__getitem__ = MagicMock(side_effect=KeyError)
 
-    write_output(root, "results", embeddings,
-                 params={"temp": [25.0, 26.0], "scan_id": [1, 2]})
+    write_output(root, "results", embeddings, params={"temp": [25.0, 26.0], "scan_id": [1, 2]})
 
     _, kwargs = mock_create.call_args
     specs = kwargs["params"]
@@ -794,9 +821,13 @@ def test_write_output_uses_explicit_param_specs(mock_lse_cls, mock_create):
     explicit_specs = {
         "temp": {"dtype": "float", "units": "°C", "display_name": "Temperature"},
     }
-    write_output(root, "results", embeddings,
-                 params={"temp": [25.0, 26.0]},
-                 param_specs=explicit_specs)
+    write_output(
+        root,
+        "results",
+        embeddings,
+        params={"temp": [25.0, 26.0]},
+        param_specs=explicit_specs,
+    )
 
     _, kwargs = mock_create.call_args
     assert kwargs["params"] == explicit_specs
@@ -806,11 +837,13 @@ def test_write_output_uses_explicit_param_specs(mock_lse_cls, mock_create):
 # write_output — labels forwarded correctly
 # ---------------------------------------------------------------------------
 
+
 @patch("emblase.tiled.client.create_embedding_container")
 @patch("emblase.tiled.client.LatentSpaceEmbedding")
 def test_write_output_passes_labels_to_append(mock_lse_cls, mock_create):
     """labels list is forwarded to container.append()."""
     from emblase.tiled.client import _clear_embedding_container_cache
+
     _clear_embedding_container_cache()
 
     embeddings = np.zeros((3, 4), dtype=np.float32)
@@ -833,6 +866,7 @@ def test_write_output_passes_labels_to_append(mock_lse_cls, mock_create):
 def test_write_output_no_labels_passes_none(mock_lse_cls, mock_create):
     """When labels is omitted, None is forwarded to container.append()."""
     from emblase.tiled.client import _clear_embedding_container_cache
+
     _clear_embedding_container_cache()
 
     embeddings = np.zeros((2, 4), dtype=np.float32)
@@ -853,6 +887,7 @@ def test_write_output_no_labels_passes_none(mock_lse_cls, mock_create):
 # LatentSpaceEmbedding.append — label column written correctly
 # ---------------------------------------------------------------------------
 
+
 def test_append_labels_stored_in_index_table():
     """Labels end up in the 'label' column of the PyArrow table."""
     lse = _FakeLSEWithParams({})
@@ -860,7 +895,9 @@ def test_append_labels_stored_in_index_table():
     thumbnails = np.zeros((3, 8, 8), dtype=np.float32)
 
     LatentSpaceEmbedding.append(
-        lse, embeddings, thumbnails,
+        lse,
+        embeddings,
+        thumbnails,
         paths=["a", "b", "c"],
         labels=["cls_0", "cls_1", "cls_0"],
     )
@@ -877,7 +914,10 @@ def test_append_no_labels_stored_as_null():
     thumbnails = np.zeros((2, 8, 8), dtype=np.float32)
 
     LatentSpaceEmbedding.append(
-        lse, embeddings, thumbnails, paths=["a", "b"],
+        lse,
+        embeddings,
+        thumbnails,
+        paths=["a", "b"],
     )
 
     table = lse._appended[0]

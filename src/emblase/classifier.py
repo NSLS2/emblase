@@ -32,7 +32,6 @@ from __future__ import annotations
 
 import json
 import logging
-import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -47,6 +46,7 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
 
 def _build_mlp(input_dim: int, hidden_dims: list[int], n_classes: int, device):
     """Build a classification MLP using torch."""
@@ -100,12 +100,14 @@ def _cluster_embeddings(
 
     if n_clusters is not None:
         from sklearn.cluster import KMeans
+
         log.info("KMeans clustering: n_clusters=%d", n_clusters)
         km = KMeans(n_clusters=n_clusters, random_state=random_state, n_init="auto")
         cluster_ids = km.fit_predict(X_cluster).astype(np.int64)
     else:
         try:
             import hdbscan
+
             log.info("HDBSCAN clustering: min_cluster_size=%d", min_cluster_size)
             clusterer = hdbscan.HDBSCAN(min_cluster_size=min_cluster_size)
             cluster_ids = clusterer.fit_predict(X_cluster).astype(np.int64)
@@ -114,6 +116,7 @@ def _cluster_embeddings(
         except ImportError:
             log.warning("hdbscan not installed — falling back to KMeans(n_clusters=8)")
             from sklearn.cluster import KMeans
+
             km = KMeans(n_clusters=8, random_state=random_state, n_init="auto")
             cluster_ids = km.fit_predict(X_cluster).astype(np.int64)
 
@@ -162,7 +165,13 @@ def _train_classifier_mlp(
     log.info(
         "Training classifier MLP: input_dim=%d hidden=%s n_classes=%d "
         "epochs=%d lr=%.0e batch=%d device=%s",
-        X.shape[1], hidden_dims, n_classes, epochs, lr, batch_size, device,
+        X.shape[1],
+        hidden_dims,
+        n_classes,
+        epochs,
+        lr,
+        batch_size,
+        device,
     )
 
     model.train()
@@ -180,8 +189,13 @@ def _train_classifier_mlp(
         scheduler.step()
         if epoch % max(1, epochs // 10) == 0 or epoch == 1:
             acc = n_correct / len(X)
-            log.info("  epoch %4d/%d  loss=%.4f  acc=%.3f", epoch, epochs,
-                     total_loss / len(X), acc)
+            log.info(
+                "  epoch %4d/%d  loss=%.4f  acc=%.3f",
+                epoch,
+                epochs,
+                total_loss / len(X),
+                acc,
+            )
 
     model.eval()
     return model
@@ -190,6 +204,7 @@ def _train_classifier_mlp(
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
 
 def train_classifier(
     node: "LatentSpaceEmbedding",
@@ -258,8 +273,11 @@ def train_classifier(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     log.info("Device: %s", device)
 
-    log.info("Reading embeddings from node (%d × %d)…",
-             node.num_embeddings, node.embedding_dim)
+    log.info(
+        "Reading embeddings from node (%d × %d)…",
+        node.num_embeddings,
+        node.embedding_dim,
+    )
     embeddings = node.read_embeddings()
 
     projections: np.ndarray | None = None
@@ -297,7 +315,8 @@ def train_classifier(
     y = np.array([id_remap[cid] for cid in cluster_ids], dtype=np.int64)
 
     model = _train_classifier_mlp(
-        X_scaled, y,
+        X_scaled,
+        y,
         n_classes=n_classes,
         hidden_dims=hidden_dims,
         epochs=epochs,
@@ -379,8 +398,12 @@ def apply_classifier(
     model = _build_mlp(input_dim, hidden_dims, n_classes, device)
     model.load_state_dict(state_dict)
     model.eval()
-    log.info("Classifier MLP loaded: input_dim=%d hidden=%s n_classes=%d",
-             input_dim, hidden_dims, n_classes)
+    log.info(
+        "Classifier MLP loaded: input_dim=%d hidden=%s n_classes=%d",
+        input_dim,
+        hidden_dims,
+        n_classes,
+    )
 
     X = embeddings.astype("float32")
     if scaler is not None:
