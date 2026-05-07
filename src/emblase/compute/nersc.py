@@ -343,14 +343,20 @@ class NERSCBackend(ComputeBackend):
                 env["EMBLASE_MODEL_CACHE_DIR"] = settings.model_cache_dir
         return env
 
-    async def _upload_script(self, py_script: str, label: str) -> str:
-        """Upload *py_script* to NERSC and return its remote path."""
-        ts = int(time.time() * 1000)
-        script_dir = f"{self.working_dir}/scripts/{ts}_{label}"
-        script_path = f"{script_dir}/inference.py"
-        await self.client.mkdir(script_dir)
-        await self.client.upload(script_path, py_script)
-        return script_path
+    def _script_pre_launch(self, py_script: str, script_path: str) -> str:
+        """Return a pre_launch shell snippet that writes *py_script* to *script_path*.
+
+        This avoids any filesystem API calls — the script content is embedded
+        directly in the job submission payload via a heredoc.
+        """
+        # Escape any occurrence of the heredoc delimiter inside the script.
+        safe = py_script.replace("__EMBLASE_EOF__", "__EMBLASE_EOF_ESC__")
+        return (
+            f"mkdir -p {self.working_dir}/scripts\n"
+            f"cat > {script_path} << '__EMBLASE_EOF__'\n"
+            f"{safe}\n"
+            f"__EMBLASE_EOF__"
+        )
 
     async def submit(
         self,
@@ -386,7 +392,9 @@ class NERSCBackend(ComputeBackend):
             classifier=classifier,
         )
 
-        script_path = await self._upload_script(py_script, model_name)
+        ts = int(time.time() * 1000)
+        script_path = f"{self.working_dir}/scripts/{ts}_{model_name}/inference.py"
+        pre_launch = self._script_pre_launch(py_script, script_path)
         environment = self._build_environment(require_tiled=bool(run_path or inputs or output))
         job_id = await self.client.submit_job(
             executable="python",
@@ -398,6 +406,7 @@ class NERSCBackend(ComputeBackend):
             time_limit_s=self._parse_time_limit(self.time_limit),
             constraint=self.constraint,
             environment=environment,
+            pre_launch=pre_launch,
         )
 
         self._jobs[job_id] = {
@@ -442,7 +451,9 @@ class NERSCBackend(ComputeBackend):
             classifier=classifier,
         )
 
-        script_path = await self._upload_script(py_script, f"stream-{model_name}")
+        ts = int(time.time() * 1000)
+        script_path = f"{self.working_dir}/scripts/{ts}_stream-{model_name}/inference.py"
+        pre_launch = self._script_pre_launch(py_script, script_path)
         environment = self._build_environment(require_tiled=True)
         effective_limit = time_limit or "02:00:00"
         job_id = await self.client.submit_job(
@@ -455,6 +466,7 @@ class NERSCBackend(ComputeBackend):
             time_limit_s=self._parse_time_limit(effective_limit),
             constraint=self.constraint,
             environment=environment,
+            pre_launch=pre_launch,
         )
 
         self._jobs[job_id] = {

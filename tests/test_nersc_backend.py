@@ -112,6 +112,7 @@ class _FakeClient:
             "time_limit_s": time_limit_s,
             "constraint": constraint,
             "environment": environment,
+            "pre_launch": pre_launch,
         }
         return self._job_id
 
@@ -145,10 +146,9 @@ async def test_nersc_backend_submit_calls_client():
     assert job_id == "99"
     assert "99" in backend._jobs
     assert backend._jobs["99"]["model_name"] == "vit"
-    # Script uploaded before submission
-    assert len(client.uploaded) == 1
-    _, uploaded_content = client.uploaded[0]
-    assert "vit" in uploaded_content
+    # Script embedded in pre_launch (no filesystem upload needed)
+    assert "vit" in client.submitted.get("pre_launch", "")
+    assert "inference.py" in client.submitted.get("pre_launch", "")
     # Structured job spec passed to submit_job
     assert client.submitted["executable"] == "python"
     assert any("inference.py" in a for a in client.submitted["arguments"])
@@ -299,9 +299,9 @@ async def test_nersc_backend_submit_streaming_injects_tiled_env(monkeypatch):
     env = client.submitted["environment"]
     assert env.get("EMBLASE_TILED_SERVER_URI") == "https://tiled.example.com"
     assert env.get("EMBLASE_TILED_API_KEY") == "secret"
-    # Uploaded script must contain streaming-specific markers
-    _, uploaded_content = client.uploaded[0]
-    assert "_on_new_image_data" in uploaded_content or "streaming" in uploaded_content
+    # Script embedded in pre_launch — must contain streaming-specific markers
+    pre_launch = client.submitted.get("pre_launch", "")
+    assert "_on_new_image_data" in pre_launch or "streaming" in pre_launch
 
 
 @pytest.mark.asyncio
