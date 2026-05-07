@@ -92,10 +92,14 @@ class NERSCClient:
         self,
         api_token: str | None = None,
         resource_id: str | None = None,
+        filesystem_resource_id: str | None = None,
         base_url: str | None = None,
     ):
         self.api_token = api_token or settings.nersc_api_token
         self.resource_id = resource_id or settings.nersc_resource_id
+        self.filesystem_resource_id = (
+            filesystem_resource_id or settings.nersc_filesystem_resource_id
+        )
         self.base_url = (base_url or _iri_base()).rstrip("/")
         self._client: httpx.AsyncClient | None = None
 
@@ -147,7 +151,7 @@ class NERSCClient:
         """Create a directory on the NERSC filesystem (creates parents too)."""
         client = await self._ensure_client()
         resp = await client.post(
-            f"{self.base_url}/filesystem/mkdir/{self.resource_id}",
+            f"{self.base_url}/filesystem/mkdir/{self.filesystem_resource_id}",
             json={"path": remote_path, "parent": True},
         )
         resp.raise_for_status()
@@ -170,7 +174,7 @@ class NERSCClient:
         )
         async with upload_client:
             resp = await upload_client.post(
-                f"{self.base_url}/filesystem/upload/{self.resource_id}",
+                f"{self.base_url}/filesystem/upload/{self.filesystem_resource_id}",
                 params={"path": remote_path},
                 files={"file": ("inference.py", content.encode(), "text/plain")},
             )
