@@ -16,12 +16,7 @@
 name: Build & push Docker image
 
 on:
-  push:
-    tags:
-      - "v*.*.*"
-    branches:
-      - main
-  workflow_dispatch:
+  workflow_dispatch:  # manual only — automatic triggers disabled
 
 env:
   REGISTRY: ghcr.io
