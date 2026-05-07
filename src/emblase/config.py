@@ -54,10 +54,10 @@ class Settings(BaseSettings):
     nersc_api_uri: str = "https://api.iri.nersc.gov"
     nersc_api_token: str = ""
     nersc_resource_id: str = "perlmutter"
-    nersc_working_dir: str = "/pscratch/sd/y/emblase/jobs"
-    nersc_models_dir: str = "/pscratch/sd/y/emblase/models"
+    nersc_working_dir: str = "/pscratch/sd/y/confab26_demo/emblase/jobs"
+    nersc_models_dir: str = "/pscratch/sd/y/confab26_demo/emblase/models"
     nersc_account: str = ""
-    nersc_container_image: str = "ghcr.io/nsls2/emblase:latest"
+    nersc_container_image: str = "ghcr.io/genematx/emblase:latest"
     nersc_time_limit: str = "00:30:00"
     nersc_constraint: str = "gpu"
 
