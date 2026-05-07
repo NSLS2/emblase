@@ -1,13 +1,17 @@
-"""Compute backends and shared CLI utilities."""
+"""Compute backends and shared CLI utilities.
+
+Top-level imports are kept minimal so that ``import emblase`` (or importing
+the Tiled router) does not drag in torch / httpx / etc.  The concrete backend
+classes are imported lazily — either via :func:`build_backend` or by importing
+them directly from their submodules (e.g.
+``from emblase.compute.orion import OrionBackend``).
+"""
 
 from __future__ import annotations
 
 import sys
 
 from .base import ComputeBackend, JobResult, JobStatus
-from .local import LocalBackend
-from .nersc import NERSCBackend, NERSCClient, NERSCJob
-from .orion import OrionBackend, OrionClient, OrionJob
 
 __all__ = [
     "ComputeBackend",
@@ -23,6 +27,23 @@ __all__ = [
     "parse_param_specs",
     "build_backend",
 ]
+
+
+def __getattr__(name: str):
+    """Lazily import backend classes on first attribute access."""
+    if name in ("LocalBackend",):
+        from .local import LocalBackend
+
+        return LocalBackend
+    if name in ("OrionBackend", "OrionClient", "OrionJob"):
+        from . import orion as _orion
+
+        return getattr(_orion, name)
+    if name in ("NERSCBackend", "NERSCClient", "NERSCJob"):
+        from . import nersc as _nersc
+
+        return getattr(_nersc, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def parse_param_specs(param_strs: list[str]) -> dict | None:
@@ -49,9 +70,15 @@ def parse_param_specs(param_strs: list[str]) -> dict | None:
 def build_backend(name: str) -> ComputeBackend:
     """Instantiate a compute backend by name (``"orion"``, ``"local"``, ``"nersc"``)."""
     if name == "orion":
+        from .orion import OrionBackend
+
         return OrionBackend()
     if name == "local":
+        from .local import LocalBackend
+
         return LocalBackend()
     if name == "nersc":
+        from .nersc import NERSCBackend
+
         return NERSCBackend()
     sys.exit(f"Unknown backend: {name!r}  (choices: orion, local, nersc)")

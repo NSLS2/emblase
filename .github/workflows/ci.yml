@@ -38,7 +38,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install emblase
-        run: uv sync --extra dev
+        run: uv sync --extra compute --extra dev
 
       - name: Test with pytest and coverage
         run: |
