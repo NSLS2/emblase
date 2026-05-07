@@ -155,6 +155,43 @@ class NERSCClient:
         return data.get("items", [data])
 
     # ------------------------------------------------------------------
+    # Filesystem helpers
+    # ------------------------------------------------------------------
+
+    async def _poll_task(self, task_id: str, timeout: float = 30.0) -> dict[str, Any]:
+        """Poll /task/{task_id} until complete and return the result dict."""
+        import asyncio as _asyncio
+        client = await self._ensure_client()
+        deadline = _asyncio.get_event_loop().time() + timeout
+        while True:
+            resp = await client.get(f"{self.base_url}/task/{task_id}")
+            resp.raise_for_status()
+            data = resp.json()
+            status = data.get("status", "pending")
+            if status not in ("pending", "running"):
+                return data.get("result") or {}
+            if _asyncio.get_event_loop().time() > deadline:
+                raise TimeoutError(f"Task {task_id} did not complete within {timeout}s")
+            await _asyncio.sleep(1.0)
+
+    async def read_file_tail(
+        self,
+        remote_path: str,
+        lines: int = 100,
+        filesystem_resource_id: str = "scratch",
+    ) -> str:
+        """Return the last *lines* lines of *remote_path* via the IRI filesystem API."""
+        client = await self._ensure_client()
+        resp = await client.get(
+            f"{self.base_url}/filesystem/tail/{filesystem_resource_id}",
+            params={"path": remote_path, "lines": lines},
+        )
+        resp.raise_for_status()
+        task_id = resp.json()["task_id"]
+        result = await self._poll_task(task_id)
+        return result.get("output", "") or result.get("content", "") or str(result)
+
+    # ------------------------------------------------------------------
     # Job submission / management
     # ------------------------------------------------------------------
 
@@ -172,6 +209,8 @@ class NERSCClient:
         constraint: str = "gpu",
         environment: dict[str, str] | None = None,
         pre_launch: str = "",
+        stdout_path: str = "",
+        stderr_path: str = "",
     ) -> str:
         """Submit a job via the IRI structured JobSpec.  Returns the job ID."""
         client = await self._ensure_client()
@@ -202,6 +241,10 @@ class NERSCClient:
             payload["environment"] = environment
         if pre_launch:
             payload["pre_launch"] = pre_launch
+        if stdout_path:
+            payload["stdout_path"] = stdout_path
+        if stderr_path:
+            payload["stderr_path"] = stderr_path
 
         resp = await client.post(
             f"{self.base_url}/compute/job/{self.resource_id}",
@@ -368,6 +411,7 @@ class NERSCBackend(ComputeBackend):
 
         ts = int(time.time() * 1000)
         script_path = f"{self.working_dir}/scripts/{ts}_{model_name}/inference.py"
+        log_path = f"{self.working_dir}/scripts/{ts}_{model_name}/job.out"
         pre_launch = self._script_pre_launch(py_script, script_path)
         environment = self._build_environment(require_tiled=bool(run_path or inputs or output))
         job_id = await self.client.submit_job(
@@ -381,12 +425,15 @@ class NERSCBackend(ComputeBackend):
             constraint=self.constraint,
             environment=environment,
             pre_launch=pre_launch,
+            stdout_path=log_path,
+            stderr_path=log_path,
         )
 
         self._jobs[job_id] = {
             "model_name": model_name,
             "output": output,
             "script_path": script_path,
+            "log_path": log_path,
         }
         return job_id
 
@@ -427,6 +474,7 @@ class NERSCBackend(ComputeBackend):
 
         ts = int(time.time() * 1000)
         script_path = f"{self.working_dir}/scripts/{ts}_stream-{model_name}/inference.py"
+        log_path = f"{self.working_dir}/scripts/{ts}_stream-{model_name}/job.out"
         pre_launch = self._script_pre_launch(py_script, script_path)
         environment = self._build_environment(require_tiled=True)
         effective_limit = time_limit or "02:00:00"
@@ -441,12 +489,15 @@ class NERSCBackend(ComputeBackend):
             constraint=self.constraint,
             environment=environment,
             pre_launch=pre_launch,
+            stdout_path=log_path,
+            stderr_path=log_path,
         )
 
         self._jobs[job_id] = {
             "model_name": model_name,
             "output": output,
             "script_path": script_path,
+            "log_path": log_path,
         }
         return job_id
 

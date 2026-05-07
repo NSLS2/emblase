@@ -93,6 +93,8 @@ class _FakeClient:
         constraint: str = "gpu",
         environment: dict | None = None,
         pre_launch: str = "",
+        stdout_path: str = "",
+        stderr_path: str = "",
     ) -> str:
         self.submitted = {
             "executable": executable,
@@ -105,6 +107,8 @@ class _FakeClient:
             "constraint": constraint,
             "environment": environment,
             "pre_launch": pre_launch,
+            "stdout_path": stdout_path,
+            "stderr_path": stderr_path,
         }
         return self._job_id
 

@@ -6,6 +6,7 @@ infer      Submit a batch inference job (encode all frames, write to Tiled).
 stream     Submit a streaming inference job (subscribe to a BlueskyRun WebSocket).
 status     Poll the state of a job/task by ID.
 cancel     Cancel a running job.
+logs       Tail the stdout/stderr log of a job via the IRI filesystem API.
 resources  List available NERSC compute resources (discover resource IDs).
 
 Typical workflow
@@ -32,12 +33,11 @@ Check status of a submitted task::
 
     python scripts/submit_nersc.py status <task_id>
 
+Read the job log (stdout+stderr are merged into job.out)::
+
+    python scripts/submit_nersc.py logs <task_id>
+
 Requires ``EMBLASE_NERSC_API_TOKEN`` in your ``.env`` file.
-
-Check the Slurm log (once you have the job ID from ``status``)::
-
-    ssh perlmutter.nersc.gov \\
-        "tail -50 $EMBLASE_NERSC_WORKING_DIR/slurm-<jobid>.out"
 
 --param syntax
 --------------
@@ -151,6 +151,18 @@ def _build_parser() -> argparse.ArgumentParser:
     cancel_p = sub.add_parser("cancel", help="Cancel a running job")
     cancel_p.add_argument("task_id")
 
+    # -- logs subcommand --
+    logs_p = sub.add_parser("logs", help="Tail job stdout/stderr via the IRI filesystem API")
+    logs_p.add_argument("task_id", help="Task ID returned at submission time")
+    logs_p.add_argument(
+        "--lines", type=int, default=100, metavar="N",
+        help="Number of tail lines to fetch (default: 100).",
+    )
+    logs_p.add_argument(
+        "--log-file", default="", metavar="PATH",
+        help="Explicit path to the log file (overrides auto-detected path from status).",
+    )
+
     return parser
 
 
@@ -244,6 +256,31 @@ async def _resources() -> None:
             print(f"  {item}")
 
 
+async def _logs(task_id: str, lines: int = 100, log_file: str = "") -> None:
+    async with NERSCClient() as client:
+        if log_file:
+            path = log_file
+        else:
+            # Try to get the log path from the job status metadata
+            info = await client.get_job(task_id)
+            meta = (info.raw or {}).get("status", {}).get("meta_data", {})
+            workdir = meta.get("workdir", "")
+            jobid = meta.get("jobid", task_id)
+            # Slurm default is slurm-<jobid>.out in the job's working directory
+            path = f"{workdir}/slurm-{jobid}.out" if workdir else ""
+            if not path:
+                print(
+                    "Could not determine log path from job metadata.\n"
+                    "Re-run with --log-file <path> or submit a new job "
+                    "(new jobs write to <working_dir>/scripts/<ts>/job.out).",
+                    file=sys.stderr,
+                )
+                return
+        print(f"Fetching last {lines} lines of: {path}")
+        content = await client.read_file_tail(path, lines=lines)
+        print(content)
+
+
 def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
@@ -267,6 +304,8 @@ def main() -> None:
         asyncio.run(_status(args.task_id))
     elif args.command == "cancel":
         asyncio.run(_cancel(args.task_id))
+    elif args.command == "logs":
+        asyncio.run(_logs(args.task_id, lines=args.lines, log_file=args.log_file))
     else:
         parser.print_help()
 
