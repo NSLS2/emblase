@@ -44,6 +44,7 @@ pixi run mlflow push models/umap_approx \\
 # Push the cluster classifier (whole directory)
 pixi run mlflow push models/class_5 \\
     --name bnl-nsls2-smi-classifier \\
+    --experiment emblase-models \\
     --description "5-class unsupervised cluster classifier for SMI SAXS"
 
 # Pull the latest version of a model to a local directory
@@ -93,6 +94,7 @@ def _push(args: argparse.Namespace) -> None:
         path=args.path,
         name=args.name,
         description=args.description,
+        experiment=args.experiment,
         tracking_uri=args.tracking_uri,
         api_key=args.api_key,
         chunk_size=chunk_size,
@@ -149,8 +151,19 @@ def main() -> None:
 
     push_p = sub.add_parser("push", help="Upload and register a model file or directory")
     push_p.add_argument("path", help="Local file or directory to upload")
-    push_p.add_argument("--name", default=None, help="Registry name (default: derived from path)")
-    push_p.add_argument("--description", default=None, help="Human-readable description")
+    push_p.add_argument(
+        "--name", default=None, help="Registry name (default: derived from path)"
+    )
+    push_p.add_argument(
+        "--experiment",
+        default=None,
+        metavar="NAME",
+        help="MLflow experiment name (default: EMBLASE_MLFLOW_EXPERIMENT). "
+        "Created automatically if it does not exist.",
+    )
+    push_p.add_argument(
+        "--description", default=None, help="Human-readable description"
+    )
     push_p.add_argument(
         "--chunk-size",
         type=int,

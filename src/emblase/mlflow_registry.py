@@ -260,6 +260,7 @@ def push(
     path: str | Path,
     name: str | None = None,
     description: str | None = None,
+    experiment: str | None = None,
     tracking_uri: str | None = None,
     api_key: str | None = None,
     chunk_size: int = 0,
@@ -277,6 +278,9 @@ def push(
         Registry name.  Defaults to the stem of the file or the directory name.
     description:
         Optional human-readable description stored in the registry.
+    experiment:
+        MLflow experiment name to log the upload run under.  Created automatically
+        if it does not exist.  Defaults to ``EMBLASE_MLFLOW_EXPERIMENT`` (``emblase-models``).
     tracking_uri:
         Override ``EMBLASE_MLFLOW_TRACKING_URI`` for this call only.
     api_key:
@@ -297,7 +301,7 @@ def push(
     desc = description or f"Uploaded from {file_path.name}"
     client = _get_client(tracking_uri, api_key)
 
-    mlflow.set_experiment(settings.mlflow_experiment)
+    mlflow.set_experiment(experiment or settings.mlflow_experiment)
     with mlflow.start_run(run_name=f"push-{model_name}") as run:
         if file_path.is_dir():
             files = sorted(f for f in file_path.rglob("*") if f.is_file() and _should_upload(f))
