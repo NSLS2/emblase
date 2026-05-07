@@ -38,9 +38,9 @@ class NoopEncoder(nn.Module):
         batch = x.shape[0]
         seed = int(x.shape[-1]) * 1000 + int(x.shape[-2])
         rng = np.random.default_rng(seed)
-        mu = torch.from_numpy(
-            rng.standard_normal((batch, self.latent_dim)).astype(np.float32)
-        ).to(x.device)
+        mu = torch.from_numpy(rng.standard_normal((batch, self.latent_dim)).astype(np.float32)).to(
+            x.device
+        )
         log_var = torch.zeros_like(mu)
         return mu, log_var
 

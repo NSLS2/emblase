@@ -31,9 +31,7 @@ router = APIRouter(prefix="/emblase", tags=["emblase"])
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
-_CHAT_URL = os.environ.get(
-    "EMBLASE_CHATAPP_URL", "https://chat-amsc-dev.nsls2.bnl.gov"
-).rstrip("/")
+_CHAT_URL = os.environ.get("EMBLASE_CHATAPP_URL", "https://chat-amsc-dev.nsls2.bnl.gov").rstrip("/")
 _CHAT_TOKEN = os.environ.get("EMBLASE_CHATAPP_TOKEN", "")
 _CHAT_MODEL = os.environ.get("EMBLASE_CHATAPP_MODEL", "openai/gpt-oss-20b")
 
@@ -115,9 +113,7 @@ async def _fetch_tiled_metadata(request: Request, node_path: str) -> dict:
     return {}
 
 
-async def _send_priming_message(
-    session_id: str | None, priming_text: str
-) -> str | None:
+async def _send_priming_message(session_id: str | None, priming_text: str) -> str | None:
     """Send the hidden context message and return the resulting session_id."""
     payload = {
         "message": priming_text,
@@ -213,9 +209,7 @@ async def chat(req: ChatRequest, request: Request) -> dict:
         "image_refs": [],
     }
     async with httpx.AsyncClient(timeout=120) as client:
-        res = await client.post(
-            f"{_CHAT_URL}/chat", json=payload, headers=_AMSC_HEADERS
-        )
+        res = await client.post(f"{_CHAT_URL}/chat", json=payload, headers=_AMSC_HEADERS)
     res.raise_for_status()
     return res.json()
 

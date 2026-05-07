@@ -21,9 +21,7 @@ def client_with_mock(monkeypatch):
     """Return a helper that injects a mock httpx client into OrionClient."""
 
     def factory(responses: list[httpx.Response]) -> OrionClient:
-        c = OrionClient(
-            api_url="https://fake-orion", api_key="testkey", cluster="orion"
-        )
+        c = OrionClient(api_url="https://fake-orion", api_key="testkey", cluster="orion")
         c._client = httpx.AsyncClient(
             transport=_make_transport(responses),
             headers={"x-api-key": "testkey"},

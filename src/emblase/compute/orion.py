@@ -24,18 +24,20 @@ from .base import ComputeBackend, JobResult, JobStatus
 logger = logging.getLogger(__name__)
 
 _TEMPLATE = (Path(__file__).parent.parent / "worker" / "inference.py.tmpl").read_text()
-_STREAMING_TEMPLATE = (Path(__file__).parent.parent / "worker" / "streaming_inference.py.tmpl").read_text()
+_STREAMING_TEMPLATE = (
+    Path(__file__).parent.parent / "worker" / "streaming_inference.py.tmpl"
+).read_text()
 
 _SLURM_STATE_MAP: dict[str, JobStatus] = {
-    "PENDING":       JobStatus.pending,
-    "CONFIGURING":   JobStatus.pending,
-    "RUNNING":       JobStatus.running,
-    "COMPLETING":    JobStatus.running,
-    "COMPLETED":     JobStatus.completed,
-    "FAILED":        JobStatus.failed,
-    "CANCELLED":     JobStatus.failed,
-    "TIMEOUT":       JobStatus.failed,
-    "NODE_FAIL":     JobStatus.failed,
+    "PENDING": JobStatus.pending,
+    "CONFIGURING": JobStatus.pending,
+    "RUNNING": JobStatus.running,
+    "COMPLETING": JobStatus.running,
+    "COMPLETED": JobStatus.completed,
+    "FAILED": JobStatus.failed,
+    "CANCELLED": JobStatus.failed,
+    "TIMEOUT": JobStatus.failed,
+    "NODE_FAIL": JobStatus.failed,
     "OUT_OF_MEMORY": JobStatus.failed,
 }
 
@@ -45,6 +47,7 @@ _TERMINAL_STATES = {JobStatus.completed, JobStatus.failed}
 # ---------------------------------------------------------------------------
 # Script rendering
 # ---------------------------------------------------------------------------
+
 
 def _projector_mode_and_name(projector: str | None) -> tuple[str, str]:
     """Translate the ``--projector`` CLI value into ``(mode, name)``.
@@ -140,6 +143,7 @@ def _render_streaming_inference_script(
 # sbatch script builder
 # ---------------------------------------------------------------------------
 
+
 def _build_sbatch_script(
     working_dir: str,
     python_script: str,
@@ -213,9 +217,11 @@ EMBLASE_INFERENCE_EOF
 # Orion REST client
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class OrionJob:
     """Parsed response from the Orion jobs endpoint."""
+
     job_id: int
     state: str
     node: str | None = None
@@ -330,6 +336,7 @@ class OrionClient:
 # SSH log streaming
 # ---------------------------------------------------------------------------
 
+
 def _ssh_host() -> str:
     if settings.orion_ssh_host:
         return settings.orion_ssh_host
@@ -360,11 +367,15 @@ def stream_logs(
     user = ssh_user or _ssh_user()
     destination = f"{user}@{host}" if user else host
     cmd = [
-        "ssh", "-o", "StrictHostKeyChecking=accept-new",
-        destination, f"tail -f -n {tail_n} -- {_log_path(job_id)}",
+        "ssh",
+        "-o",
+        "StrictHostKeyChecking=accept-new",
+        destination,
+        f"tail -f -n {tail_n} -- {_log_path(job_id)}",
     ]
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                            text=True, bufsize=1)
+    proc = subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, bufsize=1
+    )
     try:
         for line in proc.stdout:  # type: ignore[union-attr]
             yield line.rstrip("\n")
@@ -379,6 +390,7 @@ def stream_logs(
 # ---------------------------------------------------------------------------
 # OrionBackend
 # ---------------------------------------------------------------------------
+
 
 class OrionBackend(ComputeBackend):
     """Submit inference jobs to Orion (Slurm) via the Orion REST API."""
@@ -443,8 +455,13 @@ class OrionBackend(ComputeBackend):
                     logger.warning("%sCould not poll job %s: %s", prefix, job_id, exc)
                     continue
                 elapsed = int(time.monotonic() - t0)
-                logger.info("%s[%4ds] state=%s  node=%s",
-                            prefix, elapsed, info.state, info.node or "(queued)")
+                logger.info(
+                    "%s[%4ds] state=%s  node=%s",
+                    prefix,
+                    elapsed,
+                    info.state,
+                    info.node or "(queued)",
+                )
                 if on_status:
                     on_status(info.state, info.node, elapsed)
                 if _SLURM_STATE_MAP.get(info.state) in _TERMINAL_STATES:
@@ -527,11 +544,18 @@ class OrionBackend(ComputeBackend):
         or ``inputs``.  If none are given, dummy images are generated on the node.
         """
         py_script = _render_inference_script(
-            model_name=model_name, models_dir=self.models_dir,
-            batch_size=batch_size, run_path=run_path, image_key=image_key,
-            inputs=inputs, output=output, mlflow_version=mlflow_version,
-            thumb_mode=thumb_mode, param_specs=param_specs,
-            projector=projector, classifier=classifier,
+            model_name=model_name,
+            models_dir=self.models_dir,
+            batch_size=batch_size,
+            run_path=run_path,
+            image_key=image_key,
+            inputs=inputs,
+            output=output,
+            mlflow_version=mlflow_version,
+            thumb_mode=thumb_mode,
+            param_specs=param_specs,
+            projector=projector,
+            classifier=classifier,
         )
 
         if images is not None:
@@ -550,12 +574,16 @@ class OrionBackend(ComputeBackend):
             script_kwargs = {"tiled_input": True}
 
         script = _build_sbatch_script(
-            working_dir=self.working_dir, python_script=py_script,
-            project_dir=self.project_dir, job_name=f"emblase-{model_name}",
+            working_dir=self.working_dir,
+            python_script=py_script,
+            project_dir=self.project_dir,
+            job_name=f"emblase-{model_name}",
             **script_kwargs,
         )
         return await self._submit_job(
-            script, model_name, output,
+            script,
+            model_name,
+            output,
             require_tiled=bool(run_path or inputs or output),
         )
 
@@ -577,16 +605,27 @@ class OrionBackend(ComputeBackend):
     ) -> str:
         """Submit a streaming inference job that subscribes to a live BlueskyRun."""
         py_script = _render_streaming_inference_script(
-            model_name=model_name, models_dir=self.models_dir,
-            run_path=run_path, output=output, batch_size=batch_size,
-            mlflow_version=mlflow_version, thumb_mode=thumb_mode,
-            image_key=image_key, ws_max_size=ws_max_size,
-            param_specs=param_specs, projector=projector, classifier=classifier,
+            model_name=model_name,
+            models_dir=self.models_dir,
+            run_path=run_path,
+            output=output,
+            batch_size=batch_size,
+            mlflow_version=mlflow_version,
+            thumb_mode=thumb_mode,
+            image_key=image_key,
+            ws_max_size=ws_max_size,
+            param_specs=param_specs,
+            projector=projector,
+            classifier=classifier,
         )
         script = _build_sbatch_script(
-            working_dir=self.working_dir, python_script=py_script,
-            project_dir=self.project_dir, job_name=f"emblase-stream-{model_name}",
-            time_limit="0-02:00:00", tiled_input=True, mem=mem,
+            working_dir=self.working_dir,
+            python_script=py_script,
+            project_dir=self.project_dir,
+            job_name=f"emblase-stream-{model_name}",
+            time_limit="0-02:00:00",
+            tiled_input=True,
+            mem=mem,
         )
         return await self._submit_job(script, model_name, output, require_tiled=True, mem=mem)
 
@@ -605,10 +644,14 @@ class OrionBackend(ComputeBackend):
             return JobResult(job_id=job_id, status=st)
         output_path = Path(meta["job_dir"]) / "output.npy"
         if output_path.exists():
-            return JobResult(job_id=job_id, status=JobStatus.completed,
-                             output_data=np.load(str(output_path)))
+            return JobResult(
+                job_id=job_id,
+                status=JobStatus.completed,
+                output_data=np.load(str(output_path)),
+            )
         return JobResult(
-            job_id=job_id, status=st,
+            job_id=job_id,
+            status=st,
             error=f"Output not found at {output_path}" if st == JobStatus.completed else None,
         )
 
@@ -618,7 +661,9 @@ class OrionBackend(ComputeBackend):
         poll_interval: float = 5.0,
         timeout: float = 1800.0,
     ) -> JobStatus:
-        info = await self.client.wait_for_job(int(job_id), poll_interval=poll_interval, timeout=timeout)
+        info = await self.client.wait_for_job(
+            int(job_id), poll_interval=poll_interval, timeout=timeout
+        )
         return _SLURM_STATE_MAP.get(info.state, JobStatus.failed)
 
     async def cancel(self, job_id: str) -> None:

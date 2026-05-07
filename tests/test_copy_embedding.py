@@ -24,9 +24,7 @@ def _make_src(
 
     embeddings = np.arange(n * dim, dtype=np.float32).reshape(n, dim)
     thumbnails = np.zeros((n, *thumb_shape), dtype=np.float32)
-    projections = np.column_stack(
-        [np.arange(n, dtype=np.float32), np.arange(n, dtype=np.float32)]
-    )
+    projections = np.column_stack([np.arange(n, dtype=np.float32), np.arange(n, dtype=np.float32)])
 
     # Build _index table.
     # indx[i] == i always (indx IS the array row offset).
@@ -39,9 +37,7 @@ def _make_src(
         "indx": sql_row_order,  # SQL rows in shuffled order
         "path": [f"scan/{i}" for i in sql_row_order],  # path matches indx value
         "slice": [str(i) for i in sql_row_order],
-        "label": (
-            [labels[i] for i in sql_row_order] if labels is not None else [None] * n
-        ),
+        "label": ([labels[i] for i in sql_row_order] if labels is not None else [None] * n),
         "model_version": ["v1"] * n,
         "mlflow_run_id": [""] * n,
         "timestamp": [float(i) for i in sql_row_order],
@@ -67,9 +63,7 @@ def _make_src(
         }[key]
     )
     src.base = MagicMock()
-    src.base.__getitem__ = MagicMock(
-        return_value=MagicMock(read=lambda: index_table.to_pandas())
-    )
+    src.base.__getitem__ = MagicMock(return_value=MagicMock(read=lambda: index_table.to_pandas()))
 
     return src, embeddings, thumbnails, projections
 

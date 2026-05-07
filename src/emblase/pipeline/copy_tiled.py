@@ -110,9 +110,7 @@ def deepcopy(
             dst_parent = Container.__getitem__(dst, (src_key, *path[:-1]))
         copy_func = _registry[s.structure_family]
         key = path[-1] if path else src_key
-        is_image = (
-            key == _img_array_name and s.structure_family == StructureFamily.array
-        )
+        is_image = key == _img_array_name and s.structure_family == StructureFamily.array
         copy_func(
             s,
             dst_parent,
@@ -322,9 +320,7 @@ def copy_embedding(
     from ..tiled.client import LatentSpaceEmbedding, create_embedding_container
 
     if not isinstance(src, LatentSpaceEmbedding):
-        raise TypeError(
-            f"src must be a LatentSpaceEmbedding, got {type(src).__name__!r}"
-        )
+        raise TypeError(f"src must be a LatentSpaceEmbedding, got {type(src).__name__!r}")
 
     src_meta = src.metadata
     param_specs = src_meta.get("param_specs") or {}
@@ -347,17 +343,13 @@ def copy_embedding(
     # The SQL table has no guaranteed row order, so this sort is required.
     # Older containers without an 'indx' column fall back to 'slice'.
     if "indx" in idx_df.columns:
-        idx_df = idx_df.sort_values("indx", key=lambda s: s.astype(int)).reset_index(
-            drop=True
-        )
+        idx_df = idx_df.sort_values("indx", key=lambda s: s.astype(int)).reset_index(drop=True)
         # After sorting by indx, idx_df.iloc[i] has indx==i, which is exactly
         # the row offset into the arrays — no array reordering needed.
     else:
         # Legacy containers: 'slice' holds the per-source frame index, not the
         # array offset, so we can only sort by it as a best-effort ordering.
-        idx_df = idx_df.sort_values("slice", key=lambda s: s.astype(int)).reset_index(
-            drop=True
-        )
+        idx_df = idx_df.sort_values("slice", key=lambda s: s.astype(int)).reset_index(drop=True)
 
     n_total = len(embeddings)
     param_names = list(param_specs.keys())
@@ -401,9 +393,7 @@ def copy_embedding(
             embeddings[start:end].astype(np.float32),
             thumbnails[start:end].astype(np.float32),
             paths=_nullable_str_list(rows["path"]),
-            slices=_nullable_str_list(rows["slice"])
-            if "slice" in rows.columns
-            else None,
+            slices=_nullable_str_list(rows["slice"]) if "slice" in rows.columns else None,
             model_version=model_version or None,
             mlflow_run_id=mlflow_run_id,
             timestamps=rows["timestamp"].tolist(),

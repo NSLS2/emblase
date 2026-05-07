@@ -32,6 +32,7 @@ log = logging.getLogger(__name__)
 # Internal helpers
 # ---------------------------------------------------------------------------
 
+
 def _hidden_dims_from_state_dict(state_dict: dict) -> list[int]:
     """Infer hidden layer sizes from a SimpleDimRedApproximator state dict.
 
@@ -109,8 +110,12 @@ def _fit_umap(X_scaled: np.ndarray, n_neighbors: int, min_dist: float) -> np.nda
     """Fit umap-learn and return ``(N, 2)`` float32 coordinates."""
     import umap as umap_lib
 
-    log.info("Fitting UMAP (n_neighbors=%d, min_dist=%.2f) on %d points…",
-             n_neighbors, min_dist, len(X_scaled))
+    log.info(
+        "Fitting UMAP (n_neighbors=%d, min_dist=%.2f) on %d points…",
+        n_neighbors,
+        min_dist,
+        len(X_scaled),
+    )
     reducer = umap_lib.UMAP(
         n_components=2,
         n_neighbors=n_neighbors,
@@ -119,9 +124,13 @@ def _fit_umap(X_scaled: np.ndarray, n_neighbors: int, min_dist: float) -> np.nda
         verbose=False,
     )
     coords = reducer.fit_transform(X_scaled).astype(np.float32)
-    log.info("UMAP done. x=[%.3f, %.3f]  y=[%.3f, %.3f]",
-             coords[:, 0].min(), coords[:, 0].max(),
-             coords[:, 1].min(), coords[:, 1].max())
+    log.info(
+        "UMAP done. x=[%.3f, %.3f]  y=[%.3f, %.3f]",
+        coords[:, 0].min(),
+        coords[:, 0].max(),
+        coords[:, 1].min(),
+        coords[:, 1].max(),
+    )
     return coords
 
 
@@ -145,9 +154,9 @@ def _train_mlp(
         sys.path.insert(0, projector_dir_str)
     from neural_dimred_wrapper import SimpleDimRedApproximator
 
-    model = SimpleDimRedApproximator(
-        input_dim=input_dim, hidden_dims=hidden_dims, output_dim=2
-    ).to(device)
+    model = SimpleDimRedApproximator(input_dim=input_dim, hidden_dims=hidden_dims, output_dim=2).to(
+        device
+    )
 
     X_t = torch.tensor(X_scaled, dtype=torch.float32, device=device)
     Y_t = torch.tensor(Y, dtype=torch.float32, device=device)
@@ -161,8 +170,15 @@ def _train_mlp(
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
     loss_fn = nn.MSELoss()
 
-    log.info("Training MLP: input_dim=%d hidden=%s epochs=%d lr=%.0e batch=%d device=%s",
-             input_dim, hidden_dims, epochs, lr, batch_size, device)
+    log.info(
+        "Training MLP: input_dim=%d hidden=%s epochs=%d lr=%.0e batch=%d device=%s",
+        input_dim,
+        hidden_dims,
+        epochs,
+        lr,
+        batch_size,
+        device,
+    )
 
     model.train()
     for epoch in range(1, epochs + 1):
@@ -184,6 +200,7 @@ def _train_mlp(
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
 
 def train_projector(
     node: "LatentSpaceEmbedding",
@@ -242,8 +259,11 @@ def train_projector(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     log.info("Device: %s", device)
 
-    log.info("Reading embeddings from node (%d × %d)…",
-             node.num_embeddings, node.embedding_dim)
+    log.info(
+        "Reading embeddings from node (%d × %d)…",
+        node.num_embeddings,
+        node.embedding_dim,
+    )
     embeddings = node.read_embeddings()
 
     scaler = StandardScaler()
@@ -253,7 +273,8 @@ def train_projector(
     umap_coords = _fit_umap(X_scaled, n_neighbors=n_neighbors, min_dist=min_dist)
 
     model = _train_mlp(
-        X_scaled, umap_coords,
+        X_scaled,
+        umap_coords,
         input_dim=embeddings.shape[1],
         hidden_dims=hidden_dims,
         epochs=epochs,
@@ -271,13 +292,20 @@ def train_projector(
     log.info("Saved weights → %s", weights_path)
 
     with torch.no_grad():
-        projections = model(
-            torch.tensor(X_scaled, dtype=torch.float32, device=device)
-        ).cpu().numpy().astype(np.float32)
+        projections = (
+            model(torch.tensor(X_scaled, dtype=torch.float32, device=device))
+            .cpu()
+            .numpy()
+            .astype(np.float32)
+        )
 
-    log.info("Projections  x=[%.3f, %.3f]  y=[%.3f, %.3f]",
-             projections[:, 0].min(), projections[:, 0].max(),
-             projections[:, 1].min(), projections[:, 1].max())
+    log.info(
+        "Projections  x=[%.3f, %.3f]  y=[%.3f, %.3f]",
+        projections[:, 0].min(),
+        projections[:, 0].max(),
+        projections[:, 1].min(),
+        projections[:, 1].max(),
+    )
 
     if write_projections:
         log.info("Writing projections to Tiled…")
@@ -314,17 +342,24 @@ def apply_projector(
     np.ndarray
         ``(N, 2)`` float32 projection coordinates.
     """
-    log.info("Reading embeddings from node (%d × %d)…",
-             node.num_embeddings, node.embedding_dim)
+    log.info(
+        "Reading embeddings from node (%d × %d)…",
+        node.num_embeddings,
+        node.embedding_dim,
+    )
     embeddings = node.read_embeddings()
 
     model, scaler, device = _load_approximator(projector_dir)
 
     log.info("Computing projections…")
     projections = _apply_approximator(model, scaler, device, embeddings)
-    log.info("Projections  x=[%.3f, %.3f]  y=[%.3f, %.3f]",
-             projections[:, 0].min(), projections[:, 0].max(),
-             projections[:, 1].min(), projections[:, 1].max())
+    log.info(
+        "Projections  x=[%.3f, %.3f]  y=[%.3f, %.3f]",
+        projections[:, 0].min(),
+        projections[:, 0].max(),
+        projections[:, 1].min(),
+        projections[:, 1].max(),
+    )
 
     if write_projections:
         log.info("Writing projections to Tiled…")

@@ -20,9 +20,7 @@ def _to_response(job_id: str, result: JobResult) -> EvaluateResponse:
     return EvaluateResponse(
         job_id=job_id,
         status=result.status,
-        output_data=result.output_data.tolist()
-        if result.output_data is not None
-        else None,
+        output_data=result.output_data.tolist() if result.output_data is not None else None,
         error=result.error,
     )
 

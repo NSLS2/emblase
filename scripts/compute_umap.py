@@ -35,10 +35,15 @@ logging.basicConfig(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__,
-                                     formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--dataset", required=True, metavar="TILED_PATH",
-                        help="Tiled path to the LatentSpaceEmbedding container.")
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument(
+        "--dataset",
+        required=True,
+        metavar="TILED_PATH",
+        help="Tiled path to the LatentSpaceEmbedding container.",
+    )
     parser.add_argument(
         "--umap-dir",
         default=str(Path(__file__).parent.parent / "models" / "umap_approx"),
@@ -49,12 +54,14 @@ def main() -> None:
 
     try:
         import certifi
+
         os.environ.setdefault("SSL_CERT_FILE", certifi.where())
     except ImportError:
         pass
 
-    from emblase.config import settings
     from tiled.client import from_uri
+
+    from emblase.config import settings
     from emblase.umap import apply_umap
 
     tiled_uri = settings.tiled_server_uri

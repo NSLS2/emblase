@@ -41,12 +41,14 @@ class Settings(BaseSettings):
     orion_models_dir: str = "/nsls2/users/ymatviych/code/emblase/models"
     orion_home: str = "/nsls2/users/ymatviych"
     orion_account: str = "staff"
-    orion_path: str = "/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/usr/local/cuda/bin:/nsls2/software/bin"
+    orion_path: str = (
+        "/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/usr/local/cuda/bin:/nsls2/software/bin"
+    )
     # SSH access to the Orion login node for streaming job logs.
     # Host is derived from orion_api_url by default (same hostname, port 22).
     # Override with EMBLASE_ORION_SSH_HOST if the login node differs from the API host.
-    orion_ssh_host: str = ""   # e.g. "orion-staging.nsls2.bnl.gov"
-    orion_ssh_user: str = ""   # e.g. "ymatviych"; defaults to local $USER
+    orion_ssh_host: str = ""  # e.g. "orion-staging.nsls2.bnl.gov"
+    orion_ssh_user: str = ""  # e.g. "ymatviych"; defaults to local $USER
 
     # Compute backend selection: "local" or "orion"
     compute_backend: str = "local"

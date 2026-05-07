@@ -44,6 +44,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 try:
     import certifi as _certifi
+
     os.environ.setdefault("SSL_CERT_FILE", _certifi.where())
 except ImportError:
     pass

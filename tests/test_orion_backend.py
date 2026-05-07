@@ -25,12 +25,12 @@ def test_render_inference_script_substitutes_all_placeholders():
     )
     assert "/models" in script
     assert '"vae"' in script
-    assert 'inputs          = []' in script
+    assert "inputs          = []" in script
     assert 'output          = ""' in script
     assert 'os.environ["JOB_DIR"]' in script
-    assert 'param_specs     = ' in script
-    assert 'projector_mode  = ' in script
-    assert 'projector_name  = ' in script
+    assert "param_specs     = " in script
+    assert "projector_mode  = " in script
+    assert "projector_name  = " in script
 
 
 def test_render_inference_script_with_output():
@@ -106,9 +106,7 @@ async def test_orion_backend_submit_calls_client(monkeypatch):
     submitted = {}
 
     class FakeClient:
-        async def submit_job(
-            self, script, working_dir, overrides=None, environment=None
-        ):
+        async def submit_job(self, script, working_dir, overrides=None, environment=None):
             submitted["script"] = script
             submitted["working_dir"] = working_dir
             submitted["overrides"] = overrides
@@ -139,9 +137,7 @@ async def test_orion_backend_submit_npy_path():
     submitted = {}
 
     class FakeClient:
-        async def submit_job(
-            self, script, working_dir, overrides=None, environment=None
-        ):
+        async def submit_job(self, script, working_dir, overrides=None, environment=None):
             submitted["script"] = script
             return 7
 
@@ -161,9 +157,7 @@ async def test_orion_backend_output_injects_tiled_env(monkeypatch):
     submitted = {}
 
     class FakeClient:
-        async def submit_job(
-            self, script, working_dir, overrides=None, environment=None
-        ):
+        async def submit_job(self, script, working_dir, overrides=None, environment=None):
             submitted["environment"] = environment
             return 8
 
@@ -192,9 +186,7 @@ async def test_orion_backend_inputs_injects_tiled_env(monkeypatch):
     submitted = {}
 
     class FakeClient:
-        async def submit_job(
-            self, script, working_dir, overrides=None, environment=None
-        ):
+        async def submit_job(self, script, working_dir, overrides=None, environment=None):
             submitted["environment"] = environment
             return 9
 
@@ -264,6 +256,7 @@ def test_build_sbatch_script_raises_with_two_sources():
 # Streaming script rendering
 # ---------------------------------------------------------------------------
 
+
 def test_render_streaming_inference_script_substitutes_all_placeholders():
     script = _render_streaming_inference_script(
         model_name="noop",
@@ -300,6 +293,7 @@ def test_render_streaming_inference_script_contains_valid_python():
 # submit_streaming — environment injection
 # ---------------------------------------------------------------------------
 
+
 class _FakeClient:
     def __init__(self):
         self.last_environment = None
@@ -313,12 +307,15 @@ class _FakeClient:
 async def test_submit_streaming_injects_tiled_env(monkeypatch):
     """submit_streaming must forward Tiled URI and API key to the job environment."""
     import emblase.compute.orion as orion_module
+
     monkeypatch.setattr(orion_module.settings, "tiled_server_uri", "https://tiled.example.com")
     monkeypatch.setattr(orion_module.settings, "tiled_api_key", "secret")
     monkeypatch.setattr(orion_module.settings, "tiled_access_tags", "")
 
     client = _FakeClient()
-    backend = OrionBackend(client=client, working_dir="/jobs", models_dir="/models", account="staff")
+    backend = OrionBackend(
+        client=client, working_dir="/jobs", models_dir="/models", account="staff"
+    )
     await backend.submit_streaming(
         run_path="smi/sandbox/run_xyz",
         output="smi/sandbox/results/run_xyz",
@@ -334,6 +331,7 @@ async def test_submit_streaming_injects_tiled_env(monkeypatch):
 async def test_submit_streaming_missing_tiled_uri_raises(monkeypatch):
     """submit_streaming must raise if EMBLASE_TILED_SERVER_URI is not configured."""
     import emblase.compute.orion as orion_module
+
     monkeypatch.setattr(orion_module.settings, "tiled_server_uri", "")
 
     backend = OrionBackend(
@@ -351,12 +349,15 @@ async def test_submit_streaming_missing_tiled_uri_raises(monkeypatch):
 async def test_submit_streaming_injects_access_tags(monkeypatch):
     """Access tags must appear in the environment when configured."""
     import emblase.compute.orion as orion_module
+
     monkeypatch.setattr(orion_module.settings, "tiled_server_uri", "https://tiled.example.com")
     monkeypatch.setattr(orion_module.settings, "tiled_api_key", "")
     monkeypatch.setattr(orion_module.settings, "tiled_access_tags", "smi_sandbox,staff")
 
     client = _FakeClient()
-    backend = OrionBackend(client=client, working_dir="/jobs", models_dir="/models", account="staff")
+    backend = OrionBackend(
+        client=client, working_dir="/jobs", models_dir="/models", account="staff"
+    )
     await backend.submit_streaming(
         run_path="smi/sandbox/run_xyz",
         output="smi/sandbox/results/run_xyz",
@@ -371,16 +372,21 @@ async def test_submit_streaming_injects_access_tags(monkeypatch):
 # OrionBackend.wait and result
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_orion_backend_wait_returns_completed():
     class FakeClient:
         async def wait_for_job(self, job_id, poll_interval, timeout):
             from emblase.compute.orion import OrionJob
+
             return OrionJob(job_id=job_id, state="COMPLETED")
 
-    backend = OrionBackend(client=FakeClient(), working_dir="/jobs", models_dir="/models", account="staff")
+    backend = OrionBackend(
+        client=FakeClient(), working_dir="/jobs", models_dir="/models", account="staff"
+    )
     status = await backend.wait("5", poll_interval=0, timeout=10)
     from emblase.compute.base import JobStatus
+
     assert status == JobStatus.completed
 
 
@@ -389,11 +395,15 @@ async def test_orion_backend_wait_returns_failed():
     class FakeClient:
         async def wait_for_job(self, job_id, poll_interval, timeout):
             from emblase.compute.orion import OrionJob
+
             return OrionJob(job_id=job_id, state="FAILED")
 
-    backend = OrionBackend(client=FakeClient(), working_dir="/jobs", models_dir="/models", account="staff")
+    backend = OrionBackend(
+        client=FakeClient(), working_dir="/jobs", models_dir="/models", account="staff"
+    )
     status = await backend.wait("5", poll_interval=0, timeout=10)
     from emblase.compute.base import JobStatus
+
     assert status == JobStatus.failed
 
 
@@ -401,8 +411,10 @@ async def test_orion_backend_wait_returns_failed():
 # _projector_mode_and_name
 # ---------------------------------------------------------------------------
 
+
 def test_projector_mode_none_gives_scratch():
     from emblase.compute.orion import _projector_mode_and_name
+
     mode, name = _projector_mode_and_name(None)
     assert mode == "scratch"
     assert name == ""
@@ -410,6 +422,7 @@ def test_projector_mode_none_gives_scratch():
 
 def test_projector_mode_false_variants():
     from emblase.compute.orion import _projector_mode_and_name
+
     for val in ("false", "False", "FALSE", "0", "no", "none", "No"):
         mode, name = _projector_mode_and_name(val)
         assert mode == "false", f"failed for {val!r}"
@@ -418,6 +431,7 @@ def test_projector_mode_false_variants():
 
 def test_projector_mode_name():
     from emblase.compute.orion import _projector_mode_and_name
+
     mode, name = _projector_mode_and_name("umap_approx")
     assert mode == "name"
     assert name == "umap_approx"

@@ -56,7 +56,6 @@ from emblase.compute import OrionBackend, OrionClient, parse_param_specs  # noqa
 from emblase.compute.base import JobStatus  # noqa: E402
 from emblase.compute.orion import _SLURM_STATE_MAP  # noqa: E402
 
-
 CONNECTIVITY_SCRIPT = """\
 #!/bin/bash
 #SBATCH --job-name=emblase-test
@@ -99,9 +98,7 @@ async def _infer(args: argparse.Namespace) -> None:
     elif args.npy_path:
         submit_kwargs["npy_path"] = args.npy_path
     elif args.inputs:
-        submit_kwargs["inputs"] = [
-            tuple(e.split(":", 1)) if ":" in e else e for e in args.inputs
-        ]
+        submit_kwargs["inputs"] = [tuple(e.split(":", 1)) if ":" in e else e for e in args.inputs]
     else:
         images = np.random.rand(args.n_images, args.image_size, args.image_size).astype(np.float32)
         print(f"Dummy images: {images.shape}  dtype={images.dtype}")
@@ -134,7 +131,9 @@ async def _run_script(script: str, working_dir: str, gpu: bool, wait: bool) -> N
         overrides["tres_per_job"] = "gres/gpu:1"
     async with OrionClient() as client:
         print(f"Submitting to {client.api_url} ({client.cluster}) ...")
-        job_id = await client.submit_job(script=script, working_dir=working_dir, overrides=overrides)
+        job_id = await client.submit_job(
+            script=script, working_dir=working_dir, overrides=overrides
+        )
         print(f"Job submitted: {job_id}")
         if wait:
             info = await client.wait_for_job(job_id)
@@ -148,28 +147,66 @@ async def _run_script(script: str, working_dir: str, gpu: bool, wait: bool) -> N
 # CLI
 # ---------------------------------------------------------------------------
 
+
 def _add_model_args(p: argparse.ArgumentParser) -> None:
-    p.add_argument("--model", default="vae", metavar="MODEL_NAME",
-                   help="Model name: short architecture ('vae', 'vit') or MLflow registry name.")
-    p.add_argument("--mlflow-version", default="", metavar="VERSION",
-                   help="MLflow model version (default: latest).")
-    p.add_argument("--batch-size", type=int, default=1, metavar="N",
-                   help="Images per encode call on the node (default: 1).")
-    p.add_argument("--thumb-mode", default="logroi", choices=["default", "logroi"],
-                   help="Thumbnail mode (default: logroi).")
-    p.add_argument("--image-key", default="primary.pil900KW_image", metavar="KEY",
-                   help="Dotted image-array key, e.g. 'primary.pil900KW_image'.")
-    p.add_argument("--param", action="append", default=[], dest="params",
-                   metavar="name:source[:dtype[:units]]",
-                   help="Scalar param to store per embedding. Repeat for multiple.")
-    p.add_argument("--projector", default=None, metavar="NAME|false",
-                   help="Projector: omit=scratch, NAME=saved approx, false=NaN.")
-    p.add_argument("--classifier", default=None, metavar="NAME",
-                   help="Classifier name (omit = no labels).")
-    p.add_argument("--output", default="", metavar="TILED_PATH",
-                   help="Tiled path for the output LatentSpaceEmbedding container.")
-    p.add_argument("--no-wait", action="store_true",
-                   help="Return immediately after submission.")
+    p.add_argument(
+        "--model",
+        default="vae",
+        metavar="MODEL_NAME",
+        help="Model name: short architecture ('vae', 'vit') or MLflow registry name.",
+    )
+    p.add_argument(
+        "--mlflow-version",
+        default="",
+        metavar="VERSION",
+        help="MLflow model version (default: latest).",
+    )
+    p.add_argument(
+        "--batch-size",
+        type=int,
+        default=1,
+        metavar="N",
+        help="Images per encode call on the node (default: 1).",
+    )
+    p.add_argument(
+        "--thumb-mode",
+        default="logroi",
+        choices=["default", "logroi"],
+        help="Thumbnail mode (default: logroi).",
+    )
+    p.add_argument(
+        "--image-key",
+        default="primary.pil900KW_image",
+        metavar="KEY",
+        help="Dotted image-array key, e.g. 'primary.pil900KW_image'.",
+    )
+    p.add_argument(
+        "--param",
+        action="append",
+        default=[],
+        dest="params",
+        metavar="name:source[:dtype[:units]]",
+        help="Scalar param to store per embedding. Repeat for multiple.",
+    )
+    p.add_argument(
+        "--projector",
+        default=None,
+        metavar="NAME|false",
+        help="Projector: omit=scratch, NAME=saved approx, false=NaN.",
+    )
+    p.add_argument(
+        "--classifier",
+        default=None,
+        metavar="NAME",
+        help="Classifier name (omit = no labels).",
+    )
+    p.add_argument(
+        "--output",
+        default="",
+        metavar="TILED_PATH",
+        help="Tiled path for the output LatentSpaceEmbedding container.",
+    )
+    p.add_argument("--no-wait", action="store_true", help="Return immediately after submission.")
 
 
 def main() -> None:
@@ -180,10 +217,17 @@ def main() -> None:
     sub = parser.add_subparsers(dest="command")
 
     # run / test
-    run_p = sub.add_parser("run", aliases=["test"],
-                            help="Submit a connectivity test or custom bash script.")
-    run_p.add_argument("script_file", nargs="?", default="test",
-                       help="Path to a bash script, or 'test' for the built-in check.")
+    run_p = sub.add_parser(
+        "run",
+        aliases=["test"],
+        help="Submit a connectivity test or custom bash script.",
+    )
+    run_p.add_argument(
+        "script_file",
+        nargs="?",
+        default="test",
+        help="Path to a bash script, or 'test' for the built-in check.",
+    )
     run_p.add_argument("--workdir", default="/tmp")
     run_p.add_argument("--gpu", action="store_true")
     run_p.add_argument("--no-wait", action="store_true")
@@ -192,16 +236,35 @@ def main() -> None:
     infer_p = sub.add_parser("infer", help="Submit a batch inference job.")
     _add_model_args(infer_p)
     src = infer_p.add_mutually_exclusive_group()
-    src.add_argument("--run", default="", metavar="TILED_PATH",
-                     help="BlueskyRun Tiled path; frames read from run/<image_key>.")
-    src.add_argument("--npy-file", metavar="PATH",
-                     help="Local .npy file to upload (no param support).")
-    src.add_argument("--npy-path", metavar="PATH",
-                     help="Absolute .npy path already on Orion (no param support).")
-    src.add_argument("--inputs", nargs="+", metavar="PATH[:SLICE]",
-                     help="Raw Tiled array paths (no param support).")
-    infer_p.add_argument("--n-images", type=int, default=2, metavar="N",
-                         help="Dummy image count when no source is given (default: 2).")
+    src.add_argument(
+        "--run",
+        default="",
+        metavar="TILED_PATH",
+        help="BlueskyRun Tiled path; frames read from run/<image_key>.",
+    )
+    src.add_argument(
+        "--npy-file",
+        metavar="PATH",
+        help="Local .npy file to upload (no param support).",
+    )
+    src.add_argument(
+        "--npy-path",
+        metavar="PATH",
+        help="Absolute .npy path already on Orion (no param support).",
+    )
+    src.add_argument(
+        "--inputs",
+        nargs="+",
+        metavar="PATH[:SLICE]",
+        help="Raw Tiled array paths (no param support).",
+    )
+    infer_p.add_argument(
+        "--n-images",
+        type=int,
+        default=2,
+        metavar="N",
+        help="Dummy image count when no source is given (default: 2).",
+    )
     infer_p.add_argument("--image-size", type=int, default=512, metavar="PX")
 
     # status / cancel
@@ -212,50 +275,70 @@ def main() -> None:
     # logs
     logs_p = sub.add_parser("logs", help="Stream the Slurm log via SSH.")
     logs_p.add_argument("job_id", type=int)
-    logs_p.add_argument("--tail", type=int, default=50, metavar="N",
-                        help="Existing lines to show before following (default: 50).")
-    logs_p.add_argument("--host", default="", metavar="HOSTNAME",
-                        help="SSH hostname override.")
-    logs_p.add_argument("--user", default="", metavar="USERNAME",
-                        help="SSH username override.")
+    logs_p.add_argument(
+        "--tail",
+        type=int,
+        default=50,
+        metavar="N",
+        help="Existing lines to show before following (default: 50).",
+    )
+    logs_p.add_argument("--host", default="", metavar="HOSTNAME", help="SSH hostname override.")
+    logs_p.add_argument("--user", default="", metavar="USERNAME", help="SSH username override.")
 
     args = parser.parse_args()
 
     if args.command in ("run", "test"):
-        script = (CONNECTIVITY_SCRIPT if args.script_file == "test"
-                  else Path(args.script_file).read_text())
-        asyncio.run(_run_script(script, working_dir=args.workdir,
-                                gpu=args.gpu, wait=not args.no_wait))
+        script = (
+            CONNECTIVITY_SCRIPT
+            if args.script_file == "test"
+            else Path(args.script_file).read_text()
+        )
+        asyncio.run(
+            _run_script(script, working_dir=args.workdir, gpu=args.gpu, wait=not args.no_wait)
+        )
 
     elif args.command == "infer":
         asyncio.run(_infer(args))
 
     elif args.command == "status":
+
         async def _status() -> None:
             async with OrionClient() as client:
                 info = await client.get_job(args.job_id)
             print(f"Job {info.job_id}: state={info.state}  node={info.node}")
             print(f"  stdout: {info.stdout}")
+
         asyncio.run(_status())
 
     elif args.command == "cancel":
+
         async def _cancel() -> None:
             async with OrionClient() as client:
                 await client.cancel_job(args.job_id)
             print(f"Job {args.job_id} cancelled.")
+
         asyncio.run(_cancel())
 
     elif args.command == "logs":
-        from emblase.compute.orion import _log_path, _ssh_host, _ssh_user, stream_logs  # noqa: E402
+        from emblase.compute.orion import (  # noqa: E402
+            _log_path,
+            _ssh_host,
+            _ssh_user,
+            stream_logs,
+        )
+
         host = args.host or _ssh_host()
         user = args.user or _ssh_user()
         log_file = _log_path(args.job_id)
         print(f"Streaming {user}@{host}:{log_file}")
         print("(Ctrl+C to stop)\n")
         try:
-            for line in stream_logs(args.job_id, tail_n=args.tail,
-                                    ssh_host=args.host or None,
-                                    ssh_user=args.user or None):
+            for line in stream_logs(
+                args.job_id,
+                tail_n=args.tail,
+                ssh_host=args.host or None,
+                ssh_user=args.user or None,
+            ):
                 print(line)
         except KeyboardInterrupt:
             pass

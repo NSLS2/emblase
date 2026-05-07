@@ -1,14 +1,13 @@
 import time
-from typing import Any, Callable, Literal, Optional, Sequence, Union
+from typing import Any, Callable, Literal, Optional, Sequence
 
 import numpy as np
 import pyarrow as pa
 from tiled.client.composite import CompositeClient
 from tiled.client.container import Container
 from tiled.ndslice import NDSlice
-from tiled.structures.core import Spec, StructureFamily
+from tiled.structures.core import StructureFamily
 from typing_extensions import NotRequired, TypedDict
-
 
 # ---------------------------------------------------------------------------
 # Parameter descriptors
@@ -173,9 +172,7 @@ def read_images(
         arr = client[path].read(slc)
 
         if arr.ndim < 2:
-            raise ValueError(
-                f"Array at {path!r} has fewer than 2 dimensions: {arr.shape}"
-            )
+            raise ValueError(f"Array at {path!r} has fewer than 2 dimensions: {arr.shape}")
         flat = arr.reshape(-1, arr.shape[-2], arr.shape[-1])
         for i, frame in enumerate(flat):
             frames.append(frame)
@@ -365,6 +362,7 @@ def write_output(
         access_tags=access_tags,
     )
 
+
 NOTES_MAX_LEN = 1024
 USER_LABEL_MAX_LEN = 64
 
@@ -530,7 +528,11 @@ class LatentSpaceEmbedding(CompositeClient):
         # Use the structure.count already present in the fetched item to decide
         # whether child arrays exist, avoiding a separate search GET.
         _structure = self.item.get("attributes", {}).get("structure", {})
-        _count = _structure.get("count") if isinstance(_structure, dict) else getattr(_structure, "count", None)
+        _count = (
+            _structure.get("count")
+            if isinstance(_structure, dict)
+            else getattr(_structure, "count", None)
+        )
         if _count == 0:
             self._arrays_initialised: bool | None = False
         elif _count is not None and _count > 0:
@@ -554,7 +556,7 @@ class LatentSpaceEmbedding(CompositeClient):
                 self._index_schema,
                 key="_index",
                 metadata={"description": "Per-embedding metadata index (append-only)"},
-                access_tags=self.access_blob.get("tags", None)
+                access_tags=self.access_blob.get("tags", None),
             )
             self._arrays_initialised = False
             self._num_embeddings = 0
@@ -603,25 +605,35 @@ class LatentSpaceEmbedding(CompositeClient):
 
         if not self._arrays_initialised:
             self._arr_embeddings = self.write_array(
-                embeddings.astype(np.float32), key="embeddings",
-                metadata={"description": "Embedding vectors"}, dims=["sample", "feature"],
+                embeddings.astype(np.float32),
+                key="embeddings",
+                metadata={"description": "Embedding vectors"},
+                dims=["sample", "feature"],
                 access_tags=tags,
             )
             self._arr_thumbnails = self.write_array(
-                thumbnails, key="thumbnails",
-                metadata={"description": "Thumbnail images"}, access_tags=tags,
+                thumbnails,
+                key="thumbnails",
+                metadata={"description": "Thumbnail images"},
+                access_tags=tags,
             )
             self._arr_projections = self.write_array(
-                proj_data, key="projections",
-                metadata={"description": "Visualization projections"}, access_tags=tags,
+                proj_data,
+                key="projections",
+                metadata={"description": "Visualization projections"},
+                access_tags=tags,
             )
             self._arr_notes = self.write_array(
-                empty_notes, key="notes",
-                metadata={"description": "Freeform mutable annotations"}, access_tags=tags,
+                empty_notes,
+                key="notes",
+                metadata={"description": "Freeform mutable annotations"},
+                access_tags=tags,
             )
             self._arr_user_labels = self.write_array(
-                empty_user_labels, key="user_labels",
-                metadata={"description": "Mutable user-assigned labels"}, access_tags=tags,
+                empty_user_labels,
+                key="user_labels",
+                metadata={"description": "Mutable user-assigned labels"},
+                access_tags=tags,
             )
             self._arrays_initialised = True
         else:
@@ -697,19 +709,13 @@ class LatentSpaceEmbedding(CompositeClient):
         """
         batch_size = len(embeddings)
         if embeddings.ndim != 2 or embeddings.shape[1] != self.embedding_dim:
-            msg = (
-                f"Expected embeddings shape (B, {self.embedding_dim}), "
-                f"got {embeddings.shape}"
-            )
+            msg = f"Expected embeddings shape (B, {self.embedding_dim}), got {embeddings.shape}"
             raise ValueError(msg)
 
         meta = self.metadata
         expected_thumb_shape = (batch_size, *meta.get("thumb_shape", ()))
         if thumbnails.shape != expected_thumb_shape:
-            msg = (
-                f"Expected thumbnails shape {expected_thumb_shape}, "
-                f"got {thumbnails.shape}"
-            )
+            msg = f"Expected thumbnails shape {expected_thumb_shape}, got {thumbnails.shape}"
             raise ValueError(msg)
 
         if len(paths) != batch_size:
@@ -732,7 +738,13 @@ class LatentSpaceEmbedding(CompositeClient):
 
         current_n = self.num_embeddings
 
-        self._write_arrays(embeddings, thumbnails, projections, offset=current_n, access_tags=access_tags)
+        self._write_arrays(
+            embeddings,
+            thumbnails,
+            projections,
+            offset=current_n,
+            access_tags=access_tags,
+        )
 
         # Build the _index table row, including param columns
         table_data: dict[str, Any] = {
@@ -768,11 +780,11 @@ class LatentSpaceEmbedding(CompositeClient):
             index = self.num_embeddings - 1
         if index < 0 or index >= self.num_embeddings:
             raise IndexError(f"Index {index} out of range [0, {self.num_embeddings})")
-        self["user_labels"].patch(
-            _make_string_array([label], USER_LABEL_MAX_LEN), offset=(index,)
-        )
+        self["user_labels"].patch(_make_string_array([label], USER_LABEL_MAX_LEN), offset=(index,))
 
-    def update_projections(self, projections: np.ndarray, access_tags: Optional[list[str]] = None) -> None:
+    def update_projections(
+        self, projections: np.ndarray, access_tags: Optional[list[str]] = None
+    ) -> None:
         """Replace all projection vectors (e.g. after re-running the projector approximator).
 
         Parameters
@@ -925,6 +937,4 @@ async def validate_embedding(spec, metadata, entry, structure_family, structure)
                 has_index = True
                 break
         if not has_index:
-            raise ValidationError(
-                "LatentSpaceEmbedding container must have an '_index' table."
-            )
+            raise ValidationError("LatentSpaceEmbedding container must have an '_index' table.")

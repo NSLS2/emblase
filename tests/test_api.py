@@ -50,9 +50,7 @@ def test_health(app_with_mock_backend):
 
 
 def test_evaluate_dummy_images(app_with_mock_backend):
-    resp = app_with_mock_backend.post(
-        "/evaluate", json={"dummy_images": 2, "image_size": [64, 64]}
-    )
+    resp = app_with_mock_backend.post("/evaluate", json={"dummy_images": 2, "image_size": [64, 64]})
     assert resp.status_code == 200
     data = resp.json()
     assert data["job_id"] == "job-001"
@@ -61,9 +59,7 @@ def test_evaluate_dummy_images(app_with_mock_backend):
 
 
 def test_evaluate_no_input_returns_400(app_with_mock_backend):
-    resp = app_with_mock_backend.post(
-        "/evaluate", json={"images": None, "dummy_images": None}
-    )
+    resp = app_with_mock_backend.post("/evaluate", json={"images": None, "dummy_images": None})
     assert resp.status_code == 400
 
 

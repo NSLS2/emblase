@@ -118,9 +118,7 @@ def test_pull_specific_version(tmp_path, monkeypatch):
         result = reg.pull("my-model", version="1", output_dir=tmp_path)
 
     assert result == tmp_path / "model"
-    mock_client.download_artifacts.assert_called_once_with(
-        "run123", "model", str(tmp_path)
-    )
+    mock_client.download_artifacts.assert_called_once_with("run123", "model", str(tmp_path))
 
 
 def test_pull_latest_version(tmp_path, monkeypatch):
@@ -257,9 +255,7 @@ def test_reassemble_chunks(tmp_path):
     chunk_size = 100
     (model_dir / "weights.npz.part000").write_bytes(original[:chunk_size])
     (model_dir / "weights.npz.part001").write_bytes(original[chunk_size:])
-    (model_dir / "weights.npz.chunks").write_text(
-        '{"original": "weights.npz", "n_chunks": 2}'
-    )
+    (model_dir / "weights.npz.chunks").write_text('{"original": "weights.npz", "n_chunks": 2}')
 
     reg._reassemble_chunks(model_dir)
 
@@ -350,9 +346,7 @@ def test_load_model_from_mlflow(tmp_path):
 
     with (
         patch("emblase.mlflow_registry.resolve_version", return_value="3"),
-        patch(
-            "emblase.mlflow_registry.download_model_weights", side_effect=fake_download
-        ),
+        patch("emblase.mlflow_registry.download_model_weights", side_effect=fake_download),
     ):
         import emblase.models as models_mod
 
@@ -399,9 +393,7 @@ def test_load_model_from_mlflow_no_loader_raises(tmp_path):
 
     with (
         patch("emblase.mlflow_registry.resolve_version", return_value="1"),
-        patch(
-            "emblase.mlflow_registry.download_model_weights", return_value=weights_dir
-        ),
+        patch("emblase.mlflow_registry.download_model_weights", return_value=weights_dir),
         pytest.raises(FileNotFoundError, match="No loader.py found"),
     ):
         import emblase.models as models_mod

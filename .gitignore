@@ -214,3 +214,5 @@ models/*
 !models/noop/
 !models/noop/**
 jobs/*models/noop/__pycache__/
+
+src/emblase/_version.py
