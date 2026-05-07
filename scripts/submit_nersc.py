@@ -61,6 +61,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 try:
     import certifi as _certifi
+
     os.environ.setdefault("SSL_CERT_FILE", _certifi.where())
 except ImportError:
     pass
@@ -95,10 +96,15 @@ def _build_parser() -> argparse.ArgumentParser:
         )
         p.add_argument("--mlflow-version", default="", metavar="VERSION")
         p.add_argument("--batch-size", type=int, default=1, metavar="N")
-        p.add_argument("--no-wait", action="store_true",
-                       help="Return immediately after submission.")
-        p.add_argument("--output", metavar="TILED_PATH", default="",
-                       help="Tiled path to write embeddings into.")
+        p.add_argument(
+            "--no-wait", action="store_true", help="Return immediately after submission."
+        )
+        p.add_argument(
+            "--output",
+            metavar="TILED_PATH",
+            default="",
+            help="Tiled path to write embeddings into.",
+        )
         p.add_argument(
             "--thumb-mode",
             default="logroi",
@@ -118,10 +124,13 @@ def _build_parser() -> argparse.ArgumentParser:
             metavar="name:source[:dtype[:units]]",
             help="Parameter spec (repeatable).",
         )
-        p.add_argument("--projector", default=None, metavar="NAME|false",
-                       help="Projector approximator name, or 'false' to skip.")
-        p.add_argument("--classifier", default=None, metavar="NAME",
-                       help="Classifier model name.")
+        p.add_argument(
+            "--projector",
+            default=None,
+            metavar="NAME|false",
+            help="Projector approximator name, or 'false' to skip.",
+        )
+        p.add_argument("--classifier", default=None, metavar="NAME", help="Classifier model name.")
 
     # -- infer subcommand --
     infer_p = sub.add_parser("infer", help="Submit a batch inference job")
@@ -155,11 +164,16 @@ def _build_parser() -> argparse.ArgumentParser:
     logs_p = sub.add_parser("logs", help="Tail job stdout/stderr via the IRI filesystem API")
     logs_p.add_argument("task_id", help="Task ID returned at submission time")
     logs_p.add_argument(
-        "--lines", type=int, default=100, metavar="N",
+        "--lines",
+        type=int,
+        default=100,
+        metavar="N",
         help="Number of tail lines to fetch (default: 100).",
     )
     logs_p.add_argument(
-        "--log-file", default="", metavar="PATH",
+        "--log-file",
+        default="",
+        metavar="PATH",
         help="Explicit path to the log file (overrides auto-detected path from status).",
     )
 

@@ -208,6 +208,7 @@ def _get_client(tracking_uri: str | None = None, api_key: str | None = None):
             _ru.call_endpoint = _patched_call
             # rest_store imports call_endpoint at module load; patch its reference too
             import mlflow.store.tracking.rest_store as _rs
+
             _rs.call_endpoint = _patched_call
     key = api_key or settings.mlflow_api_key or None
     if key:
@@ -225,6 +226,7 @@ def _get_client(tracking_uri: str | None = None, api_key: str | None = None):
             _ru.call_endpoint = _patched_call
             # rest_store imports call_endpoint at module load; patch its reference too
             import mlflow.store.tracking.rest_store as _rs
+
             _rs.call_endpoint = _patched_call
 
     # Patch 2: suppress prompt-exclusion filter (Azure ML)
@@ -314,10 +316,10 @@ def push(
                 _log_artifact_chunked(child, artifact_path=artifact_path, chunk_size=chunk_size)
         else:
             if not _should_upload(file_path):
-                raise ValueError(f"File {file_path.name} is excluded from upload (matches skip rules)")
-            _log_artifact_chunked(
-                file_path, artifact_path="model", chunk_size=chunk_size
-            )
+                raise ValueError(
+                    f"File {file_path.name} is excluded from upload (matches skip rules)"
+                )
+            _log_artifact_chunked(file_path, artifact_path="model", chunk_size=chunk_size)
         artifact_uri = f"{run.info.artifact_uri}/model"
 
     try:

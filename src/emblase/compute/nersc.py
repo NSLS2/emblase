@@ -73,13 +73,13 @@ def _iri_base() -> str:
 
 # IRI JobState enum values → our JobStatus
 _NERSC_STATE_MAP: dict[str, JobStatus] = {
-    "new":       JobStatus.pending,
-    "queued":    JobStatus.pending,
-    "held":      JobStatus.pending,
-    "active":    JobStatus.running,
+    "new": JobStatus.pending,
+    "queued": JobStatus.pending,
+    "held": JobStatus.pending,
+    "active": JobStatus.running,
     "completed": JobStatus.completed,
-    "failed":    JobStatus.failed,
-    "canceled":  JobStatus.failed,
+    "failed": JobStatus.failed,
+    "canceled": JobStatus.failed,
 }
 
 
@@ -127,8 +127,7 @@ class NERSCClient:
         if self._client is None:
             if not self.api_token:
                 raise ValueError(
-                    "NERSC API token is not set.  "
-                    "Set EMBLASE_NERSC_API_TOKEN in your .env file."
+                    "NERSC API token is not set.  Set EMBLASE_NERSC_API_TOKEN in your .env file."
                 )
             self._client = httpx.AsyncClient(
                 timeout=60.0,
@@ -164,6 +163,7 @@ class NERSCClient:
         Raises ``RuntimeError`` if the task fails.
         """
         import asyncio as _asyncio
+
         client = await self._ensure_client()
         deadline = _asyncio.get_event_loop().time() + timeout
         while True:
@@ -174,9 +174,7 @@ class NERSCClient:
             if status not in ("pending", "active", "running"):
                 result = data.get("result") or {}
                 if status == "failed" or "error" in result:
-                    raise RuntimeError(
-                        result.get("error") or f"Task {task_id} failed: {result}"
-                    )
+                    raise RuntimeError(result.get("error") or f"Task {task_id} failed: {result}")
                 return result
             if _asyncio.get_event_loop().time() > deadline:
                 raise TimeoutError(f"Task {task_id} did not complete within {timeout}s")
@@ -266,9 +264,7 @@ class NERSCClient:
     async def get_job(self, job_id: str) -> NERSCJob:
         """Return a ``NERSCJob`` for *job_id*."""
         client = await self._ensure_client()
-        resp = await client.get(
-            f"{self.base_url}/compute/status/{self.resource_id}/{job_id}"
-        )
+        resp = await client.get(f"{self.base_url}/compute/status/{self.resource_id}/{job_id}")
         resp.raise_for_status()
         data = resp.json()
         state = ""
@@ -280,9 +276,7 @@ class NERSCClient:
     async def cancel_job(self, job_id: str) -> None:
         """Cancel a running job."""
         client = await self._ensure_client()
-        resp = await client.delete(
-            f"{self.base_url}/compute/cancel/{self.resource_id}/{job_id}"
-        )
+        resp = await client.delete(f"{self.base_url}/compute/cancel/{self.resource_id}/{job_id}")
         resp.raise_for_status()
 
     async def wait_for_job(
@@ -351,9 +345,7 @@ class NERSCBackend(ComputeBackend):
     def _build_environment(self, *, require_tiled: bool = False) -> dict[str, str]:
         """Build the environment variable dict for a NERSC job."""
         if require_tiled and not settings.tiled_server_uri:
-            raise ValueError(
-                "EMBLASE_TILED_SERVER_URI is not set — required for this job type."
-            )
+            raise ValueError("EMBLASE_TILED_SERVER_URI is not set — required for this job type.")
         env: dict[str, str] = {}
         if settings.tiled_server_uri:
             env["EMBLASE_TILED_SERVER_URI"] = settings.tiled_server_uri

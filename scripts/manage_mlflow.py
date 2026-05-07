@@ -151,9 +151,7 @@ def main() -> None:
 
     push_p = sub.add_parser("push", help="Upload and register a model file or directory")
     push_p.add_argument("path", help="Local file or directory to upload")
-    push_p.add_argument(
-        "--name", default=None, help="Registry name (default: derived from path)"
-    )
+    push_p.add_argument("--name", default=None, help="Registry name (default: derived from path)")
     push_p.add_argument(
         "--experiment",
         default=None,
@@ -161,9 +159,7 @@ def main() -> None:
         help="MLflow experiment name (default: EMBLASE_MLFLOW_EXPERIMENT). "
         "Created automatically if it does not exist.",
     )
-    push_p.add_argument(
-        "--description", default=None, help="Human-readable description"
-    )
+    push_p.add_argument("--description", default=None, help="Human-readable description")
     push_p.add_argument(
         "--chunk-size",
         type=int,
