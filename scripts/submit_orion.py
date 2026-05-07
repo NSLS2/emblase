@@ -112,7 +112,7 @@ async def _infer(args: argparse.Namespace) -> None:
         print("(not waiting — use 'status <id>' or 'logs <id>' to check)")
         return
 
-    print("Polling job state every 10 s — live log lines appear above ...")
+    print("Polling job state every 10 s (use 'logs <id>' in another terminal to stream the Slurm log) ...")
     await asyncio.to_thread(backend.monitor_job, job_id)
 
     final = _SLURM_STATE_MAP.get(

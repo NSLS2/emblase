@@ -445,12 +445,17 @@ class OrionBackend(ComputeBackend):
         job_id = int(job_id)
         prefix = f"{log_prefix} " if log_prefix else ""
         t0 = time.monotonic()
+        # Create a dedicated client + event loop for this thread.
+        # The backend's self.client was opened on the main asyncio loop and
+        # cannot be reused here (httpx.AsyncClient is not cross-loop safe).
         _loop = asyncio.new_event_loop()
+        _client = OrionClient()
         try:
+            _loop.run_until_complete(_client._open())
             while True:
                 time.sleep(poll_interval)
                 try:
-                    info = _loop.run_until_complete(self.client.get_job(job_id))
+                    info = _loop.run_until_complete(_client.get_job(job_id))
                 except Exception as exc:
                     logger.warning("%sCould not poll job %s: %s", prefix, job_id, exc)
                     continue
@@ -468,6 +473,7 @@ class OrionBackend(ComputeBackend):
                     logger.info("%sJob %s finished: %s", prefix, job_id, info.state)
                     break
         finally:
+            _loop.run_until_complete(_client._close())
             _loop.close()
 
     # -- internal helpers ----------------------------------------------------
