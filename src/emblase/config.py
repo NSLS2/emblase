@@ -59,7 +59,7 @@ class Settings(BaseSettings):
     nersc_account: str = ""
     nersc_container_image: str = "ghcr.io/genematx/emblase:latest"
     nersc_time_limit: str = "00:30:00"
-    nersc_constraint: str = "gpu"
+    nersc_constraint: str = ""  # empty = no constraint, let Perlmutter pick any GPU node
 
     # Compute backend selection: "local", "orion", or "nersc"
     compute_backend: str = "local"

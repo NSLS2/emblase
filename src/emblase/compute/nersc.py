@@ -225,8 +225,9 @@ class NERSCClient:
 
         attributes: dict[str, Any] = {
             "duration": time_limit_s,
-            "custom_attributes": {"constraint": constraint},
         }
+        if constraint:
+            attributes["custom_attributes"] = {"constraint": constraint}
         if account:
             attributes["account"] = account
 
