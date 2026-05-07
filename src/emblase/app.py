@@ -6,14 +6,19 @@ import numpy as np
 from fastapi import FastAPI, HTTPException
 
 from .compute.base import ComputeBackend, JobResult
-from .compute.local import LocalBackend
-from .compute.orion import OrionBackend
 from .config import settings
 from .schemas import EvaluateRequest, EvaluateResponse
 
 
 def _create_backend() -> ComputeBackend:
-    return OrionBackend() if settings.compute_backend == "orion" else LocalBackend()
+    if settings.compute_backend == "orion":
+        from .compute.orion import OrionBackend
+        return OrionBackend()
+    if settings.compute_backend == "nersc":
+        from .compute.nersc import NERSCBackend
+        return NERSCBackend()
+    from .compute.local import LocalBackend
+    return LocalBackend()
 
 
 def _to_response(job_id: str, result: JobResult) -> EvaluateResponse:
