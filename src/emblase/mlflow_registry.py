@@ -42,6 +42,32 @@ from .config import settings
 # 10 MB gives comfortable headroom. Chunking is disabled by default (0 = off).
 CHUNK_SIZE = 10 * 1024 * 1024  # 10 MB
 
+# Directories and file patterns to skip when uploading a model directory.
+_SKIP_DIRS = {"__pycache__", ".git", ".pixi", ".venv", "node_modules"}
+_SKIP_SUFFIXES = {".pyc", ".pyo", ".DS_Store", ".ipynb_checkpoints"}
+_SKIP_NAMES = {".DS_Store", ".gitignore", ".gitkeep"}
+
+
+def _should_upload(path: Path) -> bool:
+    """Return True if *path* should be included in a model upload.
+
+    Excludes:
+    - Any file inside a directory listed in ``_SKIP_DIRS`` (at any depth)
+    - Files whose suffix is in ``_SKIP_SUFFIXES``
+    - Files whose name is in ``_SKIP_NAMES``
+    - Hidden files (name starts with ``.``)
+    """
+    for part in path.parts:
+        if part in _SKIP_DIRS:
+            return False
+    if path.suffix in _SKIP_SUFFIXES:
+        return False
+    if path.name in _SKIP_NAMES:
+        return False
+    if path.name.startswith("."):
+        return False
+    return True
+
 
 # ── Data classes ─────────────────────────────────────────────────────────────
 
@@ -254,11 +280,20 @@ def push(
     mlflow.set_experiment(settings.mlflow_experiment)
     with mlflow.start_run(run_name=f"push-{model_name}") as run:
         if file_path.is_dir():
-            for child in sorted(file_path.iterdir()):
-                if child.is_file():
-                    _log_artifact_chunked(child, artifact_path="model", chunk_size=chunk_size)
+            files = sorted(f for f in file_path.rglob("*") if f.is_file() and _should_upload(f))
+            if not files:
+                raise ValueError(f"No uploadable files found under {file_path}")
+            for child in files:
+                # Preserve sub-directory structure relative to the model root
+                rel = child.relative_to(file_path).parent
+                artifact_path = f"model/{rel}" if str(rel) != "." else "model"
+                _log_artifact_chunked(child, artifact_path=artifact_path, chunk_size=chunk_size)
         else:
-            _log_artifact_chunked(file_path, artifact_path="model", chunk_size=chunk_size)
+            if not _should_upload(file_path):
+                raise ValueError(f"File {file_path.name} is excluded from upload (matches skip rules)")
+            _log_artifact_chunked(
+                file_path, artifact_path="model", chunk_size=chunk_size
+            )
         artifact_uri = f"{run.info.artifact_uri}/model"
 
     try:

@@ -322,6 +322,81 @@ def test_download_model_weights_delegates_to_pull(tmp_path, monkeypatch):
     assert result == expected
 
 
+# ── _should_upload ────────────────────────────────────────────────────────────
+
+
+def test_should_upload_normal_files():
+    assert reg._should_upload(Path("models/umap_approx/umap_approximator.pth"))
+    assert reg._should_upload(Path("models/class_5/classifier.pth"))
+    assert reg._should_upload(Path("models/vit/vit_model_weights.npz"))
+    assert reg._should_upload(Path("models/umap_approx/neural_dimred_wrapper.py"))
+
+
+def test_should_upload_rejects_pycache():
+    assert not reg._should_upload(Path("models/umap_approx/__pycache__/foo.cpython-311.pyc"))
+
+
+def test_should_upload_rejects_pyc():
+    assert not reg._should_upload(Path("models/vae/vae.pyc"))
+
+
+def test_should_upload_rejects_ds_store():
+    assert not reg._should_upload(Path("models/.DS_Store"))
+    assert not reg._should_upload(Path("models/vae/.DS_Store"))
+
+
+def test_should_upload_rejects_hidden_files():
+    assert not reg._should_upload(Path("models/.gitignore"))
+    assert not reg._should_upload(Path("models/umap_approx/.hidden"))
+
+
+def test_push_dir_skips_pycache_and_hidden(tmp_path, monkeypatch):
+    """push() on a directory must not upload __pycache__, .pyc or hidden files."""
+    model_dir = tmp_path / "my_model"
+    model_dir.mkdir()
+    # Files that SHOULD be uploaded
+    (model_dir / "weights.pth").write_bytes(b"weights")
+    (model_dir / "config.json").write_bytes(b"{}")
+    # Files that should be SKIPPED
+    pycache = model_dir / "__pycache__"
+    pycache.mkdir()
+    (pycache / "module.cpython-311.pyc").write_bytes(b"pyc")
+    (model_dir / ".DS_Store").write_bytes(b"mac")
+    (model_dir / "scratch.pyc").write_bytes(b"pyc")
+
+    monkeypatch.setattr(reg.settings, "mlflow_tracking_uri", "http://localhost:5000")
+    monkeypatch.setattr(reg.settings, "mlflow_experiment", "test-exp")
+
+    mock_client = MagicMock()
+    mock_client.get_registered_model.return_value = MagicMock()
+    mock_client.create_model_version.return_value = _make_mv(version="1")
+
+    mock_run = MagicMock()
+    mock_run.__enter__ = MagicMock(return_value=mock_run)
+    mock_run.__exit__ = MagicMock(return_value=False)
+    mock_run.info.run_id = "run1"
+    mock_run.info.artifact_uri = "http://server/artifacts/run1"
+
+    uploaded = []
+    with (
+        patch("emblase.mlflow_registry._get_client", return_value=mock_client),
+        patch("mlflow.set_experiment"),
+        patch("mlflow.start_run", return_value=mock_run),
+        patch(
+            "emblase.mlflow_registry._log_artifact_chunked",
+            side_effect=lambda f, **_: uploaded.append(f.name),
+        ),
+    ):
+        reg.push(path=model_dir, name="my_model")
+
+    assert "weights.pth" in uploaded
+    assert "config.json" in uploaded
+    assert "module.cpython-311.pyc" not in uploaded
+    assert ".DS_Store" not in uploaded
+    assert "scratch.pyc" not in uploaded
+    assert len(uploaded) == 2
+
+
 # ── load_model (MLflow path) ──────────────────────────────────────────────────
 
 
