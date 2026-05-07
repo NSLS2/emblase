@@ -247,15 +247,6 @@ async def chat_history(session_id: str):
     return messages
 
 
-@router.get("/genesis-logo.png")
-async def genesis_logo():
-    return FileResponse(
-        STATIC_DIR / "genesis-logo.png",
-        media_type="image/png",
-        headers={"Cache-Control": "max-age=86400"},
-    )
-
-
 @router.get("/main.js")
 async def main_js():
     return FileResponse(
