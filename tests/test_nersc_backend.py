@@ -454,13 +454,13 @@ def test_render_inference_script_classifier_and_projector():
 
 
 def test_render_inference_script_image_key_default():
-    """NERSCBackend.submit() uses 'primary.pil900KW_image' as the image_key default."""
+    """NERSCBackend.submit() uses 'primary/pil900KW_image' as the image_key default."""
     script = _render_inference_script(
         model_name="vit",
         models_dir="/pscratch/models",
-        image_key="primary.pil900KW_image",
+        image_key="primary/pil900KW_image",
     )
-    assert '"primary.pil900KW_image"' in script
+    assert '"primary/pil900KW_image"' in script
 
 
 # ---------------------------------------------------------------------------

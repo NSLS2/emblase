@@ -26,11 +26,11 @@ Example — Terminal 1 (start the watcher)
         --output     smi/sandbox/confab26_demo/results \\
         --backend    orion \\
         --model      bnl-nsls2-smi-vit \\
-        --image-key  primary.pil900KW_image \\
+        --image-key  primary/pil900KW_image \\
         --batch-size 1 \\
         --thumb-mode logroi \\
-        --param      temperature:primary.LinkamThermal_temperature_current:float:°C \\
-        --param      piezo_x:primary.piezo_x:float:μm \\
+        --param      temperature:primary/LinkamThermal_temperature_current:float:°C \\
+        --param      piezo_x:primary/piezo_x:float:μm \\
         --no-replay
 
 Example — Terminal 2 (simulate acquisition)
@@ -48,7 +48,7 @@ Example — Terminal 2 (simulate acquisition)
 --------------
     --param name:source[:dtype[:units]]
 
-- ``source``: ``<stream>.<array_key>`` aligned 1:1 with frames
+- ``source``: ``<stream>/<array_key>`` aligned 1:1 with frames
 - ``dtype``: ``float`` (default), ``integer``, ``string``, or ``boolean``
 - Repeat for multiple parameters
 """
@@ -112,9 +112,9 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--image-key",
-        default="primary.pil900KW_image",
+        default="primary/pil900KW_image",
         metavar="KEY",
-        help="Dotted image-array key, e.g. 'primary.pil900KW_image'.",
+        help="Slash-separated image-array key, e.g. 'primary/pil900KW_image'.",
     )
     p.add_argument(
         "--batch-size",

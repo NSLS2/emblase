@@ -42,8 +42,8 @@ python scripts/submit_orion.py infer \
     --output     smi/sandbox/confab26_demo/results/run_1086139_vit \
     --batch-size 1 \
     --thumb-mode logroi \
-    --param      temperature:primary.LinkamThermal_temperature_current:float:°C \
-    --param      piezo_x:primary.piezo_x:float:μm
+    --param      temperature:primary/LinkamThermal_temperature_current:float:°C \
+    --param      piezo_x:primary/piezo_x:float:μm
 ```
 
 `--run` points at the BlueskyRun container; frames are read from
@@ -97,8 +97,8 @@ pixi run python scripts/start_watcher.py \
   --image-key  pil900KW_image \
   --batch-size 1 \
   --thumb-mode logroi \
-  --param      temperature:primary.LinkamThermal_temperature_current:float:°C \
-  --param      piezo_x:primary.piezo_x:float:μm \
+  --param      temperature:primary/LinkamThermal_temperature_current:float:°C \
+  --param      piezo_x:primary/piezo_x:float:μm \
   --no-replay
 ```
 
@@ -146,7 +146,7 @@ env + model load), well before the copy finishes
 --param name:source:dtype:units
 ```
 
-- `source` must be `primary.<array_key>` (a scalar stream aligned 1:1 with frames)
+- `source` must be `primary/<array_key>` (a scalar stream aligned 1:1 with frames)
 - `dtype`: `float`, `integer`, `string`, or `boolean`
 - Repeat for multiple parameters
 

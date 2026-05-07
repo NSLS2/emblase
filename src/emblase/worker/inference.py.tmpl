@@ -8,7 +8,7 @@ Filled by _render_inference_script():
                           image array is read as run_path/<image_stream>/<image_array_key>
                           and param arrays are sliced from the same stream.
                           Mutually exclusive with inputs.
-    {image_key}         — dotted key of the image array, e.g. "primary.pil900KW_image"
+     {image_key}         — slash-separated key of the image array, e.g. "primary/pil900KW_image"
     {inputs}            — repr of list[str | tuple[str,str]] of Tiled (path[, slice])
                           entries; used when run_path is empty (legacy raw-entry mode).
     {output}            — Tiled container path to write embeddings (empty → output.npy)
@@ -60,7 +60,7 @@ classifier_name = "{classifier_name}"
 models_dir      = "{models_dir}"
 
 # Resolve image_key → (stream, array_key)
-_ik = image_key.split(".", 1)
+_ik = image_key.split("/", 1)
 image_stream    = _ik[0] if len(_ik) == 2 else "primary"
 image_array_key = _ik[1] if len(_ik) == 2 else _ik[0]
 
@@ -192,9 +192,9 @@ if param_specs and run_path:
         raw_params: dict[str, np.ndarray] = {{}}
         for name, spec in param_specs.items():
             source = spec.get("source", "")
-            parts = source.split(".", 1)
+            parts = source.split("/", 1)
             if len(parts) != 2:
-                log.warning("Param %r: invalid source %r — skipping", name, source)
+                log.warning("Param %r: invalid source %r (expected 'stream/key') — skipping", name, source)
                 continue
             sname, akey = parts
             if sname not in _stream_cache:

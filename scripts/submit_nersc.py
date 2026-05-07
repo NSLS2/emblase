@@ -18,7 +18,7 @@ Submit a batch job::
         --output  smi/sandbox/confab26_demo/results/run_1086139_vit \\
         --batch-size 1 \\
         --thumb-mode logroi \\
-        --param temperature:primary.LinkamThermal_temperature_current:float:°C
+        --param temperature:primary/LinkamThermal_temperature_current:float:°C
 
 Submit a streaming job::
 
@@ -43,7 +43,7 @@ Check the Slurm log (once you have the job ID from ``status``)::
 --------------
     --param name:source:dtype:units
 
-``source`` must be ``primary.<array_key>`` — a scalar stream aligned 1-to-1
+``source`` must be ``primary/<array_key>`` — a scalar stream aligned 1-to-1
 with image frames.  ``dtype`` defaults to ``float``; ``units`` defaults to "".
 """
 
@@ -106,9 +106,9 @@ def _build_parser() -> argparse.ArgumentParser:
         )
         p.add_argument(
             "--image-key",
-            default="primary.pil900KW_image",
+            default="primary/pil900KW_image",
             metavar="STREAM.KEY",
-            help="Dotted image array key, e.g. 'primary.pil900KW_image'.",
+            help="Slash-separated image array key, e.g. 'primary/pil900KW_image'.",
         )
         p.add_argument(
             "--param",
