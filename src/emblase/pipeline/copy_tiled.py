@@ -205,6 +205,47 @@ def copy_table(src, dst, key, access_tags=None, batch_size=None, batch_delay: fl
 # LatentSpaceEmbedding copy
 # ---------------------------------------------------------------------------
 
+def _nullable_str_list(series) -> list[str | None]:
+    """Convert a pandas Series to a list of str-or-None, replacing NA/NaN with None.
+
+    pandas nullable string columns use ``pd.NA`` for missing values; PyArrow
+    string arrays require ``None``.  This helper normalises both ``pd.NA`` and
+    ``float('nan')`` to ``None`` so the conversion is always safe.
+    """
+    import pandas as pd
+    result = []
+    for v in series:
+        if v is None or v is pd.NA:
+            result.append(None)
+        else:
+            try:
+                if pd.isna(v):
+                    result.append(None)
+                    continue
+            except (TypeError, ValueError):
+                pass
+            result.append(str(v))
+    return result
+
+
+def _nullable_list(series) -> list:
+    """Convert a pandas Series to a plain list, replacing NA/NaN with None."""
+    import pandas as pd
+    result = []
+    for v in series:
+        if v is None or v is pd.NA:
+            result.append(None)
+        else:
+            try:
+                if pd.isna(v):
+                    result.append(None)
+                    continue
+            except (TypeError, ValueError):
+                pass
+            result.append(v)
+    return result
+
+
 def copy_embedding(
     src,
     dst_parent,
@@ -308,24 +349,30 @@ def copy_embedding(
         params = None
         if param_names:
             params = {
-                name: rows[f"param_{name}"].tolist()
+                name: _nullable_list(rows[f"param_{name}"])
                 for name in param_names
                 if f"param_{name}" in rows.columns
             }
 
         labels = None
         if "label" in rows.columns:
-            raw = rows["label"].tolist()
-            # Only pass labels if at least one is non-null
-            if any(v is not None and str(v) != "" for v in raw):
-                labels = [v if (v is not None and str(v) != "") else "" for v in raw]
+            raw = _nullable_str_list(rows["label"])
+            if any(v for v in raw):  # at least one non-empty, non-None value
+                labels = [v or "" for v in raw]
+
+        mlflow_run_id = None
+        if "mlflow_run_id" in rows.columns:
+            ids = _nullable_str_list(rows["mlflow_run_id"])
+            # Use the first non-null value in the batch (they are all the same run)
+            mlflow_run_id = next((v for v in ids if v), None)
 
         dst.append(
             embeddings[start:end].astype(np.float32),
             thumbnails[start:end].astype(np.float32),
-            paths=rows["path"].tolist(),
-            slices=rows["slice"].tolist(),
+            paths=_nullable_str_list(rows["path"]),
+            slices=_nullable_str_list(rows["slice"]) if "slice" in rows.columns else None,
             model_version=model_version or None,
+            mlflow_run_id=mlflow_run_id,
             timestamps=rows["timestamp"].tolist(),
             projections=projections[start:end].astype(np.float32),
             params=params,
