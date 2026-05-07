@@ -65,7 +65,7 @@ orion = "python scripts/submit_orion.py"
 test-local = "python scripts/submit_local.py"
 test = "python -m pytest"
 serve = "uvicorn emblase.app:app --reload"
-mlflow = "python scripts/mlflow_registry.py"
+mlflow = "python scripts/manage_mlflow.py"
 
 [tool.ruff]
 line-length = 100
