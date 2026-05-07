@@ -42,6 +42,32 @@ from .config import settings
 # 10 MB gives comfortable headroom. Chunking is disabled by default (0 = off).
 CHUNK_SIZE = 10 * 1024 * 1024  # 10 MB
 
+# Directories and file patterns to skip when uploading a model directory.
+_SKIP_DIRS = {"__pycache__", ".git", ".pixi", ".venv", "node_modules"}
+_SKIP_SUFFIXES = {".pyc", ".pyo", ".DS_Store", ".ipynb_checkpoints"}
+_SKIP_NAMES = {".DS_Store", ".gitignore", ".gitkeep"}
+
+
+def _should_upload(path: Path) -> bool:
+    """Return True if *path* should be included in a model upload.
+
+    Excludes:
+    - Any file inside a directory listed in ``_SKIP_DIRS`` (at any depth)
+    - Files whose suffix is in ``_SKIP_SUFFIXES``
+    - Files whose name is in ``_SKIP_NAMES``
+    - Hidden files (name starts with ``.``)
+    """
+    for part in path.parts:
+        if part in _SKIP_DIRS:
+            return False
+    if path.suffix in _SKIP_SUFFIXES:
+        return False
+    if path.name in _SKIP_NAMES:
+        return False
+    if path.name.startswith("."):
+        return False
+    return True
+
 
 # ── Data classes ─────────────────────────────────────────────────────────────
 
@@ -159,27 +185,49 @@ def _get_client(tracking_uri: str | None = None, api_key: str | None = None):
         )
     mlflow.set_tracking_uri(uri)
 
-    # Patch 1: X-Api-Key header injection (AmSC and similar servers)
+    # Patch 1: X-Api-Key header injection (AmSC and similar servers).
+    #
+    # In mlflow 3.x the call chain is:
+    #   RestStore._call_endpoint → call_endpoint → http_request
+    # _call_endpoint never passes extra_headers, so patching http_request alone
+    # is not enough — the key never reaches the request.  We patch call_endpoint
+    # instead, which sits between the two and does accept extra_headers.
     key = api_key or settings.mlflow_api_key or None
     if key:
         import mlflow.utils.rest_utils as _ru
 
-        if not getattr(_ru.http_request, "_emblase_api_key_patched", False):
-            _orig_http = _ru.http_request
+        if not getattr(_ru.call_endpoint, "_emblase_api_key_patched", False):
+            _orig_call = _ru.call_endpoint
 
-            def _patched_http(host_creds, endpoint, method, *args, **kwargs):
-                if kwargs.get("headers"):
-                    h = dict(kwargs["headers"])
-                    h["X-Api-Key"] = key
-                    kwargs["headers"] = h
-                else:
-                    h = dict(kwargs.get("extra_headers") or {})
-                    h["X-Api-Key"] = key
-                    kwargs["extra_headers"] = h
-                return _orig_http(host_creds, endpoint, method, *args, **kwargs)
+            def _patched_call(*args, extra_headers=None, **kwargs):
+                h = dict(extra_headers or {})
+                h["X-Api-Key"] = key
+                return _orig_call(*args, extra_headers=h, **kwargs)
 
-            _patched_http._emblase_api_key_patched = True
-            _ru.http_request = _patched_http
+            _patched_call._emblase_api_key_patched = True
+            _ru.call_endpoint = _patched_call
+            # rest_store imports call_endpoint at module load; patch its reference too
+            import mlflow.store.tracking.rest_store as _rs
+
+            _rs.call_endpoint = _patched_call
+    key = api_key or settings.mlflow_api_key or None
+    if key:
+        import mlflow.utils.rest_utils as _ru
+
+        if not getattr(_ru.call_endpoint, "_emblase_api_key_patched", False):
+            _orig_call = _ru.call_endpoint
+
+            def _patched_call(*args, extra_headers=None, **kwargs):
+                h = dict(extra_headers or {})
+                h["X-Api-Key"] = key
+                return _orig_call(*args, extra_headers=h, **kwargs)
+
+            _patched_call._emblase_api_key_patched = True
+            _ru.call_endpoint = _patched_call
+            # rest_store imports call_endpoint at module load; patch its reference too
+            import mlflow.store.tracking.rest_store as _rs
+
+            _rs.call_endpoint = _patched_call
 
     # Patch 2: suppress prompt-exclusion filter (Azure ML)
     _rc.is_prompt_supported_registry = lambda *_a, **_kw: False
@@ -214,6 +262,7 @@ def push(
     path: str | Path,
     name: str | None = None,
     description: str | None = None,
+    experiment: str | None = None,
     tracking_uri: str | None = None,
     api_key: str | None = None,
     chunk_size: int = 0,
@@ -231,6 +280,9 @@ def push(
         Registry name.  Defaults to the stem of the file or the directory name.
     description:
         Optional human-readable description stored in the registry.
+    experiment:
+        MLflow experiment name to log the upload run under.  Created automatically
+        if it does not exist.  Defaults to ``EMBLASE_MLFLOW_EXPERIMENT`` (``emblase-models``).
     tracking_uri:
         Override ``EMBLASE_MLFLOW_TRACKING_URI`` for this call only.
     api_key:
@@ -251,13 +303,22 @@ def push(
     desc = description or f"Uploaded from {file_path.name}"
     client = _get_client(tracking_uri, api_key)
 
-    mlflow.set_experiment(settings.mlflow_experiment)
+    mlflow.set_experiment(experiment or settings.mlflow_experiment)
     with mlflow.start_run(run_name=f"push-{model_name}") as run:
         if file_path.is_dir():
-            for child in sorted(file_path.iterdir()):
-                if child.is_file():
-                    _log_artifact_chunked(child, artifact_path="model", chunk_size=chunk_size)
+            files = sorted(f for f in file_path.rglob("*") if f.is_file() and _should_upload(f))
+            if not files:
+                raise ValueError(f"No uploadable files found under {file_path}")
+            for child in files:
+                # Preserve sub-directory structure relative to the model root
+                rel = child.relative_to(file_path).parent
+                artifact_path = f"model/{rel}" if str(rel) != "." else "model"
+                _log_artifact_chunked(child, artifact_path=artifact_path, chunk_size=chunk_size)
         else:
+            if not _should_upload(file_path):
+                raise ValueError(
+                    f"File {file_path.name} is excluded from upload (matches skip rules)"
+                )
             _log_artifact_chunked(file_path, artifact_path="model", chunk_size=chunk_size)
         artifact_uri = f"{run.info.artifact_uri}/model"
 

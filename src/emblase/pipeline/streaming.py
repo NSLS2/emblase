@@ -100,7 +100,7 @@ class InputsWatcher:
         backend: Any,
         model_name: str,
         batch_size: int = 8,
-        image_key: str = "primary.pil900KW_image",
+        image_key: str = "primary/pil900KW_image",
         thumb_mode: str = "logroi",
         mlflow_version: str = "",
         access_tags: list[str] | None = None,

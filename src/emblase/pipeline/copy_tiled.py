@@ -50,14 +50,14 @@ def _walk_readables(node):
 
 
 def _array_key_name(image_key: str) -> str:
-    """Return the bare array key from a dotted 'stream.key' or plain 'key' string.
+    """Return the bare array key from a 'stream/key' or plain 'key' string.
 
     Examples::
 
-        _array_key_name("primary.pil900KW_image") -> "pil900KW_image"
+        _array_key_name("primary/pil900KW_image") -> "pil900KW_image"
         _array_key_name("pil900KW_image")         -> "pil900KW_image"
     """
-    return image_key.rsplit(".", 1)[-1]
+    return image_key.rsplit("/", 1)[-1]
 
 
 def deepcopy(
@@ -67,7 +67,7 @@ def deepcopy(
     access_tags=None,
     batch_size: int | None = 1,
     batch_delay: float = 0.0,
-    image_key: str = "primary.pil900KW_image",
+    image_key: str = "primary/pil900KW_image",
     on_progress: Callable[[int, int], None] | None = None,
 ):
     """Copy src into dst, cp-style.
@@ -89,8 +89,8 @@ def deepcopy(
         identified by *image_key*.  0 means copy as fast as possible.
     image_key:
         Name of the array that should be written incrementally.  Accepts
-        either a plain key (``"pil900KW_image"``) or a dotted
-        ``"stream.key"`` form (``"primary.pil900KW_image"``); only the
+        either a plain key (``"pil900KW_image"``) or a slash-separated
+        ``"stream/key"`` form (``"primary/pil900KW_image"``); only the
         trailing key name is matched against the node tree.
         All other arrays are copied in one shot.
     on_progress:
@@ -146,6 +146,9 @@ def copy_array(
     batch_delay: float = 0.0,
     on_progress: Callable[[int, int], None] | None = None,
 ):
+    print(
+        f"Copying array: {key} (shape: {src.shape}, dtype: {src.dtype}, batch_size={batch_size}, batch_delay={batch_delay})"
+    )
     n_rows = src.shape[0]
     # batch_size=None/0 → write entire array at once
     if not batch_size:
@@ -173,6 +176,7 @@ def copy_array(
         on_progress(min(bs, n_rows), n_rows)
     row = bs
     while row < n_rows:
+        print(f"Patching array: {key}, rows {row}:{min(row + bs, n_rows)} / {n_rows}")
         if batch_delay > 0:
             time.sleep(batch_delay)
         end = min(row + bs, n_rows)

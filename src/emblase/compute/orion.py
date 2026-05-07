@@ -82,7 +82,7 @@ def _render_inference_script(
     models_dir: str,
     batch_size: int = 1,
     run_path: str = "",
-    image_key: str = "primary.pil900KW_image",
+    image_key: str = "primary/pil900KW_image",
     inputs: list[str | tuple[str, str]] | None = None,
     output: str = "",
     mlflow_version: str = "",
@@ -116,7 +116,7 @@ def _render_streaming_inference_script(
     batch_size: int = 8,
     mlflow_version: str = "",
     thumb_mode: str = "logroi",
-    image_key: str = "primary.pil900KW_image",
+    image_key: str = "primary/pil900KW_image",
     ws_max_size: int = 64 * 1024 * 1024,
     param_specs: dict | None = None,
     projector: str | None = None,
@@ -445,12 +445,17 @@ class OrionBackend(ComputeBackend):
         job_id = int(job_id)
         prefix = f"{log_prefix} " if log_prefix else ""
         t0 = time.monotonic()
+        # Create a dedicated client + event loop for this thread.
+        # The backend's self.client was opened on the main asyncio loop and
+        # cannot be reused here (httpx.AsyncClient is not cross-loop safe).
         _loop = asyncio.new_event_loop()
+        _client = OrionClient()
         try:
+            _loop.run_until_complete(_client._open())
             while True:
                 time.sleep(poll_interval)
                 try:
-                    info = _loop.run_until_complete(self.client.get_job(job_id))
+                    info = _loop.run_until_complete(_client.get_job(job_id))
                 except Exception as exc:
                     logger.warning("%sCould not poll job %s: %s", prefix, job_id, exc)
                     continue
@@ -468,6 +473,7 @@ class OrionBackend(ComputeBackend):
                     logger.info("%sJob %s finished: %s", prefix, job_id, info.state)
                     break
         finally:
+            _loop.run_until_complete(_client._close())
             _loop.close()
 
     # -- internal helpers ----------------------------------------------------
@@ -528,7 +534,7 @@ class OrionBackend(ComputeBackend):
         images: np.ndarray | None = None,
         npy_path: str | None = None,
         run_path: str = "",
-        image_key: str = "primary.pil900KW_image",
+        image_key: str = "primary/pil900KW_image",
         inputs: list[str | tuple[str, str]] | None = None,
         output: str = "",
         mlflow_version: str = "",
@@ -595,7 +601,7 @@ class OrionBackend(ComputeBackend):
         batch_size: int = 8,
         mlflow_version: str = "",
         thumb_mode: str = "logroi",
-        image_key: str = "primary.pil900KW_image",
+        image_key: str = "primary/pil900KW_image",
         ws_max_size: int = 64 * 1024 * 1024,
         mem: str = "32G",
         param_specs: dict | None = None,

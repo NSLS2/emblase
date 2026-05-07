@@ -107,11 +107,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--image-key",
-        default="primary.pil900KW_image",
+        default="primary/pil900KW_image",
         metavar="KEY",
         help=(
-            "Dotted key identifying the image array to copy incrementally, "
-            "in the form '<stream>.<array_key>' (default: primary.pil900KW_image).  "
+            "Slash-separated key identifying the image array to copy incrementally, "
+            "in the form '<stream>/<array_key>' (default: primary/pil900KW_image).  "
             "All other arrays are copied in one shot."
         ),
     )

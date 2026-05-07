@@ -1,38 +1,60 @@
 #!/usr/bin/env python
-"""CLI for the Emblase MLflow model registry.
+"""Manage the Emblase MLflow model registry: push, pull, list, delete.
 
 Subcommands
 -----------
 push   <path>       Upload a local file or directory and register it.
 pull   <name>       Download a registered model.
 list               List all registered models.
-delete <name>      Delete a registered model.
+delete <name>       Delete a registered model and all its versions.
 
 Common flags
 ------------
 --tracking-uri <uri>   Override EMBLASE_MLFLOW_TRACKING_URI.
+--api-key <key>        Override EMBLASE_MLFLOW_API_KEY (required for AmSC).
 
-Works with any MLflow-compatible server: ASC, Azure ML (via azureml-mlflow
-tracking URI), Databricks, or a self-hosted MLflow server.
+Works with any MLflow-compatible server: American Science Cloud (AmSC),
+Azure ML (via azureml-mlflow tracking URI), or a self-hosted MLflow server.
+Server coordinates are read from EMBLASE_MLFLOW_TRACKING_URI and
+EMBLASE_MLFLOW_API_KEY in your .env file.
+
+Large-file uploads
+------------------
+AmSC MLflow enforces a ~16 MB per-request limit.  Pass --chunk-size 10 to
+split files into 10 MB chunks; they are reassembled transparently on pull.
 
 Examples
 --------
-# Push VAE weights
-pixi run mlflow push models/vae/vae_model_512_weights.npz \\
-    --name vae-512 \\
-    --tracking-uri https://mlflow.example.com
-
-# Pull latest version
-pixi run mlflow pull vae-512 --output /tmp/vae
-
-# Pull specific version
-pixi run mlflow pull vae-512 --version 3 --output /tmp/vae
-
-# List all models
+# List all registered models
 pixi run mlflow list
 
-# Delete a model
-pixi run mlflow delete vae-512
+# Push the ViT encoder weights (single file)
+pixi run mlflow push models/vit/vit_model_weights.npz \\
+    --name bnl-nsls2-smi-vit
+
+# Push the VAE encoder weights (single file)
+pixi run mlflow push models/vae/vae_model_512_weights.npz \\
+    --name bnl-nsls2-smi-vae \\
+    --chunk-size 10
+
+# Push the parametric UMAP approximator (whole directory — uploads all files)
+pixi run mlflow push models/umap_approx \\
+    --name bnl-nsls2-smi-umap
+
+# Push the cluster classifier (whole directory)
+pixi run mlflow push models/class_5 \\
+    --name bnl-nsls2-smi-classifier \\
+    --experiment emblase-models \\
+    --description "5-class unsupervised cluster classifier for SMI SAXS"
+
+# Pull the latest version of a model to a local directory
+pixi run mlflow pull bnl-nsls2-smi-umap --output /tmp/umap
+
+# Pull a specific version
+pixi run mlflow pull bnl-nsls2-smi-vit --version 2 --output /tmp/vit
+
+# Delete a model (all versions)
+pixi run mlflow delete bnl-nsls2-smi-umap
 """
 
 from __future__ import annotations
@@ -72,6 +94,7 @@ def _push(args: argparse.Namespace) -> None:
         path=args.path,
         name=args.name,
         description=args.description,
+        experiment=args.experiment,
         tracking_uri=args.tracking_uri,
         api_key=args.api_key,
         chunk_size=chunk_size,
@@ -112,15 +135,30 @@ def _delete(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
+    import logging
+
     parser = argparse.ArgumentParser(
-        prog="mlflow_registry",
-        description="Emblase MLflow model registry CLI",
+        prog="manage_mlflow",
+        description="Manage the Emblase MLflow model registry",
+    )
+    parser.add_argument(
+        "--log-level",
+        default="WARNING",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        help="Logging verbosity (default: WARNING).",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
     push_p = sub.add_parser("push", help="Upload and register a model file or directory")
     push_p.add_argument("path", help="Local file or directory to upload")
     push_p.add_argument("--name", default=None, help="Registry name (default: derived from path)")
+    push_p.add_argument(
+        "--experiment",
+        default=None,
+        metavar="NAME",
+        help="MLflow experiment name (default: EMBLASE_MLFLOW_EXPERIMENT). "
+        "Created automatically if it does not exist.",
+    )
     push_p.add_argument("--description", default=None, help="Human-readable description")
     push_p.add_argument(
         "--chunk-size",
@@ -146,6 +184,7 @@ def main() -> None:
     _add_common(del_p)
 
     args = parser.parse_args()
+    logging.basicConfig(level=getattr(logging, args.log_level))
     dispatch = {"push": _push, "pull": _pull, "list": _list, "delete": _delete}
     try:
         dispatch[args.command](args)

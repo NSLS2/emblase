@@ -23,8 +23,8 @@ Push commits, pull on Orion, then submit::
         --output     smi/sandbox/confab26_demo/results/run_1086139_vit \\
         --batch-size 1 \\
         --thumb-mode logroi \\
-        --param      temperature:primary.LinkamThermal_temperature_current:float:°C \\
-        --param      piezo_x:primary.piezo_x:float:μm
+        --param      temperature:primary/LinkamThermal_temperature_current:float:°C \\
+        --param      piezo_x:primary/piezo_x:float:μm
 
 By default ``infer`` streams the Slurm log via SSH while polling job state.
 Pass ``--no-wait`` to detach immediately.  Tail any job later with::
@@ -36,7 +36,7 @@ Pass ``--no-wait`` to detach immediately.  Tail any job later with::
 --------------
     --param name:source[:dtype[:units]]
 
-``source`` is ``<stream>.<array_key>`` (e.g. ``primary.LinkamThermal_temperature_current``).
+``source`` is ``<stream>/<array_key>`` (e.g. ``primary/LinkamThermal_temperature_current``).
 ``dtype`` defaults to ``float``; ``units`` defaults to empty string.
 Repeat for multiple params.
 """
@@ -107,12 +107,13 @@ async def _infer(args: argparse.Namespace) -> None:
     print(f"\nSubmitting {args.model!r} inference job to Orion ...")
     job_id = await backend.submit(**submit_kwargs)
     print(f"Job submitted: {job_id}")
+    print(f"  → stream log: pixi run orion logs {job_id}")
 
     if args.no_wait:
         print("(not waiting — use 'status <id>' or 'logs <id>' to check)")
         return
 
-    print("Polling job state every 10 s — live log lines appear above ...")
+    print("Polling job state every 10 s ...")
     await asyncio.to_thread(backend.monitor_job, job_id)
 
     final = _SLURM_STATE_MAP.get(
@@ -176,9 +177,9 @@ def _add_model_args(p: argparse.ArgumentParser) -> None:
     )
     p.add_argument(
         "--image-key",
-        default="primary.pil900KW_image",
+        default="primary/pil900KW_image",
         metavar="KEY",
-        help="Dotted image-array key, e.g. 'primary.pil900KW_image'.",
+        help="Slash-separated image-array key, e.g. 'primary/pil900KW_image'.",
     )
     p.add_argument(
         "--param",
@@ -210,9 +211,17 @@ def _add_model_args(p: argparse.ArgumentParser) -> None:
 
 
 def main() -> None:
+    import logging
+
     parser = argparse.ArgumentParser(
         description="Manage Orion jobs for Emblase",
         formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "--log-level",
+        default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        help="Logging verbosity (default: INFO).",
     )
     sub = parser.add_subparsers(dest="command")
 
@@ -286,6 +295,15 @@ def main() -> None:
     logs_p.add_argument("--user", default="", metavar="USERNAME", help="SSH username override.")
 
     args = parser.parse_args()
+    logging.basicConfig(
+        level=getattr(logging, args.log_level),
+        format="%(asctime)s %(levelname)-8s %(message)s",
+        datefmt="%H:%M:%S",
+    )
+    # httpx/httpcore/hpack log every request at INFO; suppress unless DEBUG
+    if args.log_level != "DEBUG":
+        for _noisy in ("httpx", "httpcore", "hpack"):
+            logging.getLogger(_noisy).setLevel(logging.WARNING)
 
     if args.command in ("run", "test"):
         script = (

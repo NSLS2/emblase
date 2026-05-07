@@ -8,7 +8,7 @@ Filled by _render_streaming_inference_script():
     {{output}}           — Tiled container path to write embeddings
     {{mlflow_version}}   — MLflow model version, or "" for latest
     {{thumb_mode}}       — thumbnail mode ("default" or "logroi")
-    {{image_key}}        — dotted key of the image array, e.g. "primary.pil900KW_image"
+    {{image_key}}        — slash-separated key of the image array, e.g. "primary/pil900KW_image"
     {{ws_max_size}}      — WebSocket max message size in bytes
     {{param_specs_json}} — JSON dict mapping param name → ParamSpec
     {{projector_mode}}   — one of: "name" | "scratch" | "false"
@@ -66,7 +66,7 @@ classifier_name = "{classifier_name}"
 models_dir      = "{models_dir}"
 
 # Resolve image_key → (stream, array_key)
-_ik = image_key.split(".", 1)
+_ik = image_key.split("/", 1)
 image_stream    = _ik[0] if len(_ik) == 2 else "primary"
 image_array_key = _ik[1] if len(_ik) == 2 else _ik[0]
 
@@ -166,9 +166,9 @@ def _load_param_arrays() -> None:
     try:
         for name, spec in param_specs.items():
             source = spec.get("source", "")
-            parts = source.split(".", 1)
+            parts = source.split("/", 1)
             if len(parts) != 2:
-                log.warning("Param %r: invalid source %r — skipping", name, source)
+                log.warning("Param %r: invalid source %r (expected 'stream/key') — skipping", name, source)
                 continue
             sname, akey = parts
             arr = run_node[sname][akey].read()

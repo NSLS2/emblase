@@ -1376,8 +1376,8 @@ packages:
   requires_python: '>=3.8'
 - pypi: ./
   name: emblase
-  version: 0.1.dev116+g491a15857
-  sha256: 6dbbb8328f3cb96155e900f666e22972d21e3d33be7db4fbd221249a80a24ee9
+  version: 0.1.1.dev23+g7b940d5a2
+  sha256: 830f4cc5d708eed8a6c91485d9eedf9159578d9a1170ef5844a88f18529944c4
   requires_dist:
   - azureml-mlflow>=1.0
   - fastapi>=0.115
