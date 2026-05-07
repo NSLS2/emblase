@@ -130,7 +130,10 @@ const POINT_RADIUS = 4;
 const HOVER_RADIUS = 8;
 const NOTES_MAX_LEN = 1024;
 const USER_LABEL_MAX_LEN = 64;
-const CANVAS_HEIGHT = 500;
+const CANVAS_HEIGHT = 500; // fallback until dynamic sizing kicks in
+// Vertical space (px) consumed by elements below the canvas when the
+// continuous colorbar is visible: colorbar row + caption row + some margin.
+const BELOW_CANVAS_PX = 90;
 const PANEL_WIDTH = 280;
 const PANEL_INSET = 70;
 const COLOR_PALETTE = [
@@ -582,6 +585,7 @@ function EmbeddingScatter({
     startOffsetY: number;
   } | null>(null);
   const [containerWidth, setContainerWidth] = React.useState(800);
+  const [canvasHeight, setCanvasHeight] = React.useState(CANVAS_HEIGHT);
   // Track how many points we've loaded so far for incremental fetching
   const pointCountRef = React.useRef(0);
   // Skip the catch-up refreshAll on the first live-effect run after initial load
@@ -672,9 +676,9 @@ function EmbeddingScatter({
   }, [apiUrl, nodePath, paramNames]);
 
   const fitView = React.useCallback(() => {
-    if (points.length === 0) return;
-    setView(fitViewToPoints(points, canvasWidthRef.current, CANVAS_HEIGHT));
-  }, [points]);
+     if (points.length === 0) return;
+     setView(fitViewToPoints(points, canvasWidthRef.current, canvasHeight));
+  }, [points, canvasHeight]);
 
   // Initial data load — runs once on mount (refreshAll ref is stable after paramNames fix)
   const canvasWidthRef = React.useRef(canvasWidth);
@@ -691,7 +695,7 @@ function EmbeddingScatter({
         if (cancelled) return;
         setError(null);
         if (pts && pts.length > 0) {
-          const fitted = fitViewToPoints(pts, canvasWidthRef.current, CANVAS_HEIGHT);
+          const fitted = fitViewToPoints(pts, canvasWidthRef.current, canvasHeight);
           setView(fitted);
         }
       } catch (err: any) {
@@ -923,9 +927,21 @@ function EmbeddingScatter({
         const { width } = entry.contentRect;
         if (width > 0) setContainerWidth(Math.floor(width));
       }
+      // Recompute canvas height: viewport height minus container top minus
+      // space needed for elements below the canvas (colorbar + caption).
+      const top = container.getBoundingClientRect().top;
+      const available = window.innerHeight - top - BELOW_CANVAS_PX;
+      setCanvasHeight(Math.max(200, Math.floor(available)));
     });
     observer.observe(container);
-    return () => observer.disconnect();
+    // Also recompute on window resize (viewport height may change)
+    const onResize = () => {
+      const top = container.getBoundingClientRect().top;
+      const available = window.innerHeight - top - BELOW_CANVAS_PX;
+      setCanvasHeight(Math.max(200, Math.floor(available)));
+    };
+    window.addEventListener("resize", onResize);
+    return () => { observer.disconnect(); window.removeEventListener("resize", onResize); };
   }, []);
 
   // Compute min/max for the currently selected continuous param (must be before canvas draw effect)
@@ -968,11 +984,11 @@ function EmbeddingScatter({
 
     const dpr = window.devicePixelRatio || 1;
     canvas.width = canvasWidth * dpr;
-    canvas.height = CANVAS_HEIGHT * dpr;
+    canvas.height = canvasHeight * dpr;
     ctx.scale(dpr, dpr);
 
     ctx.fillStyle = "#fafafa";
-    ctx.fillRect(0, 0, canvasWidth, CANVAS_HEIGHT);
+    ctx.fillRect(0, 0, canvasWidth, canvasHeight);
 
     // Grid
     ctx.strokeStyle = "#e0e0e0";
@@ -981,10 +997,10 @@ function EmbeddingScatter({
     if (gridStep > 10) {
       const startX = ((view.offsetX % gridStep) + gridStep) % gridStep; // always positive
       for (let x = startX; x < canvasWidth; x += gridStep) {
-        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, CANVAS_HEIGHT); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, canvasHeight); ctx.stroke();
       }
       const startY = ((view.offsetY % gridStep) + gridStep) % gridStep;
-      for (let y = startY; y < CANVAS_HEIGHT; y += gridStep) {
+      for (let y = startY; y < canvasHeight; y += gridStep) {
         ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvasWidth, y); ctx.stroke();
       }
     }
@@ -998,7 +1014,7 @@ function EmbeddingScatter({
         sx < -10 ||
         sx > canvasWidth + 10 ||
         sy < -10 ||
-        sy > CANVAS_HEIGHT + 10
+        sy > canvasHeight + 10
       )
         continue;
       const isHovered = tooltip?.point.index === p.index;
@@ -1060,7 +1076,7 @@ function EmbeddingScatter({
         ctx.fill();
       }
     }
-  }, [points, view, canvasWidth, tooltip, selected, lassoPath, lassoSelected, colorBy, hiddenLabels, paramRange, paramMin, paramMax, uniqueLabels]);
+  }, [points, view, canvasWidth, canvasHeight, tooltip, selected, lassoPath, lassoSelected, colorBy, hiddenLabels, paramRange, paramMin, paramMax, uniqueLabels]);
 
   // Mouse handlers
   const toDataCoords = React.useCallback(
@@ -1707,11 +1723,9 @@ function EmbeddingScatter({
       React.createElement("canvas", {
         ref: canvasRef,
         width: canvasWidth,
-        height: CANVAS_HEIGHT,
-        style: {
+        height: canvasHeight,        style: {
           width: canvasWidth,
-          height: CANVAS_HEIGHT,
-          cursor: toolMode === "lasso" ? "crosshair" : dragging ? "grabbing" : tooltip ? "pointer" : "grab",
+          height: canvasHeight,          cursor: toolMode === "lasso" ? "crosshair" : dragging ? "grabbing" : tooltip ? "pointer" : "grab",
           border: "1px solid #ddd",
           borderRadius: 4,
           display: "block",
@@ -1781,8 +1795,7 @@ function EmbeddingScatter({
                 right: 0,
                 top: 0,
                 width: PANEL_WIDTH,
-                height: CANVAS_HEIGHT,
-                background: "white",
+                height: canvasHeight,                background: "white",
                 border: "1px solid #ccc",
                 borderRadius: 4,
                 padding: "12px 16px",
@@ -1962,8 +1975,7 @@ function EmbeddingScatter({
                 right: 0,
                 top: 0,
                 width: PANEL_WIDTH,
-                height: CANVAS_HEIGHT,
-                background: "white",
+                height: canvasHeight,                background: "white",
                 border: "1px solid #ccc",
                 borderRadius: 4,
                 boxShadow: "0 2px 8px rgba(0,0,0,0.08)",
@@ -2199,8 +2211,7 @@ function EmbeddingScatter({
                 right: 0,
                 top: 0,
                 width: PANEL_WIDTH,
-                height: CANVAS_HEIGHT,
-                background: "white",
+                height: canvasHeight,                background: "white",
                 border: "1px solid #ccc",
                 borderRadius: 4,
                 boxShadow: "0 2px 8px rgba(0,0,0,0.08)",
