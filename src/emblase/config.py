@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     # MLflow experiment name used when logging runs during push
     mlflow_experiment: str = "emblase-models"
     # Local directory where MLflow model artifacts are cached, keyed by name+version.
-    # On Orion this should be a persistent path (e.g. /nsls2/users/ymatviych/.cache/emblase/models).
+    # On Orion this should be a persistent path (e.g. /nsls2/users/<user>/.cache/emblase/models).
     # Falls back to ~/.cache/emblase/models if unset.
     model_cache_dir: str = ""
 
@@ -36,10 +36,10 @@ class Settings(BaseSettings):
     orion_api_url: str = "https://orion-api-staging.nsls2.bnl.gov"
     orion_api_key: str = ""
     orion_cluster: str = "orion"
-    orion_project_dir: str = "/nsls2/users/ymatviych/code/emblase"
-    orion_working_dir: str = "/nsls2/users/ymatviych/code/emblase/jobs"
-    orion_models_dir: str = "/nsls2/users/ymatviych/code/emblase/models"
-    orion_home: str = "/nsls2/users/ymatviych"
+    orion_project_dir: str = ""  # e.g. /nsls2/users/<user>/code/emblase
+    orion_working_dir: str = ""  # e.g. /nsls2/users/<user>/code/emblase/jobs
+    orion_models_dir: str = ""  # e.g. /nsls2/users/<user>/code/emblase/models
+    orion_home: str = ""  # e.g. /nsls2/users/<user>
     orion_account: str = "staff"
     orion_path: str = (
         "/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/usr/local/cuda/bin:/nsls2/software/bin"

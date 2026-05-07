@@ -15,7 +15,7 @@ Push commits, pull on Orion, then submit::
     BRANCH=$(git branch --show-current)
     git push origin $BRANCH
     ssh orion-staging.nsls2.bnl.gov \\
-        "cd /nsls2/users/ymatviych/code/emblase && git fetch && git checkout $BRANCH && git pull"
+        "cd $EMBLASE_ORION_PROJECT_DIR && git fetch && git checkout $BRANCH && git pull"
 
     python scripts/submit_orion.py infer \\
         --model      bnl-nsls2-smi-vit \\

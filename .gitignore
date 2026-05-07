@@ -212,8 +212,14 @@ __marimo__/
 models/*
 # noop is pure code (no weights) — track it
 !models/noop/
-!models/noop/**
-jobs/*models/noop/__pycache__/
+!models/noop/loader.py
+!models/noop/README.md
+
+# Slurm job outputs and generated worker scripts
+jobs/
+
+# macOS
+**/.DS_Store
 
 src/emblase/_version.py
 
