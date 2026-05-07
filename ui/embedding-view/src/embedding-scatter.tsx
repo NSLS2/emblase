@@ -2521,7 +2521,7 @@ function EmbeddingScatter({
                       ? React.createElement(
                           "span",
                           { style: { color: "#777", fontSize: 11 } },
-                          `\u2013\u2013 ${ul}`,
+                          `\u2013 ${ul}`,
                         )
                       : null;
                   })(),
