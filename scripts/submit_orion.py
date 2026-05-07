@@ -107,12 +107,13 @@ async def _infer(args: argparse.Namespace) -> None:
     print(f"\nSubmitting {args.model!r} inference job to Orion ...")
     job_id = await backend.submit(**submit_kwargs)
     print(f"Job submitted: {job_id}")
+    print(f"  → stream log: pixi run orion logs {job_id}")
 
     if args.no_wait:
         print("(not waiting — use 'status <id>' or 'logs <id>' to check)")
         return
 
-    print("Polling job state every 10 s (use 'logs <id>' in another terminal to stream the Slurm log) ...")
+    print("Polling job state every 10 s ...")
     await asyncio.to_thread(backend.monitor_job, job_id)
 
     final = _SLURM_STATE_MAP.get(
@@ -210,9 +211,17 @@ def _add_model_args(p: argparse.ArgumentParser) -> None:
 
 
 def main() -> None:
+    import logging
+
     parser = argparse.ArgumentParser(
         description="Manage Orion jobs for Emblase",
         formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "--log-level",
+        default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        help="Logging verbosity (default: INFO).",
     )
     sub = parser.add_subparsers(dest="command")
 
@@ -286,6 +295,11 @@ def main() -> None:
     logs_p.add_argument("--user", default="", metavar="USERNAME", help="SSH username override.")
 
     args = parser.parse_args()
+    logging.basicConfig(
+        level=getattr(logging, args.log_level),
+        format="%(asctime)s %(levelname)-8s %(message)s",
+        datefmt="%H:%M:%S",
+    )
 
     if args.command in ("run", "test"):
         script = (
