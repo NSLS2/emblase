@@ -148,6 +148,10 @@ async def test_nersc_backend_submit_calls_client():
     # Script embedded in pre_launch (no filesystem upload needed)
     assert "vit" in client.submitted.get("pre_launch", "")
     assert "inference.py" in client.submitted.get("pre_launch", "")
+    # pre_launch must create the full script subdirectory, not just scripts/
+    script_path = backend._jobs["99"]["script_path"]
+    script_dir = script_path.rsplit("/", 1)[0]
+    assert f"mkdir -p {script_dir}" in client.submitted.get("pre_launch", "")
     # Structured job spec passed to submit_job
     assert client.submitted["executable"] == "python"
     assert any("inference.py" in a for a in client.submitted["arguments"])
@@ -592,3 +596,23 @@ async def test_nersc_client_missing_token_raises(monkeypatch):
     client = NERSCClient(api_token="")
     with pytest.raises(ValueError, match="NERSC API token is not set"):
         await client._ensure_client()
+
+
+def test_script_pre_launch_creates_full_script_dir():
+    """pre_launch must mkdir the per-job subdirectory, not just scripts/."""
+    from emblase.compute.nersc import NERSCBackend, NERSCClient
+
+    backend = NERSCBackend(
+        client=NERSCClient(api_token="tok"),
+        working_dir="/pscratch/jobs",
+        models_dir="/pscratch/models",
+        account="proj_g",
+        container_image="img:latest",
+    )
+    script_path = "/pscratch/jobs/scripts/1234567890_mymodel/inference.py"
+    pre_launch = backend._script_pre_launch("print('hi')", script_path)
+
+    assert "mkdir -p /pscratch/jobs/scripts/1234567890_mymodel" in pre_launch
+    assert "mkdir -p /pscratch/jobs/scripts\n" not in pre_launch  # old wrong form
+    assert f"cat > {script_path}" in pre_launch
+    assert "print('hi')" in pre_launch

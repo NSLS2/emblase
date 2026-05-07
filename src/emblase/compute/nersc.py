@@ -414,8 +414,9 @@ class NERSCBackend(ComputeBackend):
         """
         # Escape any occurrence of the heredoc delimiter inside the script.
         safe = py_script.replace("__EMBLASE_EOF__", "__EMBLASE_EOF_ESC__")
+        script_dir = script_path.rsplit("/", 1)[0]
         return (
-            f"mkdir -p {self.working_dir}/scripts\n"
+            f"mkdir -p {script_dir}\n"
             f"cat > {script_path} << '__EMBLASE_EOF__'\n"
             f"{safe}\n"
             f"__EMBLASE_EOF__"
