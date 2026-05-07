@@ -10,6 +10,21 @@ API:
     Base URL: ``https://api.iri.nersc.gov/api/v1``
     Spec:     https://api.iri.nersc.gov/openapi.json  (Swagger UI at /docs)
 
+    Endpoints used:
+
+    ============================================  ======  ===================================================
+    Endpoint                                      Method  Purpose
+    ============================================  ======  ===================================================
+    ``/status/resources``                         GET     List available resource IDs (``resources`` command)
+    ``/compute/job/{resource_id}``                POST    Submit a structured JobSpec
+    ``/compute/status/{resource_id}/{job_id}``    GET     Poll job state (``monitor_job`` loop)
+    ``/compute/cancel/{resource_id}/{job_id}``    POST    Cancel a running job
+    ============================================  ======  ===================================================
+
+    Note: filesystem endpoints (``/filesystem/mkdir``, ``/filesystem/upload``)
+    are intentionally not used — the inference script is embedded directly in
+    the job payload via a ``pre_launch`` heredoc.
+
 Job delivery:
     The rendered Python inference script is embedded directly in the job
     submission payload via a ``pre_launch`` heredoc — no filesystem API calls
