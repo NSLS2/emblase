@@ -9,9 +9,13 @@ import sys
 from pathlib import Path
 
 import numpy as np
-import torch
 
 from .config import settings
+
+try:
+    import torch
+except ModuleNotFoundError as _torch_err:  # noqa: F841
+    torch = None  # type: ignore[assignment]
 
 log = logging.getLogger(__name__)
 
