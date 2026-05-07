@@ -24,7 +24,7 @@ then pull on the compute node before submitting a job:
 ```bash
 BRANCH=$(git branch --show-current)
 git push origin $BRANCH
-ssh orion-staging.nsls2.bnl.gov "cd /nsls2/users/ymatviych/code/emblase && git fetch && git checkout $BRANCH && git pull"
+ssh orion-staging.nsls2.bnl.gov "cd $EMBLASE_ORION_PROJECT_DIR && git fetch && git checkout $BRANCH && git pull"
 ```
 
 ---
@@ -70,7 +70,7 @@ The script polls every 5 s and prints progress. Check the full Slurm log:
 
 ```bash
 ssh orion-staging.nsls2.bnl.gov \
-    "tail -100 /nsls2/users/ymatviych/orion_jobs/slurm-<jobid>.out"
+    "tail -100 $EMBLASE_ORION_WORKING_DIR/slurm-<jobid>.out"
 ```
 
 ---
@@ -225,10 +225,10 @@ python scripts/submit_orion.py cancel <job_id>
 
 # full log
 ssh orion-staging.nsls2.bnl.gov \
-    "tail -50 /nsls2/users/ymatviych/orion_jobs/slurm-<job_id>.out"
+    "tail -50 $EMBLASE_ORION_WORKING_DIR/slurm-<job_id>.out"
 
 # queue
-ssh orion-staging.nsls2.bnl.gov "squeue -u ymatviych"
+ssh orion-staging.nsls2.bnl.gov "squeue -u <your-username>"
 ```
 
 ---
