@@ -16,6 +16,27 @@ pixi install
 cp .env.example .env   # fill in your keys and paths
 ```
 
+### pip extras
+
+Emblase is split into dependency groups so you can install only what each
+environment needs:
+
+| Extra | Use case | Command |
+|---|---|---|
+| *(none)* / `[base]` | Tiled server — router plugin + client only; no torch/sklearn/mlflow | `pip install emblase` |
+| `[compute]` | Compute node — adds torch, transformers, sklearn, umap-learn, mlflow, etc. | `pip install emblase[compute]` |
+| `[all]` | Full installation (base + compute) | `pip install emblase[all]` |
+| `[dev]` | Development — adds pytest and coverage (does **not** include compute deps) | `pip install emblase[compute,dev]` |
+
+In a Tiled server `requirements.txt`, use:
+
+```
+emblase[base]
+```
+
+This registers the router and Tiled client without pulling in any ML or HPC
+dependencies.
+
 ## Syncing code to Orion
 
 Both local and Orion checkouts track the same git remote. Push commits locally,
