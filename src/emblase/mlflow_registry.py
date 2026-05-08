@@ -210,14 +210,13 @@ def _get_client(tracking_uri: str | None = None, api_key: str | None = None):
 
             _patched_call._emblase_api_key_patched = True
             _ru.call_endpoint = _patched_call
-            # patch tracking store's local reference
+            # patch every module that imported call_endpoint at load time
             import mlflow.store.tracking.rest_store as _rs
-
             _rs.call_endpoint = _patched_call
-            # patch model registry store's local reference (search_model_versions, etc.)
             import mlflow.store.model_registry.rest_store as _mrs
-
             _mrs.call_endpoint = _patched_call
+            import mlflow.store.model_registry.base_rest_store as _mbrs
+            _mbrs.call_endpoint = _patched_call
 
     # Patch 2: suppress prompt-exclusion filter (Azure ML)
     _rc.is_prompt_supported_registry = lambda *_a, **_kw: False
