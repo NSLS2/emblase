@@ -80,7 +80,11 @@ class _FakeClient:
         self.resource_id = "perlmutter"
 
     async def upload_script(
-        self, content: str, remote_path: str, filesystem_resource_id: str = "scratch", mode: str = "400"
+        self,
+        content: str,
+        remote_path: str,
+        filesystem_resource_id: str = "scratch",
+        mode: str = "400",
     ) -> None:
         self.uploaded[remote_path] = content
 
@@ -689,6 +693,7 @@ def test_secrets_preamble_omits_empty_values(monkeypatch):
 def test_secrets_preamble_is_executable(monkeypatch):
     """Executing the preamble must set the expected env vars via setdefault."""
     import os
+
     import emblase.compute.nersc as nersc_module
 
     monkeypatch.setattr(nersc_module.settings, "mlflow_tracking_uri", "https://mlflow.example.com")

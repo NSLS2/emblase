@@ -301,7 +301,7 @@ class NERSCClient:
         )
         resp.raise_for_status()
         task_id = resp.json()["task_id"]
-        result = await self._poll_task(task_id)
+        result = await self._poll_task(task_id, timeout=120.0)
         out = result.get("output", "")
         if isinstance(out, dict):
             out = out.get("content", "") or out.get("output", "") or str(out)

@@ -104,7 +104,9 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     # -- cat subcommand --
-    cat_p = sub.add_parser("cat", help="Print the contents of a remote file via the IRI filesystem API")
+    cat_p = sub.add_parser(
+        "cat", help="Print the contents of a remote file via the IRI filesystem API"
+    )
     cat_p.add_argument(
         "path",
         help="Absolute remote path to read, e.g. /pscratch/sd/d/dallan/somefile",
@@ -336,17 +338,20 @@ async def _logs(task_id: str, lines: int = 100, log_file: str = "") -> None:
         if log_file:
             path = log_file
         else:
-            # Try to get the log path from the job status metadata
             info = await client.get_job(task_id)
             meta = (info.raw or {}).get("status", {}).get("meta_data", {})
-            workdir = meta.get("workdir", "")
-            jobid = meta.get("jobid", task_id)
-            path = f"{workdir}/slurm-{jobid}.out" if workdir else ""
+            # Path is in admincomment JSON: {"stdoutPath": "...", "stderrPath": "..."}
+            import json as _json
+            try:
+                admin = _json.loads(meta.get("admincomment", "{}"))
+                path = admin.get("stdoutPath", "")
+            except (ValueError, TypeError):
+                path = ""
             if not path:
                 print(
                     "Could not determine log path from job metadata.\n"
-                    "Re-run with --log-file <path> or submit a new job "
-                    "(new jobs write to <working_dir>/scripts/<ts>/job.out).",
+                    "Re-run with --log-file <path>, e.g.:\n"
+                    "  --log-file /pscratch/sd/d/<user>/emblase/jobs/scripts/<ts>_<model>/job.out",
                     file=sys.stderr,
                 )
                 return
