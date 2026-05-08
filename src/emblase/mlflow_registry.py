@@ -204,7 +204,14 @@ def _get_client(tracking_uri: str | None = None, api_key: str | None = None):
             _orig_call = _ru.call_endpoint
 
             def _patched_call(*args, extra_headers=None, **kwargs):
-                h = dict(extra_headers or {})
+                # extra_headers may arrive as the 6th positional arg (index 5)
+                # from base_rest_store, or as a keyword arg from tracking store.
+                if len(args) > 5:
+                    positional_headers = args[5]
+                    args = args[:5]
+                else:
+                    positional_headers = None
+                h = dict(positional_headers or extra_headers or {})
                 h["X-Api-Key"] = key
                 return _orig_call(*args, extra_headers=h, **kwargs)
 
