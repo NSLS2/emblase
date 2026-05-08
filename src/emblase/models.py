@@ -32,7 +32,10 @@ def _local_models_dir() -> Path:
     by the job environment) then falls back to the repo ``models/`` directory.
     """
     import os as _os
-    path = _os.environ.get("EMBLASE_ORION_MODELS_DIR") or _os.environ.get("EMBLASE_NERSC_MODELS_DIR")
+
+    path = _os.environ.get("EMBLASE_ORION_MODELS_DIR") or _os.environ.get(
+        "EMBLASE_NERSC_MODELS_DIR"
+    )
     if path:
         return Path(path)
     return Path(__file__).resolve().parent.parent.parent / "models"
