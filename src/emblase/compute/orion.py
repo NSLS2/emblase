@@ -171,7 +171,7 @@ cat > _input_b64.txt << 'EMBLASE_B64_EOF'
 {payload_b64}
 EMBLASE_B64_EOF
 
-cd {project_dir} && pixi run python << 'EMBLASE_DECODE_EOF'
+cd {project_dir} && pixi run -e compute python << 'EMBLASE_DECODE_EOF'
 import base64, io, numpy as np, os
 job_dir = os.environ["JOB_DIR"]
 with open(f"{{job_dir}}/_input_b64.txt") as f:
@@ -207,7 +207,7 @@ mkdir -p "$JOB_DIR"
 cd "$JOB_DIR"
 
 {input_section}
-cd {project_dir} && pixi run python << 'EMBLASE_INFERENCE_EOF'
+cd {project_dir} && pixi run -e compute python << 'EMBLASE_INFERENCE_EOF'
 {python_script}
 EMBLASE_INFERENCE_EOF
 """

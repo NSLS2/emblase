@@ -61,7 +61,7 @@ def test_build_sbatch_script_structure():
     assert "AABBCC==" in script
     assert "EMBLASE_INFERENCE_EOF" in script
     assert "print('hello')" in script
-    assert "pixi run python" in script
+    assert "pixi run -e compute python" in script
 
 
 def test_build_sbatch_script_from_npy_path():

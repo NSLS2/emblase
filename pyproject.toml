@@ -77,6 +77,10 @@ emblase = { path = ".", editable = true }
 [tool.pixi.environments]
 default = { solve-group = "default" }
 dev = { features = ["dev"], solve-group = "default" }
+compute = { features = ["compute"], solve-group = "compute" }
+
+[tool.pixi.feature.compute.pypi-dependencies]
+emblase = { path = ".", editable = true, extras = ["compute"] }
 
 [tool.pixi.tasks]
 orion = "python scripts/submit_orion.py"
