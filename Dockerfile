@@ -49,7 +49,7 @@ ARG EMBLASE_VERSION=0.0.0+dev
 ENV SETUPTOOLS_SCM_PRETEND_VERSION=${EMBLASE_VERSION}
 
 COPY . /app/emblase
-RUN pip install --no-cache-dir /app/emblase
+RUN pip install --no-cache-dir "/app/emblase[compute]"
 
 # hdbscan is not in pyproject.toml but used by the classifier
 RUN pip install --no-cache-dir hdbscan
