@@ -53,7 +53,7 @@ def load_model(model_name: str, **kwargs) -> torch.nn.Module:
     (latent_dim, image_size) are the responsibility of each model's loader.py.
     """
     models_dir = Path(kwargs.pop("models_dir", None) or _local_models_dir())
-    if (models_dir / model_name).is_dir():
+    if (models_dir / model_name / "loader.py").is_file():
         log.info("Loading %r from local model directory", model_name)
         return _load_local(model_name, models_dir=models_dir, **kwargs)
     log.info("Loading %r from MLflow registry", model_name)
