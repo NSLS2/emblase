@@ -212,8 +212,10 @@ async def _infer(args: argparse.Namespace) -> None:
     backend = NERSCBackend()
     param_specs = parse_param_specs(args.params)
 
-    print(f"Backend         : NERSC")
-    print(f"Model           : {args.model}  ver={args.mlflow_version or 'latest'}  batch_size={args.batch_size}  thumb_mode={args.thumb_mode}")
+    print("Backend         : NERSC")
+    print(
+        f"Model           : {args.model}  ver={args.mlflow_version or 'latest'}  batch_size={args.batch_size}  thumb_mode={args.thumb_mode}"
+    )
     print(f"Run             : {args.run or '(none)'}")
     print(f"Output          : {args.output or '(none)'}")
     print(f"Image key       : {args.image_key}")
@@ -259,8 +261,10 @@ async def _stream(args: argparse.Namespace) -> None:
     backend = NERSCBackend()
     param_specs = parse_param_specs(args.params)
 
-    print(f"Backend         : NERSC")
-    print(f"Model           : {args.model}  ver={args.mlflow_version or 'latest'}  batch_size={args.batch_size}  thumb_mode={args.thumb_mode}")
+    print("Backend         : NERSC")
+    print(
+        f"Model           : {args.model}  ver={args.mlflow_version or 'latest'}  batch_size={args.batch_size}  thumb_mode={args.thumb_mode}"
+    )
     print(f"Run             : {args.run}")
     print(f"Output          : {args.output}")
     print(f"Image key       : {args.image_key}")

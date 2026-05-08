@@ -77,8 +77,10 @@ async def _infer(args: argparse.Namespace) -> None:
     backend = OrionBackend()
     param_specs = parse_param_specs(args.params)
 
-    print(f"Backend         : ORION")
-    print(f"Model           : {args.model}  ver={args.mlflow_version or 'latest'}  batch_size={args.batch_size}  thumb_mode={args.thumb_mode}")
+    print("Backend         : ORION")
+    print(
+        f"Model           : {args.model}  ver={args.mlflow_version or 'latest'}  batch_size={args.batch_size}  thumb_mode={args.thumb_mode}"
+    )
     if args.run:
         print(f"Run             : {args.run}")
     print(f"Output          : {args.output or '(none)'}")

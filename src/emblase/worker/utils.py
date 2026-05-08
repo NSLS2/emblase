@@ -73,7 +73,8 @@ def resolve_model_dir(name: str, models_dir: str, sentinel: str = "") -> Path:
 
         log.info(
             "%r directory exists but sentinel %r is missing — pulling from MLflow",
-            name, sentinel,
+            name,
+            sentinel,
         )
 
     log.info("%r not found locally — pulling from MLflow", name)
@@ -110,7 +111,9 @@ def load_projector(
     if model_dir_str not in sys.path:
         sys.path.insert(0, model_dir_str)
 
-    from neural_dimred_wrapper import SimpleDimRedApproximator  # type: ignore[import]  # noqa: PLC0415
+    from neural_dimred_wrapper import (
+        SimpleDimRedApproximator,  # type: ignore[import]  # noqa: PLC0415
+    )
 
     scaler_path = model_dir / "scaler.pkl"
     scaler = joblib.load(scaler_path) if scaler_path.exists() else None

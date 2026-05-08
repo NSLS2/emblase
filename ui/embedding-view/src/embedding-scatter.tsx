@@ -602,12 +602,32 @@ function EmbeddingScatter({
   // Skip the catch-up refreshAll on the first live-effect run after initial load
   const skipCatchupRef = React.useRef(false);
 
-  // Coloring state — paramSpecs/paramNames derived from item prop (stable after mount)
-  const paramSpecs: Record<string, ParamSpec> = React.useMemo(
+  const apiUrl = `${window.location.origin}/api/v1`;
+  const nodePath = segments.join("/");
+
+  // Coloring state — paramSpecs fetched from the metadata API so they are
+  // available regardless of which fields the host Tiled UI requested for `item`.
+  const [paramSpecs, setParamSpecs] = React.useState<Record<string, ParamSpec>>(
+    // Seed from item prop if available (avoids a flash on local dev where item
+    // already carries metadata).
     () => item?.data?.attributes?.metadata?.param_specs || {},
-    [item],
   );
   const paramNames = React.useMemo(() => Object.keys(paramSpecs), [paramSpecs]);
+
+  // Fetch metadata from the API in case `item` didn't include it (some Tiled
+  // UI builds only request structure_family/structure/specs for the spec view).
+  React.useEffect(() => {
+    // If item already has param_specs no fetch needed
+    if (item?.data?.attributes?.metadata?.param_specs) return;
+    fetch(`${apiUrl}/metadata/${nodePath}`, { headers: authHeaders() })
+      .then((r) => r.ok ? r.json() : null)
+      .then((data) => {
+        const specs = data?.data?.attributes?.metadata?.param_specs;
+        if (specs && Object.keys(specs).length > 0) setParamSpecs(specs);
+      })
+      .catch(() => {});
+  }, [apiUrl, nodePath, item]);
+
   const [colorBy, setColorBy] = React.useState<string>("label");
   // Categorical filter: set of labels hidden from view
   const [hiddenLabels, setHiddenLabels] = React.useState<Set<string>>(new Set());
@@ -619,10 +639,6 @@ function EmbeddingScatter({
     setHiddenLabels(new Set());
     setParamRange(null);
   }, [colorBy]);
-
-  const apiUrl = `${window.location.origin}/api/v1`;
-
-  const nodePath = segments.join("/");
 
   // localStorage key for persisting chat_session_id per embedding
   const chatSessionKey = `emblase.chat_session.${nodePath}`;
@@ -1534,6 +1550,14 @@ function EmbeddingScatter({
     selected != null &&
     (selected.note !== selected.originalNote ||
       selected.userLabel !== selected.originalUserLabel);
+
+  // Stale-item guard: if the host Tiled UI hasn't updated `item` yet to match
+  // the current URL segments (race during navigation), render nothing to avoid
+  // firing WebSocket/fetch requests against the wrong node path.
+  const expectedId = segments[segments.length - 1] ?? "";
+  if (item?.data?.id !== undefined && item.data.id !== expectedId) {
+    return React.createElement("div", { style: { padding: 24, color: "#888" } }, "Loading…");
+  }
 
   return React.createElement(
     "div",
