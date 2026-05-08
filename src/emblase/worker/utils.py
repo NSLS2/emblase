@@ -22,9 +22,12 @@ def _mlflow_env() -> dict[str, str | None]:
 
 
 def _cache_root() -> Path:
-    return Path(
-        os.environ.get("EMBLASE_MODELS_DIR", "") or Path.home() / ".cache" / "emblase" / "models"
+    path = (
+        os.environ.get("EMBLASE_ORION_MODELS_DIR")
+        or os.environ.get("EMBLASE_NERSC_MODELS_DIR")
+        or ""
     )
+    return Path(path) if path else Path.home() / ".cache" / "emblase" / "models"
 
 
 def resolve_model_dir(name: str, models_dir: str) -> Path:

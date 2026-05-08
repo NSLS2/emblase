@@ -561,7 +561,7 @@ class NERSCBackend(ComputeBackend):
     ):
         self.client = client or NERSCClient()
         self.working_dir = working_dir or settings.nersc_working_dir
-        self.models_dir = models_dir or str(settings.models_dir)
+        self.models_dir = models_dir or str(settings.nersc_models_dir)
         self.account = account or settings.nersc_account
         self.container_image = container_image or settings.nersc_container_image
         self.time_limit = time_limit or settings.nersc_time_limit

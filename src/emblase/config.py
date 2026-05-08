@@ -2,17 +2,20 @@ from pathlib import Path
 
 from pydantic_settings import BaseSettings
 
+_REPO_MODELS = Path(__file__).resolve().parent.parent.parent / "models"
+
 
 class Settings(BaseSettings):
     """Application settings, loaded from environment / .env file."""
 
-    # Single models directory — used for both manually uploaded local models and
-    # the MLflow artifact cache.  Set EMBLASE_MODELS_DIR to an absolute writable
-    # path on the compute node.
-    # On Orion: /nsls2/users/<user>/code/emblase/models  (persistent NFS)
-    # On NERSC: /pscratch/sd/<i>/<user>/emblase/models   (Lustre, 30-day purge)
-    # Local default: <repo>/models
-    models_dir: Path = Path(__file__).resolve().parent.parent.parent / "models"
+    # Per-backend models directories — used for manually uploaded local models
+    # and the MLflow artifact cache.  Set to absolute writable paths.
+    # On Orion: persistent NFS, e.g. /nsls2/users/<user>/code/emblase/models
+    # On NERSC: fast Lustre scratch, e.g. /pscratch/sd/<i>/<user>/emblase/models
+    #           (30-day purge policy — re-push weights if purged)
+    # Local default for both: <repo>/models
+    orion_models_dir: Path = _REPO_MODELS
+    nersc_models_dir: Path = _REPO_MODELS
 
     # Tiled
     tiled_server_uri: str = ""

@@ -778,20 +778,41 @@ async def test_setup_secrets_file_uploads_and_chmods():
     assert put_calls[0]["json"]["mode"] == "600"
 
 
-def test_model_cache_uses_settings_models_dir(monkeypatch, tmp_path):
-    """load_model() must use settings.models_dir as the MLflow cache root."""
+def test_model_cache_uses_orion_models_dir(monkeypatch, tmp_path):
+    """load_model() must pass orion_models_dir as the MLflow cache root on Orion."""
     import emblase.models as _models
 
     captured = {}
 
-    def _fake_load_from_mlflow(model_name, **kwargs):
-        captured["cache_root"] = str(_models.settings.models_dir)
+    def _fake_load_from_mlflow(model_name, models_dir, **kwargs):
+        captured["cache_root"] = str(models_dir)
         raise RuntimeError("stop")
 
-    monkeypatch.setattr(_models.settings, "models_dir", tmp_path / "shared_models")
+    monkeypatch.setenv("EMBLASE_ORION_MODELS_DIR", str(tmp_path / "orion_models"))
+    monkeypatch.delenv("EMBLASE_NERSC_MODELS_DIR", raising=False)
     monkeypatch.setattr(_models, "_load_from_mlflow", _fake_load_from_mlflow)
 
     with pytest.raises(RuntimeError, match="stop"):
         _models.load_model("bnl-nsls2-smi-vit")
 
-    assert captured["cache_root"] == str(tmp_path / "shared_models")
+    assert captured["cache_root"] == str(tmp_path / "orion_models")
+
+
+def test_model_cache_uses_nersc_models_dir(monkeypatch, tmp_path):
+    """load_model() must pass nersc_models_dir as the MLflow cache root on NERSC."""
+    import emblase.models as _models
+
+    captured = {}
+
+    def _fake_load_from_mlflow(model_name, models_dir, **kwargs):
+        captured["cache_root"] = str(models_dir)
+        raise RuntimeError("stop")
+
+    monkeypatch.delenv("EMBLASE_ORION_MODELS_DIR", raising=False)
+    monkeypatch.setenv("EMBLASE_NERSC_MODELS_DIR", str(tmp_path / "nersc_models"))
+    monkeypatch.setattr(_models, "_load_from_mlflow", _fake_load_from_mlflow)
+
+    with pytest.raises(RuntimeError, match="stop"):
+        _models.load_model("bnl-nsls2-smi-vit")
+
+    assert captured["cache_root"] == str(tmp_path / "nersc_models")

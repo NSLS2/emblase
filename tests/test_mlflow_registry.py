@@ -425,7 +425,7 @@ def test_load_model_from_mlflow(tmp_path):
     ):
         import emblase.models as models_mod
 
-        models_mod._load_from_mlflow("bnl-nsls2-smi-vae", cache_dir=tmp_path)
+        models_mod._load_from_mlflow("bnl-nsls2-smi-vae", models_dir=tmp_path, cache_dir=tmp_path)
 
     assert _sys._test_loader_called == weights_dir / "model.npz"
 
@@ -454,6 +454,7 @@ def test_load_model_from_mlflow_uses_cache(tmp_path):
 
         models_mod._load_from_mlflow(
             "bnl-nsls2-smi-vae",
+            models_dir=tmp_path,
             cache_dir=tmp_path,
         )
         mock_dl.assert_not_called()
@@ -473,4 +474,4 @@ def test_load_model_from_mlflow_no_loader_raises(tmp_path):
     ):
         import emblase.models as models_mod
 
-        models_mod._load_from_mlflow("bnl-nsls2-smi-vae", cache_dir=tmp_path)
+        models_mod._load_from_mlflow("bnl-nsls2-smi-vae", models_dir=tmp_path, cache_dir=tmp_path)

@@ -9,8 +9,6 @@ from pathlib import Path
 
 import numpy as np
 
-from .config import settings
-
 try:
     import torch
 except ModuleNotFoundError as _torch_err:  # noqa: F841
@@ -19,33 +17,49 @@ except ModuleNotFoundError as _torch_err:  # noqa: F841
 log = logging.getLogger(__name__)
 
 
-def _add_models_to_path() -> None:
-    p = str(settings.models_dir)
+def _add_models_to_path(models_dir: Path) -> None:
+    p = str(models_dir)
     if p not in sys.path:
         sys.path.insert(0, p)
+
+
+def _local_models_dir() -> Path:
+    """Return the local models directory for the current process.
+
+    On compute nodes the caller always passes ``models_dir`` explicitly — this
+    fallback is only used when running locally (tests, CLI without --models-dir).
+    Prefers EMBLASE_ORION_MODELS_DIR / EMBLASE_NERSC_MODELS_DIR env vars (set
+    by the job environment) then falls back to the repo ``models/`` directory.
+    """
+    import os as _os
+    path = _os.environ.get("EMBLASE_ORION_MODELS_DIR") or _os.environ.get("EMBLASE_NERSC_MODELS_DIR")
+    if path:
+        return Path(path)
+    return Path(__file__).resolve().parent.parent.parent / "models"
 
 
 def load_model(model_name: str, **kwargs) -> torch.nn.Module:
     """Load a model by name.
 
-    If ``settings.models_dir / model_name`` is a directory containing a
-    ``loader.py``, the model is loaded locally via that loader.  Otherwise
-    weights are pulled from the MLflow registry under ``model_name``.
+    If ``models_dir / model_name`` is a directory containing a ``loader.py``,
+    the model is loaded locally via that loader.  Otherwise weights are pulled
+    from the MLflow registry under ``model_name``.
 
     Accepted kwargs: ``mlflow_version``, ``mlflow_tracking_uri``,
-    ``mlflow_api_key``, ``cache_dir``.  Architecture parameters (latent_dim,
-    image_size) are the responsibility of each model's loader.py.
+    ``mlflow_api_key``, ``cache_dir``, ``models_dir``.  Architecture parameters
+    (latent_dim, image_size) are the responsibility of each model's loader.py.
     """
-    if (settings.models_dir / model_name).is_dir():
+    models_dir = Path(kwargs.pop("models_dir", None) or _local_models_dir())
+    if (models_dir / model_name).is_dir():
         log.info("Loading %r from local model directory", model_name)
-        return _load_local(model_name, **kwargs)
+        return _load_local(model_name, models_dir=models_dir, **kwargs)
     log.info("Loading %r from MLflow registry", model_name)
-    return _load_from_mlflow(model_name, **kwargs)
+    return _load_from_mlflow(model_name, models_dir=models_dir, **kwargs)
 
 
-def _load_local(model_name: str, **kwargs) -> torch.nn.Module:
-    _add_models_to_path()
-    model_dir = settings.models_dir / model_name
+def _load_local(model_name: str, models_dir: Path, **kwargs) -> torch.nn.Module:
+    _add_models_to_path(models_dir)
+    model_dir = models_dir / model_name
     # Ensure the model's own directory is on sys.path so that loader.py can do
     # relative imports like `from vit import Autoencoder` without conflicts with
     # any installed package sharing the same name.
@@ -67,14 +81,14 @@ def _load_local(model_name: str, **kwargs) -> torch.nn.Module:
     return model
 
 
-def _load_from_mlflow(model_name: str, **kwargs) -> torch.nn.Module:
+def _load_from_mlflow(model_name: str, models_dir: Path, **kwargs) -> torch.nn.Module:
     from . import mlflow_registry
 
     tracking_uri = kwargs.get("mlflow_tracking_uri")
     api_key = kwargs.get("mlflow_api_key")
     requested_version = kwargs.get("mlflow_version")
 
-    cache_root = kwargs.get("cache_dir") or settings.models_dir
+    cache_root = kwargs.get("cache_dir") or models_dir
 
     # Cache-first: if no specific version is requested, scan the local cache
     # for existing versions and use the highest one — no MLflow network call.

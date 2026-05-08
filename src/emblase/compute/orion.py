@@ -407,7 +407,7 @@ class OrionBackend(ComputeBackend):
     ) -> None:
         self.client = client or OrionClient()
         self.working_dir = working_dir or settings.orion_working_dir
-        self.models_dir = models_dir or str(settings.models_dir)
+        self.models_dir = models_dir or str(settings.orion_models_dir)
         self.project_dir = project_dir or settings.orion_project_dir
         self.home = home or settings.orion_home
         self.account = account or settings.orion_account
@@ -498,8 +498,8 @@ class OrionBackend(ComputeBackend):
             env.append(f"EMBLASE_MLFLOW_TRACKING_URI={settings.mlflow_tracking_uri}")
             if settings.mlflow_api_key:
                 env.append(f"EMBLASE_MLFLOW_API_KEY={settings.mlflow_api_key}")
-        if settings.models_dir:
-            env.append(f"EMBLASE_MODELS_DIR={settings.models_dir}")
+        if settings.orion_models_dir:
+            env.append(f"EMBLASE_ORION_MODELS_DIR={settings.orion_models_dir}")
         return env
 
     async def _submit_job(

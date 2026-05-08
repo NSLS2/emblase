@@ -219,10 +219,13 @@ def _get_client(tracking_uri: str | None = None, api_key: str | None = None):
             _ru.call_endpoint = _patched_call
             # patch every module that imported call_endpoint at load time
             import mlflow.store.tracking.rest_store as _rs
+
             _rs.call_endpoint = _patched_call
             import mlflow.store.model_registry.rest_store as _mrs
+
             _mrs.call_endpoint = _patched_call
             import mlflow.store.model_registry.base_rest_store as _mbrs
+
             _mbrs.call_endpoint = _patched_call
 
     # Patch 2: suppress prompt-exclusion filter (Azure ML)
