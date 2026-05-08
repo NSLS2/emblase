@@ -201,12 +201,6 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="N",
         help="Number of tail lines to fetch (default: 100).",
     )
-    logs_p.add_argument(
-        "--log-file",
-        default="",
-        metavar="PATH",
-        help="Explicit path to the log file (overrides auto-detected path from status).",
-    )
 
     return parser
 
@@ -333,28 +327,25 @@ async def _resources() -> None:
             print(f"  {item}")
 
 
-async def _logs(task_id: str, lines: int = 100, log_file: str = "") -> None:
+async def _logs(task_id: str, lines: int = 100) -> None:
     async with NERSCClient() as client:
-        if log_file:
-            path = log_file
-        else:
-            info = await client.get_job(task_id)
-            meta = (info.raw or {}).get("status", {}).get("meta_data", {})
-            # Path is in admincomment JSON: {"stdoutPath": "...", "stderrPath": "..."}
-            import json as _json
-            try:
-                admin = _json.loads(meta.get("admincomment", "{}"))
-                path = admin.get("stdoutPath", "")
-            except (ValueError, TypeError):
-                path = ""
-            if not path:
-                print(
-                    "Could not determine log path from job metadata.\n"
-                    "Re-run with --log-file <path>, e.g.:\n"
-                    "  --log-file /pscratch/sd/d/<user>/emblase/jobs/scripts/<ts>_<model>/job.out",
-                    file=sys.stderr,
-                )
-                return
+        info = await client.get_job(task_id)
+        meta = (info.raw or {}).get("status", {}).get("meta_data", {})
+        import json as _json
+        try:
+            admin = _json.loads(meta.get("admincomment", "{}"))
+            path = admin.get("stdoutPath", "")
+        except (ValueError, TypeError):
+            path = ""
+        if not path:
+            print(
+                "Could not determine log path from job metadata.\n"
+                "Use 'cat <path>' to read a specific file, e.g.:\n"
+                "  python scripts/submit_nersc.py cat "
+                "/pscratch/sd/d/<user>/emblase/jobs/scripts/<ts>_<model>/job.out",
+                file=sys.stderr,
+            )
+            return
         print(f"Fetching last {lines} lines of: {path}")
         content = await client.read_file_tail(path, lines=lines)
         print(content)
@@ -388,7 +379,7 @@ def main() -> None:
     elif args.command == "cancel":
         asyncio.run(_cancel(args.task_id))
     elif args.command == "logs":
-        asyncio.run(_logs(args.task_id, lines=args.lines, log_file=args.log_file))
+        asyncio.run(_logs(args.task_id, lines=args.lines))
     else:
         parser.print_help()
 
