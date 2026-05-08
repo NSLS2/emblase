@@ -399,7 +399,7 @@ async def _secrets(home_resource: str, remote_path: str) -> None:
 
     async with NERSCClient() as client:
         print(f"Writing secrets to {remote_path!r} via resource '{home_resource}' ...")
-        print(f"Variables: {secret_keys}")
+        print(f"Variables to write: {len(secret_keys)} configured")
         await client.setup_secrets_file(
             content=content,
             remote_path=remote_path,
