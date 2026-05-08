@@ -110,6 +110,19 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Filesystem resource ID (default: homes).",
     )
 
+    # -- cat subcommand --
+    cat_p = sub.add_parser("cat", help="Print the contents of a remote file via the IRI filesystem API")
+    cat_p.add_argument(
+        "path",
+        help="Absolute remote path to read, e.g. /global/u2/j/jdoe/.emblase_secrets",
+    )
+    cat_p.add_argument(
+        "--resource",
+        default="homes",
+        metavar="RESOURCE_ID",
+        help="Filesystem resource ID (default: homes).",
+    )
+
     # -- secrets subcommand --
     secrets_p = sub.add_parser(
         "secrets",
@@ -342,6 +355,12 @@ async def _ls(path: str, resource: str) -> None:
             print(entry)
 
 
+async def _cat(path: str, resource: str) -> None:
+    async with NERSCClient() as client:
+        data = await client.download_file(path, filesystem_resource_id=resource)
+    print(data.decode(errors="replace"), end="")
+
+
 async def _resources() -> None:
     async with NERSCClient() as client:
         items = await client.discover_resources()
@@ -406,7 +425,9 @@ async def _secrets(home_resource: str, remote_path: str) -> None:
             home_resource_id=home_resource,
         )
     print(f"Done. {remote_path} written and chmod 600 on Perlmutter.")
-    print(f"\nVerify with:\n  python scripts/submit_nersc.py ls {remote_path.rsplit('/', 1)[0]}")
+    print(f"\nVerify with:")
+    print(f"  python scripts/submit_nersc.py ls {remote_path.rsplit('/', 1)[0]}")
+    print(f"  python scripts/submit_nersc.py cat {remote_path}")
 
 
 async def _logs(task_id: str, lines: int = 100, log_file: str = "") -> None:
@@ -451,6 +472,8 @@ def main() -> None:
         asyncio.run(_resources())
     elif args.command == "ls":
         asyncio.run(_ls(args.path, args.resource))
+    elif args.command == "cat":
+        asyncio.run(_cat(args.path, args.resource))
     elif args.command == "secrets":
         asyncio.run(_secrets(args.home_resource, args.path))
     elif args.command == "infer":
