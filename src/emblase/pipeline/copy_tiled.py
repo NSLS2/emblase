@@ -176,7 +176,6 @@ def copy_array(
         on_progress(min(bs, n_rows), n_rows)
     row = bs
     while row < n_rows:
-        print(f"Patching array: {key}, rows {row}:{min(row + bs, n_rows)} / {n_rows}")
         if batch_delay > 0:
             time.sleep(batch_delay)
         end = min(row + bs, n_rows)
