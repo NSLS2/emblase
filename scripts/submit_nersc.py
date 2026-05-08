@@ -384,8 +384,8 @@ async def _secrets(home_resource: str, remote_path: str) -> None:
         lines.append(f"EMBLASE_MLFLOW_TRACKING_URI='{settings.mlflow_tracking_uri}'")
     if settings.mlflow_api_key:
         lines.append(f"EMBLASE_MLFLOW_API_KEY='{settings.mlflow_api_key}'")
-    if settings.models_dir:
-        lines.append(f"EMBLASE_MODELS_DIR='{settings.models_dir}'")
+    if settings.nersc_models_dir:
+        lines.append(f"EMBLASE_NERSC_MODELS_DIR='{settings.nersc_models_dir}'")
     content = "\n".join(lines) + "\n"
 
     secret_keys = [line.split("=")[0] for line in lines if line and not line.startswith("#")]
