@@ -605,6 +605,12 @@ function EmbeddingScatter({
   const apiUrl = `${window.location.origin}/api/v1`;
   const nodePath = segments.join("/");
 
+  // True only when the item prop has caught up with the current URL segments.
+  // On navigation, Tiled re-renders the spec view with new segments before
+  // updating item; this flag lets us suppress all data fetches until consistent.
+  const expectedId = segments[segments.length - 1] ?? "";
+  const itemReady = item?.data?.id === expectedId;
+
   // Coloring state — paramSpecs fetched from the metadata API so they are
   // available regardless of which fields the host Tiled UI requested for `item`.
   const [paramSpecs, setParamSpecs] = React.useState<Record<string, ParamSpec>>(
@@ -617,6 +623,7 @@ function EmbeddingScatter({
   // Fetch metadata from the API in case `item` didn't include it (some Tiled
   // UI builds only request structure_family/structure/specs for the spec view).
   React.useEffect(() => {
+    if (!itemReady) return;
     // If item already has param_specs no fetch needed
     if (item?.data?.attributes?.metadata?.param_specs) return;
     fetch(`${apiUrl}/metadata/${nodePath}`, { headers: authHeaders() })
@@ -626,13 +633,27 @@ function EmbeddingScatter({
         if (specs && Object.keys(specs).length > 0) setParamSpecs(specs);
       })
       .catch(() => {});
-  }, [apiUrl, nodePath, item]);
+  }, [apiUrl, nodePath, item, itemReady]);
 
   const [colorBy, setColorBy] = React.useState<string>("label");
   // Categorical filter: set of labels hidden from view
   const [hiddenLabels, setHiddenLabels] = React.useState<Set<string>>(new Set());
   // Continuous filter: [lo, hi] in data units (null = full range)
   const [paramRange, setParamRange] = React.useState<[number, number] | null>(null);
+
+  // Reset all filter/coloring state when navigating to a different node
+  React.useEffect(() => {
+    setColorBy("label");
+    setHiddenLabels(new Set());
+    setParamRange(null);
+    setParamSpecs({});
+    setPoints([]);
+    setSelected(null);
+    setLassoSelected(new Set());
+    setLassoPath([]);
+    pointCountRef.current = 0;
+    skipCatchupRef.current = false;
+  }, [nodePath]);
 
   // Reset filters when color dimension changes
   React.useEffect(() => {
@@ -675,11 +696,18 @@ function EmbeddingScatter({
       const labels: string[] = indexData.label || [];
       const paths: string[] = indexData.path || [];
 
+      // Derive param column names directly from _index response keys — this
+      // means we don't depend on paramNames (from the async metadata fetch)
+      // and params are populated correctly even on first load.
+      const indexParamNames = Object.keys(indexData).filter((k) =>
+        k.startsWith("param_"),
+      ).map((k) => k.slice("param_".length));
+
       const pts: EmbeddingPoint[] = projData.map(
         (coords: number[], rowIdx: number) => {
           const src = order[rowIdx] ?? rowIdx; // sorted row → original column position
           const params: Record<string, number | null> = {};
-          for (const name of paramNames) {
+          for (const name of indexParamNames) {
             const col: (number | null)[] = indexData[`param_${name}`] || [];
             params[name] = col[src] ?? null;
           }
@@ -700,7 +728,7 @@ function EmbeddingScatter({
     } catch {
       return undefined;
     }
-  }, [apiUrl, nodePath, paramNames]);
+  }, [apiUrl, nodePath]);
 
   const fitView = React.useCallback(() => {
     if (points.length === 0) return;
@@ -713,11 +741,16 @@ function EmbeddingScatter({
   const refreshAllRef = React.useRef(refreshAll);
   refreshAllRef.current = refreshAll;
   React.useEffect(() => {
+    // Don't fetch until item prop is consistent with the current URL segments.
+    if (!itemReady) return;
+
     let cancelled = false;
 
     async function fetchData() {
       try {
         setLoading(true);
+        setPoints([]);
+        pointCountRef.current = 0;
         const pts = await refreshAllRef.current();
         if (cancelled) return;
         setError(null);
@@ -737,8 +770,8 @@ function EmbeddingScatter({
 
     fetchData();
     return () => { cancelled = true; };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // intentionally empty — runs once on mount; refreshAllRef stays current
+  // Re-run when the node path changes or when item finally catches up.
+  }, [nodePath, itemReady]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto-refit view when new points arrive via live updates,
   // unless the user has already panned or zoomed manually.
@@ -759,7 +792,7 @@ function EmbeddingScatter({
   // On (re-)connect and on live re-enable we do a full refreshAll() to
   // catch any updates that arrived while disconnected or paused.
   React.useEffect(() => {
-    if (loading || !liveEnabled) return;
+    if (loading || !liveEnabled || !itemReady) return;
 
     const wsScheme = window.location.protocol === "https:" ? "wss:" : "ws:";
     const wsBase = `${wsScheme}//${window.location.host}/api/v1/stream/single/${nodePath}`;
@@ -890,10 +923,13 @@ function EmbeddingScatter({
       const count = labels.length;
       if (count === 0) return;
 
-      // Extract param columns from payload
+      // Extract param columns from payload — derive names from payload keys
+      // directly so we don't depend on the async paramNames state.
       const params: Record<string, (number | null)[]> = {};
-      for (const name of paramNames) {
-        params[name] = payload[`param_${name}`] || [];
+      for (const key of Object.keys(payload)) {
+        if (key.startsWith("param_")) {
+          params[key.slice("param_".length)] = payload[key] || [];
+        }
       }
 
       // Determine which indices these rows correspond to.
@@ -943,7 +979,7 @@ function EmbeddingScatter({
       }
       setWsStatus("disconnected");
     };
-  }, [loading, liveEnabled, nodePath, apiUrl, refreshAll]);
+  }, [loading, liveEnabled, nodePath, apiUrl, refreshAll, itemReady]);
 
   // Resize observer — tracks container width
   React.useEffect(() => {
@@ -969,7 +1005,7 @@ function EmbeddingScatter({
   }, [points]);
 
   const { paramMin, paramMax } = React.useMemo(() => {
-    if (colorBy === "label" || !paramNames.includes(colorBy)) return { paramMin: 0, paramMax: 1 };
+    if (colorBy === "label") return { paramMin: 0, paramMax: 1 };
     let mn = Infinity, mx = -Infinity;
     for (const p of points) {
       const v = p.params?.[colorBy];
@@ -981,7 +1017,7 @@ function EmbeddingScatter({
     if (!isFinite(mn)) { mn = 0; mx = 1; }
     if (mn === mx) { mn -= 0.5; mx += 0.5; }
     return { paramMin: mn, paramMax: mx };
-  }, [points, colorBy, paramNames]);
+  }, [points, colorBy]);
 
   // When new live data extends the param range past the current filter, clear it.
   React.useEffect(() => {
@@ -1551,11 +1587,8 @@ function EmbeddingScatter({
     (selected.note !== selected.originalNote ||
       selected.userLabel !== selected.originalUserLabel);
 
-  // Stale-item guard: if the host Tiled UI hasn't updated `item` yet to match
-  // the current URL segments (race during navigation), render nothing to avoid
-  // firing WebSocket/fetch requests against the wrong node path.
-  const expectedId = segments[segments.length - 1] ?? "";
-  if (item?.data?.id !== undefined && item.data.id !== expectedId) {
+  // Stale-item guard: render a placeholder until item is consistent with segments.
+  if (!itemReady) {
     return React.createElement("div", { style: { padding: 24, color: "#888" } }, "Loading…");
   }
 
