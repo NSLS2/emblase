@@ -11,7 +11,10 @@ Filled by _render_inference_script():
      {image_key}         — slash-separated key of the image array, e.g. "primary/pil900KW_image"
     {inputs}            — repr of list[str | tuple[str,str]] of Tiled (path[, slice])
                           entries; used when run_path is empty (legacy raw-entry mode).
-    {output}            — Tiled container path to write embeddings (empty → output.npy)
+    {output}            — Tiled path to write embeddings (empty → output.npy).  Behaviour:
+                          • path is an LSE container → append to it;
+                          • path doesn't exist        → create LSE there;
+                          • path is a non-LSE parent  → create {{run_key}}_batch_{{ts}} inside it.
     {mlflow_version}    — MLflow model version, or "" for latest
     {thumb_mode}        — thumbnail mode ("default" or "logroi")
     {param_specs_json}  — JSON dict mapping param name → ParamSpec
@@ -107,7 +110,7 @@ if projector_mode == "name":
     try:
         _projector_model, _projector_scaler = load_projector(projector_name, models_dir, device)
     except Exception as _exc:
-        log.warning("Projector not loaded — projections will be NaN: %s", _exc)
+        log.exception("Projector not loaded — projections will be NaN: %s", _exc)
 
 
 def _compute_projections(embeddings: np.ndarray) -> np.ndarray | None:
@@ -131,7 +134,7 @@ if classifier_name:
     try:
         _classifier_dir = load_classifier_dir(classifier_name, models_dir)
     except Exception as _exc:
-        log.warning("Classifier not loaded — labels will be null: %s", _exc)
+        log.exception("Classifier not loaded — labels will be null: %s", _exc)
 
 # ---------------------------------------------------------------------------
 # Tiled client
@@ -154,6 +157,7 @@ if run_path:
     from emblase.tiled.client import read_images  # noqa: E402
     run_segments = [s for s in run_path.split("/") if s]
     run_node = tiled_client[tuple(run_segments)]
+    run_key = run_segments[-1] if run_segments else ""
     image_tiled_path = run_path.rstrip("/") + f"/{{image_stream}}/{{image_array_key}}"
     log.info("Reading frames from %s", image_tiled_path)
     t0 = time.perf_counter()
@@ -163,6 +167,7 @@ if run_path:
 
 elif inputs:
     from emblase.tiled.client import read_images  # noqa: E402
+    run_key = ""
     log.info("Reading %d Tiled entr%s ...", len(inputs), "y" if len(inputs) == 1 else "ies")
     t0 = time.perf_counter()
     images, frame_entries = read_images(tiled_client, inputs)
@@ -173,6 +178,7 @@ elif inputs:
 
 else:
     input_path = os.path.join(job_dir, "input.npy")
+    run_key = ""
     log.info("Loading %s ...", input_path)
     arr = np.load(input_path)
     if arr.ndim == 3:
@@ -262,10 +268,11 @@ if output:
     from emblase.tiled.client import write_output  # noqa: E402
     log.info("Writing to Tiled: %s  shape=%s", output, embeddings.shape)
     t0 = time.perf_counter()
-    write_output(
+    resolved = write_output(
         tiled_client, output, embeddings,
         images=images if isinstance(images, list) else None,
         source_entries=frame_entries,
+        run_key=run_key, mode="batch",
         model_name=model_name,
         thumb_mode=thumb_mode,
         access_tags=access_tags,
@@ -274,6 +281,6 @@ if output:
         projections=projections,
         labels=_classifier_labels,
     )
-    log.info("Written in %.1f s", time.perf_counter() - t0)
+    log.info("Written to Tiled: %s  (%.1f s)", resolved, time.perf_counter() - t0)
 
 log.info("=== Done ===")

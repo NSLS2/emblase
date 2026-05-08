@@ -2,12 +2,20 @@ from pathlib import Path
 
 from pydantic_settings import BaseSettings
 
+_REPO_MODELS = Path(__file__).resolve().parent.parent.parent / "models"
+
 
 class Settings(BaseSettings):
     """Application settings, loaded from environment / .env file."""
 
-    # Paths
-    models_dir: Path = Path(__file__).resolve().parent.parent.parent / "models"
+    # Per-backend models directories — used for manually uploaded local models
+    # and the MLflow artifact cache.  Set to absolute writable paths.
+    # On Orion: persistent NFS, e.g. /nsls2/users/<user>/code/emblase/models
+    # On NERSC: fast Lustre scratch, e.g. /pscratch/sd/<i>/<user>/emblase/models
+    #           (30-day purge policy — re-push weights if purged)
+    # Local default for both: <repo>/models
+    orion_models_dir: Path = _REPO_MODELS
+    nersc_models_dir: Path = _REPO_MODELS
 
     # Tiled
     tiled_server_uri: str = ""
@@ -27,10 +35,6 @@ class Settings(BaseSettings):
     mlflow_api_key: str = ""
     # MLflow experiment name used when logging runs during push
     mlflow_experiment: str = "emblase-models"
-    # Local directory where MLflow model artifacts are cached, keyed by name+version.
-    # On Orion this should be a persistent path (e.g. /nsls2/users/<user>/.cache/emblase/models).
-    # Falls back to ~/.cache/emblase/models if unset.
-    model_cache_dir: str = ""
 
     # Orion compute
     orion_api_url: str = "https://orion-api-staging.nsls2.bnl.gov"
@@ -38,7 +42,6 @@ class Settings(BaseSettings):
     orion_cluster: str = "orion"
     orion_project_dir: str = ""  # e.g. /nsls2/users/<user>/code/emblase
     orion_working_dir: str = ""  # e.g. /nsls2/users/<user>/code/emblase/jobs
-    orion_models_dir: str = ""  # e.g. /nsls2/users/<user>/code/emblase/models
     orion_home: str = ""  # e.g. /nsls2/users/<user>
     orion_account: str = "staff"
     orion_path: str = (
@@ -55,11 +58,20 @@ class Settings(BaseSettings):
     nersc_api_token: str = ""
     nersc_resource_id: str = "perlmutter"
     nersc_working_dir: str = ""
-    nersc_models_dir: str = ""
     nersc_account: str = ""
     nersc_container_image: str = "ghcr.io/genematx/emblase:latest"
     nersc_time_limit: str = "00:30:00"
     nersc_constraint: str = ""  # empty = no constraint, let Perlmutter pick any GPU node
+    # Queue/partition for job submission.
+    # "shared"         → shared_gpu_ss11 / gpu_shared QOS — best for single-GPU jobs.
+    # "debug"          → gpu_ss11 / gpu_debug QOS — fast dispatch, ≤ 30 min cap.
+    # ""               → let the scheduler pick (lands on gpu_debug by default).
+    # "premium"        → gpu_ss11 / gpu_premium QOS — faster turn-around, higher cost;
+    #                    requires EMBLASE_NERSC_ACCOUNT=amsc006_g.
+    # "express_amsc_g" → real-time GPU access via 32 reserved AMSC nodes; requires
+    #                    EMBLASE_NERSC_ACCOUNT=amsc006_g.  Avoid >4 nodes or >2 h/job.
+    # "express_amsc"   → same pool, CPU nodes; requires EMBLASE_NERSC_ACCOUNT=amsc006.
+    nersc_queue: str = "shared"
 
     # Compute backend selection: "local", "orion", or "nersc"
     compute_backend: str = "local"

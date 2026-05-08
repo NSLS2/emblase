@@ -254,6 +254,94 @@ ssh orion-staging.nsls2.bnl.gov "squeue -u <your-username>"
 
 ---
 
+## NERSC job management
+
+Jobs are submitted to Perlmutter via the [IRI Superfacility API](https://api.iri.nersc.gov/docs)
+— no SSH required.
+
+### How it works
+
+1. `NERSCBackend` renders the Python inference script locally (same template
+   used by Orion).
+2. All secrets (`EMBLASE_TILED_*`, `EMBLASE_MLFLOW_*`) and `JOB_DIR` are
+   baked into a short Python preamble prepended to the script at submit time.
+3. The script is uploaded to `/pscratch` via `POST /filesystem/upload/scratch`
+   and immediately `chmod 400` (owner read-only).
+4. The job runs `python <script_path>` inside the podman-hpc container with
+   `/pscratch` bind-mounted at the same path.
+5. When `--output` (Tiled) is set, embeddings are written directly to Tiled —
+   no files land on `/pscratch`. When omitted, `output.npy` is saved to
+   `JOB_DIR` and can be retrieved via `GET /filesystem/download/scratch`.
+
+```bash
+# submit batch inference
+python scripts/submit_nersc.py infer --model bnl-nsls2-smi-vit \
+    --run smi/sandbox/.../inputs_copy/run_xyz --output smi/sandbox/.../results
+
+# submit streaming (listens for new frames in a Tiled run)
+python scripts/submit_nersc.py stream --model bnl-nsls2-smi-vit \
+    --run smi/sandbox/.../inputs_copy/run_xyz --output smi/sandbox/.../results
+
+# check status
+python scripts/submit_nersc.py status <job_id>
+
+# cancel
+python scripts/submit_nersc.py cancel <job_id>
+
+# tail job output log (path printed at submission time)
+python scripts/submit_nersc.py logs <job_id> \
+    --log-file /pscratch/sd/d/<user>/emblase/jobs/scripts/<ts>_<model>/job.out
+
+# list available Perlmutter resources
+python scripts/submit_nersc.py resources
+
+# browse /pscratch (scratch is the default resource)
+python scripts/submit_nersc.py ls /pscratch/sd/d/<user>
+
+# browse $HOME on Perlmutter
+python scripts/submit_nersc.py ls /global/u2/<i>/<user> --resource homes
+
+# read a remote file
+python scripts/submit_nersc.py cat /pscratch/sd/d/<user>/somefile
+```
+
+### Perlmutter queues (`EMBLASE_NERSC_QUEUE`)
+
+The `queue_name` field maps to Slurm **partition** names (not QOS names).
+Valid values on Perlmutter:
+
+| `EMBLASE_NERSC_QUEUE` | Slurm partition | Slurm QOS | Notes |
+|---|---|---|---|
+| `shared` *(default)* | `shared_gpu_ss11` | `gpu_shared` | Shares nodes — fastest dispatch for single-GPU jobs |
+| `debug` | `gpu_ss11` | `gpu_debug` | Fast dispatch, ≤ 30 min wall-clock cap |
+| `regular` | `gpu_ss11` | `gpu_regular` | Standard allocation queue |
+| *(empty)* | `gpu_ss11` | `gpu_debug` | Scheduler default (same as `debug`) |
+
+> **Note:** `gpu_shared`, `gpu_ss11`, `gpu_debug` etc. are QOS names — the IRI
+> API expects partition names (left column above) and returns 400 for QOS names.
+
+### NERSC account suffix
+
+GPU jobs on Perlmutter must bill against the `_g`-suffixed project code:
+
+```
+EMBLASE_NERSC_ACCOUNT=m3792_g   # not m3792
+```
+
+### Container and script delivery
+
+- The Shifter container image (`ghcr.io/genematx/emblase:latest`) includes
+  all `[compute]` dependencies: torch, transformers, mlflow, sklearn, etc.
+- `/pscratch` is the only volume mounted into the container. Two mounts are
+  not supported by podman-hpc on Perlmutter (produces `invalid reference
+  format`), so scripts and model weights both live on `/pscratch`.
+- The inference script is uploaded fresh at submission time via the IRI
+  filesystem API; no container rebuild is needed when the script changes.
+- Secrets are baked into the script preamble at submit time and never written
+  to a separate file. The script is `chmod 400` immediately after upload.
+
+---
+
 ## Models
 
 | Registry name | Architecture |
@@ -282,14 +370,23 @@ values.
 | `EMBLASE_ORION_API_KEY` | Orion REST API key |
 | `EMBLASE_MLFLOW_TRACKING_URI` | MLflow tracking server URI |
 | `EMBLASE_MLFLOW_API_KEY` | MLflow API key |
-| `EMBLASE_MODEL_CACHE_DIR` | Local cache for downloaded MLflow model weights |
+| `EMBLASE_ORION_MODELS_DIR` | Path to model weights on Orion NFS (default `<repo>/models`) |
+| `EMBLASE_NERSC_API_TOKEN` | IRI Superfacility API bearer token (Globus `iri_api` scope) |
+| `EMBLASE_NERSC_RESOURCE_ID` | Perlmutter resource ID (default `perlmutter`) |
+| `EMBLASE_NERSC_ACCOUNT` | NERSC project account; use `_g` suffix for GPU (e.g. `m3792_g`) |
+| `EMBLASE_NERSC_QUEUE` | Slurm partition name (default `shared` — see queue table above) |
+| `EMBLASE_NERSC_CONSTRAINT` | Slurm node constraint (default `""` — leave empty to avoid long waits) |
+| `EMBLASE_NERSC_CONTAINER_IMAGE` | Shifter container image (e.g. `ghcr.io/genematx/emblase:latest`) |
+| `EMBLASE_NERSC_WORKING_DIR` | Absolute scratch path for scripts and logs (e.g. `/pscratch/sd/d/<user>/emblase/jobs`) |
+| `EMBLASE_NERSC_MODELS_DIR` | Absolute scratch path where MLflow models are cached on Perlmutter |
+| `EMBLASE_NERSC_TIME_LIMIT` | Wall-clock limit passed to Slurm (default `01:00:00`) |
 
 ---
 
 ## Development
 
 ```bash
-pixi run python -m pytest tests/ -x -q   # 122 tests, no GPU or live connections required
+pixi run python -m pytest tests/ -x -q   # 188 tests, no GPU or live connections required
 ```
 
 ---
@@ -307,6 +404,7 @@ src/emblase/
 ├── compute/
 │   ├── base.py             # ComputeBackend ABC, JobStatus, JobResult
 │   ├── orion.py            # OrionBackend, OrionClient, script rendering
+│   ├── nersc.py            # NERSCBackend, NERSCClient (IRI REST API + Shifter)
 │   └── local.py            # LocalBackend (dev/test)
 ├── pipeline/
 │   ├── streaming.py        # InputsWatcher — subscribes to inputs_copy via WebSocket

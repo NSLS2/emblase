@@ -8,9 +8,12 @@ status     Poll the state of a job/task by ID.
 cancel     Cancel a running job.
 logs       Tail the stdout/stderr log of a job via the IRI filesystem API.
 resources  List available NERSC compute resources (discover resource IDs).
+ls         List a remote directory via the IRI filesystem API.
+cat        Print the contents of a remote file via the IRI filesystem API.
 
-Typical workflow
-----------------
+Secrets are baked into the job script at submit time (from your local .env) and
+the script is uploaded chmod 400.  No separate secrets setup step is needed.
+
 Submit a batch job::
 
     python scripts/submit_nersc.py infer \\
@@ -87,6 +90,34 @@ def _build_parser() -> argparse.ArgumentParser:
     # -- resources subcommand --
     sub.add_parser("resources", help="List available NERSC compute resources")
 
+    # -- ls subcommand --
+    ls_p = sub.add_parser("ls", help="List a remote directory via the IRI filesystem API")
+    ls_p.add_argument(
+        "path",
+        help="Absolute remote path to list, e.g. /pscratch/sd/d/dallan",
+    )
+    ls_p.add_argument(
+        "--resource",
+        default="scratch",
+        metavar="RESOURCE_ID",
+        help="Filesystem resource ID (default: scratch).",
+    )
+
+    # -- cat subcommand --
+    cat_p = sub.add_parser(
+        "cat", help="Print the contents of a remote file via the IRI filesystem API"
+    )
+    cat_p.add_argument(
+        "path",
+        help="Absolute remote path to read, e.g. /pscratch/sd/d/dallan/somefile",
+    )
+    cat_p.add_argument(
+        "--resource",
+        default="scratch",
+        metavar="RESOURCE_ID",
+        help="Filesystem resource ID (default: scratch).",
+    )
+
     def _add_infer_args(p: argparse.ArgumentParser) -> None:
         p.add_argument(
             "--model",
@@ -103,7 +134,10 @@ def _build_parser() -> argparse.ArgumentParser:
             "--output",
             metavar="TILED_PATH",
             default="",
-            help="Tiled path to write embeddings into.",
+            help="Tiled path for output.  If the path is an existing LatentSpaceEmbedding "
+            "it is appended to; if it doesn't exist an LSE is created there; if it "
+            "exists but is not an LSE a new LSE named {run_key}_{mode}_{timestamp} "
+            "is created inside it.",
         )
         p.add_argument(
             "--thumb-mode",
@@ -170,24 +204,35 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="N",
         help="Number of tail lines to fetch (default: 100).",
     )
-    logs_p.add_argument(
-        "--log-file",
-        default="",
-        metavar="PATH",
-        help="Explicit path to the log file (overrides auto-detected path from status).",
-    )
 
     return parser
 
 
 async def _infer(args: argparse.Namespace) -> None:
     backend = NERSCBackend()
+    param_specs = parse_param_specs(args.params)
+
+    print("Backend         : NERSC")
+    print(
+        f"Model           : {args.model}  ver={args.mlflow_version or 'latest'}  batch_size={args.batch_size}  thumb_mode={args.thumb_mode}"
+    )
+    print(f"Run             : {args.run or '(none)'}")
+    print(f"Output          : {args.output or '(none)'}")
+    print(f"Image key       : {args.image_key}")
+    if param_specs:
+        print(f"Params          : {list(param_specs)}")
+    if args.projector:
+        print(f"Projector       : {args.projector}")
+    if args.classifier:
+        print(f"Classifier      : {args.classifier}")
     print(f"Working dir     : {backend.working_dir}")
     print(f"Models dir      : {backend.models_dir}")
     print(f"Container image : {backend.container_image}")
     print(f"Resource        : {backend.client.resource_id}")
-
-    param_specs = parse_param_specs(args.params)
+    print(f"Account         : {backend.account}")
+    print(f"Queue           : {backend.queue or '(scheduler default)'}")
+    print(f"Constraint      : {backend.constraint or '(none)'}")
+    print(f"Time limit      : {backend.time_limit}")
 
     print(f"\nSubmitting {args.model!r} batch inference job to NERSC...")
     task_id = await backend.submit(
@@ -202,7 +247,8 @@ async def _infer(args: argparse.Namespace) -> None:
         run_path=args.run or "",
         image_key=args.image_key,
     )
-    print(f"Task submitted: {task_id}")
+    print(f"Task submitted  : {task_id}")
+    print(f"Log path        : {backend._jobs[task_id]['log_path']}")
 
     if args.no_wait:
         print("(not waiting — use 'status <task_id>' to check)")
@@ -213,12 +259,29 @@ async def _infer(args: argparse.Namespace) -> None:
 
 async def _stream(args: argparse.Namespace) -> None:
     backend = NERSCBackend()
+    param_specs = parse_param_specs(args.params)
+
+    print("Backend         : NERSC")
+    print(
+        f"Model           : {args.model}  ver={args.mlflow_version or 'latest'}  batch_size={args.batch_size}  thumb_mode={args.thumb_mode}"
+    )
+    print(f"Run             : {args.run}")
+    print(f"Output          : {args.output}")
+    print(f"Image key       : {args.image_key}")
+    if param_specs:
+        print(f"Params          : {list(param_specs)}")
+    if args.projector:
+        print(f"Projector       : {args.projector}")
+    if args.classifier:
+        print(f"Classifier      : {args.classifier}")
     print(f"Working dir     : {backend.working_dir}")
     print(f"Models dir      : {backend.models_dir}")
     print(f"Container image : {backend.container_image}")
     print(f"Resource        : {backend.client.resource_id}")
-
-    param_specs = parse_param_specs(args.params)
+    print(f"Account         : {backend.account}")
+    print(f"Queue           : {backend.queue or '(scheduler default)'}")
+    print(f"Constraint      : {backend.constraint or '(none)'}")
+    print(f"Time limit      : {backend.time_limit}")
 
     print(f"\nSubmitting {args.model!r} streaming inference job to NERSC...")
     task_id = await backend.submit_streaming(
@@ -233,7 +296,8 @@ async def _stream(args: argparse.Namespace) -> None:
         projector=args.projector,
         classifier=args.classifier,
     )
-    print(f"Task submitted: {task_id}")
+    print(f"Task submitted  : {task_id}")
+    print(f"Log path        : {backend._jobs[task_id]['log_path']}")
 
     if args.no_wait:
         print("(not waiting — use 'status <task_id>' to check)")
@@ -257,6 +321,28 @@ async def _cancel(task_id: str) -> None:
     print(f"Task {task_id} cancelled")
 
 
+async def _ls(path: str, resource: str) -> None:
+    async with NERSCClient() as client:
+        entries = await client.ls(path, filesystem_resource_id=resource)
+    if not entries:
+        print("(empty)")
+        return
+    for entry in entries:
+        if isinstance(entry, dict):
+            name = entry.get("name") or entry.get("filename") or str(entry)
+            perms = entry.get("permissions") or entry.get("mode") or ""
+            size = entry.get("size") or ""
+            print(f"{perms:12}  {size:10}  {name}")
+        else:
+            print(entry)
+
+
+async def _cat(path: str, resource: str) -> None:
+    async with NERSCClient() as client:
+        data = await client.download_file(path, filesystem_resource_id=resource)
+    print(data.decode(errors="replace"), end="")
+
+
 async def _resources() -> None:
     async with NERSCClient() as client:
         items = await client.discover_resources()
@@ -270,26 +356,53 @@ async def _resources() -> None:
             print(f"  {item}")
 
 
-async def _logs(task_id: str, lines: int = 100, log_file: str = "") -> None:
+async def _logs(task_id: str, lines: int = 100) -> None:
+    import json as _json
+
     async with NERSCClient() as client:
-        if log_file:
-            path = log_file
-        else:
-            # Try to get the log path from the job status metadata
-            info = await client.get_job(task_id)
-            meta = (info.raw or {}).get("status", {}).get("meta_data", {})
+        info = await client.get_job(task_id)
+        meta = (info.raw or {}).get("status", {}).get("meta_data", {})
+
+        # --- strategy 1: admincomment.stdoutPath (populated once job starts) ---
+        path = ""
+        try:
+            admin = _json.loads(meta.get("admincomment", "{}") or "{}")
+            path = admin.get("stdoutPath", "")
+        except (ValueError, TypeError):
+            pass
+
+        # --- strategy 2: ls {workdir}/scripts/ and match by job-name slug ---
+        if not path:
             workdir = meta.get("workdir", "")
-            jobid = meta.get("jobid", task_id)
-            # Slurm default is slurm-<jobid>.out in the job's working directory
-            path = f"{workdir}/slurm-{jobid}.out" if workdir else ""
-            if not path:
-                print(
-                    "Could not determine log path from job metadata.\n"
-                    "Re-run with --log-file <path> or submit a new job "
-                    "(new jobs write to <working_dir>/scripts/<ts>/job.out).",
-                    file=sys.stderr,
-                )
-                return
+            jobname = meta.get("jobname", "")  # e.g. "emblase-stream-bnl-nsls2-smi-vit"
+            slug = jobname.removeprefix("emblase-")  # e.g. "stream-bnl-nsls2-smi-vit"
+            if workdir and slug:
+                scripts_dir = workdir.rstrip("/") + "/scripts"
+                try:
+                    entries = await client.ls(scripts_dir, filesystem_resource_id="scratch")
+                    # entries have full paths in "name"; find dirs ending with _{slug}
+                    matches = [
+                        e["name"]
+                        for e in entries
+                        if e.get("name", "").rstrip("/").endswith(f"_{slug}")
+                        and e.get("type") == "d"
+                    ]
+                    if matches:
+                        # pick the newest (highest timestamp prefix = lexicographically last)
+                        matches.sort(reverse=True)
+                        path = f"{matches[0]}/job.out"
+                except Exception as exc:
+                    logging.debug("ls fallback failed: %s", exc)
+
+        if not path:
+            print(
+                "Could not determine log path from job metadata.\n"
+                "Use 'cat <path>' to read a specific file, e.g.:\n"
+                "  python scripts/submit_nersc.py cat "
+                "/pscratch/sd/d/<user>/emblase/jobs/scripts/<ts>_<model>/job.out",
+                file=sys.stderr,
+            )
+            return
         print(f"Fetching last {lines} lines of: {path}")
         content = await client.read_file_tail(path, lines=lines)
         print(content)
@@ -310,6 +423,10 @@ def main() -> None:
 
     if args.command == "resources":
         asyncio.run(_resources())
+    elif args.command == "ls":
+        asyncio.run(_ls(args.path, args.resource))
+    elif args.command == "cat":
+        asyncio.run(_cat(args.path, args.resource))
     elif args.command == "infer":
         asyncio.run(_infer(args))
     elif args.command == "stream":
@@ -319,7 +436,7 @@ def main() -> None:
     elif args.command == "cancel":
         asyncio.run(_cancel(args.task_id))
     elif args.command == "logs":
-        asyncio.run(_logs(args.task_id, lines=args.lines, log_file=args.log_file))
+        asyncio.run(_logs(args.task_id, lines=args.lines))
     else:
         parser.print_help()
 

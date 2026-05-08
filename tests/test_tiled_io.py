@@ -13,6 +13,7 @@ from emblase.tiled.client import (
     _log_thumb_fn,
     _make_index_schema,
     read_images,
+    resolve_output_path,
     write_output,
 )
 
@@ -302,6 +303,124 @@ def test_write_output_passes_access_tags_to_append(mock_lse_cls, mock_create):
 
     call = container.append.call_args
     assert call.kwargs["access_tags"] == ["nsls2"]
+
+    call = container.append.call_args
+    assert call.kwargs["access_tags"] == ["nsls2"]
+
+
+# ---------------------------------------------------------------------------
+# resolve_output_path
+# ---------------------------------------------------------------------------
+
+
+def _make_root_with(key: str, node) -> MagicMock:
+    """Return a mock root client where root[key] returns node and anything else raises KeyError."""
+    root = MagicMock()
+    root.context.base_url = "http://test"
+
+    def _getitem(k):
+        if k == key or k == (key,):
+            return node
+        raise KeyError(k)
+
+    root.__getitem__ = MagicMock(side_effect=_getitem)
+    return root
+
+
+def test_resolve_output_path_nonexistent_returns_path_unchanged():
+    """If the path doesn't exist, return it as-is so write_output creates it."""
+
+    root = MagicMock()
+    root.__getitem__ = MagicMock(side_effect=KeyError)
+
+    result = resolve_output_path(root, "catalog/new_lse", run_key="run1", mode="batch")
+    assert result == "catalog/new_lse"
+
+
+def test_resolve_output_path_existing_lse_returns_path_unchanged():
+    """If the path points to an existing LSE, return it unchanged (will append)."""
+    from unittest.mock import create_autospec
+
+    lse = create_autospec(LatentSpaceEmbedding, instance=True)
+    parent = MagicMock()
+    parent.__getitem__ = MagicMock(return_value=lse)
+
+    root = MagicMock()
+    root.__getitem__ = MagicMock(return_value=parent)
+
+    result = resolve_output_path(root, "catalog/existing_lse", run_key="run1", mode="stream")
+    assert result == "catalog/existing_lse"
+
+
+def test_resolve_output_path_non_lse_parent_creates_child():
+    """If the path exists but is not an LSE, a child path is returned."""
+    non_lse = MagicMock(spec=[])  # not a LatentSpaceEmbedding
+    parent = MagicMock()
+    parent.__getitem__ = MagicMock(return_value=non_lse)
+
+    root = MagicMock()
+    root.__getitem__ = MagicMock(return_value=parent)
+
+    result = resolve_output_path(root, "catalog/results", run_key="abc123", mode="batch")
+    assert result.startswith("catalog/results/abc123_batch_")
+    # child name format: {run_key}_{mode}_{ts}
+    child = result[len("catalog/results/") :]
+    parts = child.split("_")
+    assert parts[0] == "abc123"
+    assert parts[1] == "batch"
+
+
+def test_resolve_output_path_non_lse_stream_mode():
+    """Mode 'stream' is embedded in the child name."""
+    non_lse = MagicMock(spec=[])
+    parent = MagicMock()
+    parent.__getitem__ = MagicMock(return_value=non_lse)
+
+    root = MagicMock()
+    root.__getitem__ = MagicMock(return_value=parent)
+
+    result = resolve_output_path(root, "results", run_key="uid99", mode="stream")
+    assert result.startswith("results/uid99_stream_")
+
+
+def test_resolve_output_path_no_run_key_falls_back_to_timestamp():
+    """When run_key is empty the child name starts with the timestamp."""
+    non_lse = MagicMock(spec=[])
+    parent = MagicMock()
+    parent.__getitem__ = MagicMock(return_value=non_lse)
+
+    root = MagicMock()
+    root.__getitem__ = MagicMock(return_value=parent)
+
+    result = resolve_output_path(root, "results", run_key="", mode="batch")
+    # prefix is timestamp (YYYYMMDDTHHMMSSz) when run_key is empty
+    child = result[len("results/") :]
+    assert "_batch_" in child
+
+
+@patch("emblase.tiled.client.create_embedding_container")
+@patch("emblase.tiled.client.LatentSpaceEmbedding")
+def test_write_output_returns_resolved_path(mock_lse_cls, mock_create):
+    """write_output returns the (possibly resolved) path it wrote to."""
+    from emblase.tiled.client import _clear_embedding_container_cache
+
+    embeddings = np.zeros((2, 4), dtype=np.float32)
+    container = MagicMock()
+    container.metadata = {"embedding_dim": 4, "thumb_shape": [64, 64]}
+    mock_create.return_value = container
+
+    # resolve_output_path: client["a"] → parent, parent["b"] → KeyError (path doesn't exist)
+    # write_output: client["a"] → parent, parent["b"] → KeyError → create
+    parent = MagicMock()
+    parent.__getitem__ = MagicMock(side_effect=KeyError)
+
+    root = MagicMock()
+    root.context.base_url = "http://test"
+    root.__getitem__ = MagicMock(return_value=parent)
+
+    _clear_embedding_container_cache()
+    result = write_output(root, "a/b", embeddings)
+    assert result == "a/b"
 
 
 # ---------------------------------------------------------------------------

@@ -90,7 +90,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "--output",
         required=True,
         metavar="TILED_PATH",
-        help="Tiled path of the results container (run output at OUTPUT/<run_key>).",
+        help="Tiled --output path passed to each streaming job.  If the path is an existing "
+        "LatentSpaceEmbedding it is appended to; if it doesn't exist an LSE is created "
+        "there; if it exists but is not an LSE a new LSE named "
+        "{run_key}_stream_{timestamp} is created inside it.",
     )
     p.add_argument(
         "--backend",
@@ -230,16 +233,19 @@ def main() -> None:
     signal.signal(signal.SIGTERM, _shutdown)
 
     param_specs = parse_param_specs(args.params)
-    print(f"Backend  : {args.backend.upper()}")
-    print(f"Watching : {args.inputs}")
-    print(f"Output   : {args.output}")
-    print(f"Model    : {args.model}  image_key={args.image_key}  batch_size={args.batch_size}")
+    print(f"Backend         : {args.backend.upper()}")
+    print(
+        f"Model           : {args.model}  ver={args.mlflow_version or 'latest'}  batch_size={args.batch_size}  thumb_mode={args.thumb_mode}"
+    )
+    print(f"Watching        : {args.inputs}")
+    print(f"Output          : {args.output}")
+    print(f"Image key       : {args.image_key}")
     if param_specs:
-        print(f"Params   : {list(param_specs)}")
+        print(f"Params          : {list(param_specs)}")
     if args.projector:
-        print(f"Projector: {args.projector}")
+        print(f"Projector       : {args.projector}")
     if args.classifier:
-        print(f"Classifier: {args.classifier}")
+        print(f"Classifier      : {args.classifier}")
     print("Press Ctrl+C to stop.\n")
 
     watcher.start(replay_existing=not args.no_replay)

@@ -192,6 +192,10 @@ def _get_client(tracking_uri: str | None = None, api_key: str | None = None):
     # _call_endpoint never passes extra_headers, so patching http_request alone
     # is not enough — the key never reaches the request.  We patch call_endpoint
     # instead, which sits between the two and does accept extra_headers.
+    #
+    # The patch must be applied to every module that imports call_endpoint at
+    # load time.  Both the tracking store and the model-registry store do this,
+    # so we patch all three reference points.
     key = api_key or settings.mlflow_api_key or None
     if key:
         import mlflow.utils.rest_utils as _ru
@@ -200,34 +204,29 @@ def _get_client(tracking_uri: str | None = None, api_key: str | None = None):
             _orig_call = _ru.call_endpoint
 
             def _patched_call(*args, extra_headers=None, **kwargs):
-                h = dict(extra_headers or {})
+                # extra_headers may arrive as the 6th positional arg (index 5)
+                # from base_rest_store, or as a keyword arg from tracking store.
+                if len(args) > 5:
+                    positional_headers = args[5]
+                    args = args[:5]
+                else:
+                    positional_headers = None
+                h = dict(positional_headers or extra_headers or {})
                 h["X-Api-Key"] = key
                 return _orig_call(*args, extra_headers=h, **kwargs)
 
             _patched_call._emblase_api_key_patched = True
             _ru.call_endpoint = _patched_call
-            # rest_store imports call_endpoint at module load; patch its reference too
+            # patch every module that imported call_endpoint at load time
             import mlflow.store.tracking.rest_store as _rs
 
             _rs.call_endpoint = _patched_call
-    key = api_key or settings.mlflow_api_key or None
-    if key:
-        import mlflow.utils.rest_utils as _ru
+            import mlflow.store.model_registry.rest_store as _mrs
 
-        if not getattr(_ru.call_endpoint, "_emblase_api_key_patched", False):
-            _orig_call = _ru.call_endpoint
+            _mrs.call_endpoint = _patched_call
+            import mlflow.store.model_registry.base_rest_store as _mbrs
 
-            def _patched_call(*args, extra_headers=None, **kwargs):
-                h = dict(extra_headers or {})
-                h["X-Api-Key"] = key
-                return _orig_call(*args, extra_headers=h, **kwargs)
-
-            _patched_call._emblase_api_key_patched = True
-            _ru.call_endpoint = _patched_call
-            # rest_store imports call_endpoint at module load; patch its reference too
-            import mlflow.store.tracking.rest_store as _rs
-
-            _rs.call_endpoint = _patched_call
+            _mbrs.call_endpoint = _patched_call
 
     # Patch 2: suppress prompt-exclusion filter (Azure ML)
     _rc.is_prompt_supported_registry = lambda *_a, **_kw: False

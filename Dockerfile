@@ -2,7 +2,7 @@
 #
 # Build (from repo root, M-series Mac):
 #   docker build --platform linux/amd64 \
-#     --build-arg EMBLASE_REF=$(git rev-parse HEAD) \
+#     --build-arg EMBLASE_VERSION=$(git describe --tags --dirty 2>/dev/null || echo 0.0.0+dev) \
 #     -t ghcr.io/genematx/emblase:latest .
 #
 # Shifter compatibility notes:
@@ -37,16 +37,19 @@ WORKDIR /app
 # ── PyTorch (CUDA 12.1 wheel) ─────────────────────────────────────────────────
 # Install before emblase so pip uses the cu121 index rather than PyPI's CPU wheel.
 RUN pip install --no-cache-dir \
-    "torch==2.3.*" \
-    "torchvision==0.18.*" \
+    "torch==2.5.1" \
+    "torchvision==0.20.1" \
     --index-url https://download.pytorch.org/whl/cu121
 
 # ── emblase + all runtime deps ────────────────────────────────────────────────
-# Copy source into the image and install in editable mode.
-# For CI builds the source is replaced by a git+https install once the repo
-# is public and the workflow file lands on the default branch.
+# .git is excluded from the build context (see .dockerignore) so hatch-vcs
+# cannot derive a version from git tags.  Pass the version explicitly via a
+# build arg; default to "0.0.0+dev" for local builds.
+ARG EMBLASE_VERSION=0.0.0+dev
+ENV SETUPTOOLS_SCM_PRETEND_VERSION=${EMBLASE_VERSION}
+
 COPY . /app/emblase
-RUN pip install --no-cache-dir /app/emblase
+RUN pip install --no-cache-dir "/app/emblase[compute]"
 
 # hdbscan is not in pyproject.toml but used by the classifier
 RUN pip install --no-cache-dir hdbscan
