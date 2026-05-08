@@ -75,8 +75,23 @@ echo '=== done ==='
 
 async def _infer(args: argparse.Namespace) -> None:
     backend = OrionBackend()
-    print(f"Working dir : {backend.working_dir}")
-    print(f"Models dir  : {backend.models_dir}")
+    param_specs = parse_param_specs(args.params)
+
+    print(f"Backend         : ORION")
+    print(f"Model           : {args.model}  ver={args.mlflow_version or 'latest'}  batch_size={args.batch_size}  thumb_mode={args.thumb_mode}")
+    if args.run:
+        print(f"Run             : {args.run}")
+    print(f"Output          : {args.output or '(none)'}")
+    if args.run:
+        print(f"Image key       : {args.image_key}")
+    if param_specs:
+        print(f"Params          : {list(param_specs)}")
+    if args.projector:
+        print(f"Projector       : {args.projector}")
+    if args.classifier:
+        print(f"Classifier      : {args.classifier}")
+    print(f"Working dir     : {backend.working_dir}")
+    print(f"Models dir      : {backend.models_dir}")
 
     submit_kwargs: dict = dict(
         model_name=args.model,
@@ -84,7 +99,7 @@ async def _infer(args: argparse.Namespace) -> None:
         output=args.output or "",
         thumb_mode=args.thumb_mode,
         mlflow_version=args.mlflow_version,
-        param_specs=parse_param_specs(args.params),
+        param_specs=param_specs,
         projector=args.projector,
         classifier=args.classifier,
     )
@@ -106,7 +121,7 @@ async def _infer(args: argparse.Namespace) -> None:
 
     print(f"\nSubmitting {args.model!r} inference job to Orion ...")
     job_id = await backend.submit(**submit_kwargs)
-    print(f"Job submitted: {job_id}")
+    print(f"Job submitted   : {job_id}")
     print(f"  → stream log: pixi run orion logs {job_id}")
 
     if args.no_wait:

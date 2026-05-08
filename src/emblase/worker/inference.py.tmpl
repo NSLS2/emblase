@@ -110,7 +110,7 @@ if projector_mode == "name":
     try:
         _projector_model, _projector_scaler = load_projector(projector_name, models_dir, device)
     except Exception as _exc:
-        log.warning("Projector not loaded — projections will be NaN: %s", _exc)
+        log.exception("Projector not loaded — projections will be NaN: %s", _exc)
 
 
 def _compute_projections(embeddings: np.ndarray) -> np.ndarray | None:
@@ -134,7 +134,7 @@ if classifier_name:
     try:
         _classifier_dir = load_classifier_dir(classifier_name, models_dir)
     except Exception as _exc:
-        log.warning("Classifier not loaded — labels will be null: %s", _exc)
+        log.exception("Classifier not loaded — labels will be null: %s", _exc)
 
 # ---------------------------------------------------------------------------
 # Tiled client

@@ -210,6 +210,19 @@ def _build_parser() -> argparse.ArgumentParser:
 
 async def _infer(args: argparse.Namespace) -> None:
     backend = NERSCBackend()
+    param_specs = parse_param_specs(args.params)
+
+    print(f"Backend         : NERSC")
+    print(f"Model           : {args.model}  ver={args.mlflow_version or 'latest'}  batch_size={args.batch_size}  thumb_mode={args.thumb_mode}")
+    print(f"Run             : {args.run or '(none)'}")
+    print(f"Output          : {args.output or '(none)'}")
+    print(f"Image key       : {args.image_key}")
+    if param_specs:
+        print(f"Params          : {list(param_specs)}")
+    if args.projector:
+        print(f"Projector       : {args.projector}")
+    if args.classifier:
+        print(f"Classifier      : {args.classifier}")
     print(f"Working dir     : {backend.working_dir}")
     print(f"Models dir      : {backend.models_dir}")
     print(f"Container image : {backend.container_image}")
@@ -218,8 +231,6 @@ async def _infer(args: argparse.Namespace) -> None:
     print(f"Queue           : {backend.queue or '(scheduler default)'}")
     print(f"Constraint      : {backend.constraint or '(none)'}")
     print(f"Time limit      : {backend.time_limit}")
-
-    param_specs = parse_param_specs(args.params)
 
     print(f"\nSubmitting {args.model!r} batch inference job to NERSC...")
     task_id = await backend.submit(
@@ -246,6 +257,19 @@ async def _infer(args: argparse.Namespace) -> None:
 
 async def _stream(args: argparse.Namespace) -> None:
     backend = NERSCBackend()
+    param_specs = parse_param_specs(args.params)
+
+    print(f"Backend         : NERSC")
+    print(f"Model           : {args.model}  ver={args.mlflow_version or 'latest'}  batch_size={args.batch_size}  thumb_mode={args.thumb_mode}")
+    print(f"Run             : {args.run}")
+    print(f"Output          : {args.output}")
+    print(f"Image key       : {args.image_key}")
+    if param_specs:
+        print(f"Params          : {list(param_specs)}")
+    if args.projector:
+        print(f"Projector       : {args.projector}")
+    if args.classifier:
+        print(f"Classifier      : {args.classifier}")
     print(f"Working dir     : {backend.working_dir}")
     print(f"Models dir      : {backend.models_dir}")
     print(f"Container image : {backend.container_image}")
@@ -254,8 +278,6 @@ async def _stream(args: argparse.Namespace) -> None:
     print(f"Queue           : {backend.queue or '(scheduler default)'}")
     print(f"Constraint      : {backend.constraint or '(none)'}")
     print(f"Time limit      : {backend.time_limit}")
-
-    param_specs = parse_param_specs(args.params)
 
     print(f"\nSubmitting {args.model!r} streaming inference job to NERSC...")
     task_id = await backend.submit_streaming(
