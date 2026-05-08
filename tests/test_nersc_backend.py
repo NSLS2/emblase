@@ -6,6 +6,8 @@ implementations so no real API calls are made.
 
 from __future__ import annotations
 
+from urllib.parse import urlparse
+
 import pytest
 
 from emblase.compute.base import JobStatus
@@ -745,8 +747,9 @@ async def test_nersc_backend_submit_script_has_secrets_preamble(monkeypatch):
     script_path = backend._jobs["77"]["script_path"]
     script_src = client.uploaded[script_path]
     assert "emblase job environment" in script_src, "secrets preamble header not found"
-    assert "EMBLASE_TILED_SERVER_URI" in script_src
-    assert "https://t.test" in script_src
+    parsed = urlparse("https://t.test")
+    assert parsed.scheme == "https" and parsed.hostname == "t.test"
+    assert f"EMBLASE_TILED_SERVER_URI='{parsed.geturl()}'" in script_src
     # No file-reading logic — credentials are baked in directly
     assert "open(" not in script_src.split("# --- end")[0]
     assert "os.remove" not in script_src
