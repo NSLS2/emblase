@@ -21,9 +21,9 @@ API:
     ``/compute/cancel/{resource_id}/{job_id}``    POST    Cancel a running job
     ============================================  ======  ===================================================
 
-    Note: filesystem endpoints (``/filesystem/mkdir``, ``/filesystem/upload``)
-    are intentionally not used — the inference script is embedded directly in
-    the job payload via a ``pre_launch`` heredoc.
+    Note: the inference script is uploaded to ``/pscratch`` via
+    ``/filesystem/mkdir`` + ``/filesystem/upload`` before job submission.
+    See :class:`NERSCClient.upload_script` for details.
 
 Job delivery:
     The rendered Python inference script is uploaded to ``/pscratch`` via the
@@ -304,8 +304,8 @@ class NERSCClient:
         if gpus_per_process >= 1:
             resources["gpu_cores_per_process"] = gpus_per_process
 
-        # Mount /pscratch into the Shifter container at the same path so that
-        # pre_launch-written scripts and model weights are visible inside the
+        # Mount /pscratch into the container at the same path so that
+        # uploaded scripts and model weights are visible inside the
         # container.  /global/cfs is omitted — it is not always available on
         # GPU nodes and an invalid mount path fails the job at startup.
         if volume_mounts is None:
@@ -383,10 +383,9 @@ class NERSCClient:
 class NERSCBackend(ComputeBackend):
     """Submit inference jobs to NERSC (Perlmutter) via the IRI REST API.
 
-    The rendered Python inference script is embedded in the job submission
-    payload via a ``pre_launch`` heredoc and written to
-    ``{working_dir}/scripts/<timestamp>/inference.py`` on the compute node
-    at job start.  The job then runs the script inside a container image.
+    The rendered Python inference script is uploaded to ``/pscratch`` via the
+    IRI filesystem API (``mkdir`` + ``upload``) before the job is submitted.
+    The job then runs ``python <script_path>`` inside the container image.
 
     All secrets (Tiled URI, MLflow URI, API keys) are injected as
     ``environment`` in the job spec.

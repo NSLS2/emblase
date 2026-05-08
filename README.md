@@ -257,8 +257,9 @@ ssh orion-staging.nsls2.bnl.gov "squeue -u <your-username>"
 ## NERSC job management
 
 Jobs are submitted to Perlmutter via the [IRI Superfacility API](https://api.iri.nersc.gov/docs)
-— no SSH required.  The inference script is embedded directly in the submission
-payload via a `pre_launch` heredoc; no filesystem API calls are needed.
+— no SSH required.  The inference script is uploaded to ``/pscratch`` via the
+IRI filesystem API before the job is submitted, then run as
+``python <script_path>`` inside the container.
 
 ```bash
 # submit batch inference
