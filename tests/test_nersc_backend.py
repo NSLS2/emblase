@@ -145,16 +145,15 @@ async def test_nersc_backend_submit_calls_client():
     assert job_id == "99"
     assert "99" in backend._jobs
     assert backend._jobs["99"]["model_name"] == "vit"
-    # Script embedded in pre_launch (no filesystem upload needed)
-    assert "vit" in client.submitted.get("pre_launch", "")
-    assert "inference.py" in client.submitted.get("pre_launch", "")
-    # pre_launch must create the full script subdirectory, not just scripts/
+    # Script is base64-encoded inline in the bash -c argument — no pre_launch
+    assert client.submitted["executable"] == "bash"
+    bash_cmd = client.submitted["arguments"][-1]  # bash -c "<cmd>"
+    assert "base64" in bash_cmd
+    assert "inference.py" in bash_cmd
     script_path = backend._jobs["99"]["script_path"]
     script_dir = script_path.rsplit("/", 1)[0]
-    assert f"mkdir -p {script_dir}" in client.submitted.get("pre_launch", "")
-    # Structured job spec passed to submit_job
-    assert client.submitted["executable"] == "python"
-    assert any("inference.py" in a for a in client.submitted["arguments"])
+    assert f"mkdir -p {script_dir}" in bash_cmd
+    assert "pre_launch" not in client.submitted or client.submitted["pre_launch"] == ""
     assert client.submitted["container_image"] == "ghcr.io/nsls2/emblase:latest"
     assert client.submitted["account"] == "nslsii"
 
@@ -366,9 +365,13 @@ async def test_nersc_backend_submit_streaming_injects_tiled_env(monkeypatch):
     env = client.submitted["environment"]
     assert env.get("EMBLASE_TILED_SERVER_URI") == "https://tiled.example.com"
     assert env.get("EMBLASE_TILED_API_KEY") == "secret"
-    # Script embedded in pre_launch — must contain streaming-specific markers
-    pre_launch = client.submitted.get("pre_launch", "")
-    assert "_on_new_image_data" in pre_launch or "streaming" in pre_launch
+    # Script is base64-encoded inline — must contain streaming-specific markers when decoded
+    bash_cmd = client.submitted["arguments"][-1]
+    import base64, re
+    b64 = re.search(r'echo ([A-Za-z0-9+/=]+) \| base64', bash_cmd)
+    assert b64, "base64 payload not found in bash -c command"
+    decoded = base64.b64decode(b64.group(1)).decode()
+    assert "_on_new_image_data" in decoded or "streaming" in decoded
 
 
 @pytest.mark.asyncio
@@ -598,8 +601,9 @@ async def test_nersc_client_missing_token_raises(monkeypatch):
         await client._ensure_client()
 
 
-def test_script_pre_launch_creates_full_script_dir():
-    """pre_launch must mkdir the per-job subdirectory, not just scripts/."""
+def test_script_inline_args_base64_roundtrip():
+    """_script_inline_args must produce a bash -c command that encodes the script correctly."""
+    import base64, re
     from emblase.compute.nersc import NERSCBackend, NERSCClient
 
     backend = NERSCBackend(
@@ -610,9 +614,19 @@ def test_script_pre_launch_creates_full_script_dir():
         container_image="img:latest",
     )
     script_path = "/pscratch/jobs/scripts/1234567890_mymodel/inference.py"
-    pre_launch = backend._script_pre_launch("print('hi')", script_path)
+    executable, args = backend._script_inline_args("print('hi')", script_path)
 
-    assert "mkdir -p /pscratch/jobs/scripts/1234567890_mymodel" in pre_launch
-    assert "mkdir -p /pscratch/jobs/scripts\n" not in pre_launch  # old wrong form
-    assert f"cat > {script_path}" in pre_launch
-    assert "print('hi')" in pre_launch
+    assert executable == "bash"
+    assert args[0] == "-c"
+    cmd = args[1]
+
+    # must create the full subdirectory
+    assert "mkdir -p /pscratch/jobs/scripts/1234567890_mymodel" in cmd
+    # must decode via base64 into the correct script path
+    assert f"base64 -d > {script_path}" in cmd
+    # base64 payload must decode back to the original script
+    b64 = re.search(r'echo ([A-Za-z0-9+/=]+) \| base64', cmd)
+    assert b64, "base64 payload not found in command"
+    assert base64.b64decode(b64.group(1)).decode() == "print('hi')"
+    # no pre_launch / heredoc remnants
+    assert "__EMBLASE_EOF__" not in cmd

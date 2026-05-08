@@ -26,18 +26,19 @@ API:
     the job payload via a ``pre_launch`` heredoc.
 
 Job delivery:
-    The rendered Python inference script is embedded directly in the job
-    submission payload via a ``pre_launch`` heredoc — no filesystem API calls
-    are needed.  A structured ``JobSpec`` runs the script inside a container::
+    The rendered Python inference script is base64-encoded and passed inline as
+    a ``bash -c`` command so that no filesystem writes are needed before the job
+    starts::
 
-        pre_launch: "cat > /path/to/inference.py << '__EMBLASE_EOF__' ..."
-        container:  {image: <container_image>, volume_mounts: [{/pscratch → /pscratch}]}
-        executable: python
-        arguments:  [/path/to/inference.py]
+        executable: bash
+        arguments:  ["-c", "mkdir -p <dir> && echo <b64> | base64 -d > <script> && python <script>"]
 
-    The ``pre_launch`` script runs on the host node *before* the container
-    starts, and ``/pscratch`` is mounted into the container at the same path
-    so the written script is visible inside.
+    This replaces the earlier ``pre_launch`` heredoc approach, which ran on the
+    IRI API / login node rather than the compute node and therefore could not
+    write to ``/pscratch`` (which is only mounted on compute nodes).
+
+    Writing to a file before running (rather than piping directly into python)
+    preserves readable tracebacks that include the script filename.
 
 Perlmutter queues:
     The ``queue_name`` field in the IRI JobSpec maps to Slurm partition names.
@@ -68,6 +69,7 @@ Resource discovery:
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import time
 from dataclasses import dataclass
@@ -406,21 +408,33 @@ class NERSCBackend(ComputeBackend):
                 env["EMBLASE_MODEL_CACHE_DIR"] = settings.model_cache_dir
         return env
 
-    def _script_pre_launch(self, py_script: str, script_path: str) -> str:
-        """Return a pre_launch shell snippet that writes *py_script* to *script_path*.
+    def _script_inline_args(self, py_script: str, script_path: str) -> tuple[str, list[str]]:
+        """Return (executable, arguments) that run *py_script* on the compute node.
 
-        This avoids any filesystem API calls — the script content is embedded
-        directly in the job submission payload via a heredoc.
+        The Python source is base64-encoded and decoded inline via bash so that
+        no filesystem writes are needed before the container starts.  This avoids
+        the ``pre_launch`` approach, which ran on the login/API node rather than
+        the compute node and therefore could not write to ``/pscratch``.
+
+        The generated command is::
+
+            bash -c "
+                mkdir -p <script_dir>
+                echo <b64> | base64 -d > <script_path>
+                python <script_path>
+            "
+
+        Writing to a file (rather than piping directly into python) preserves
+        readable tracebacks that include the script filename.
         """
-        # Escape any occurrence of the heredoc delimiter inside the script.
-        safe = py_script.replace("__EMBLASE_EOF__", "__EMBLASE_EOF_ESC__")
+        encoded = base64.b64encode(py_script.encode()).decode()
         script_dir = script_path.rsplit("/", 1)[0]
-        return (
-            f"mkdir -p {script_dir}\n"
-            f"cat > {script_path} << '__EMBLASE_EOF__'\n"
-            f"{safe}\n"
-            f"__EMBLASE_EOF__"
+        cmd = (
+            f"mkdir -p {script_dir} && "
+            f"echo {encoded} | base64 -d > {script_path} && "
+            f"python {script_path}"
         )
+        return "bash", ["-c", cmd]
 
     async def submit(
         self,
@@ -459,11 +473,11 @@ class NERSCBackend(ComputeBackend):
         ts = int(time.time() * 1000)
         script_path = f"{self.working_dir}/scripts/{ts}_{model_name}/inference.py"
         log_path = f"{self.working_dir}/scripts/{ts}_{model_name}/job.out"
-        pre_launch = self._script_pre_launch(py_script, script_path)
+        executable, arguments = self._script_inline_args(py_script, script_path)
         environment = self._build_environment(require_tiled=bool(run_path or inputs or output))
         job_id = await self.client.submit_job(
-            executable="python",
-            arguments=[script_path],
+            executable=executable,
+            arguments=arguments,
             working_dir=self.working_dir,
             container_image=self.container_image,
             name=f"emblase-{model_name}",
@@ -472,7 +486,6 @@ class NERSCBackend(ComputeBackend):
             constraint=self.constraint,
             queue_name=self.queue,
             environment=environment,
-            pre_launch=pre_launch,
             stdout_path=log_path,
             stderr_path=log_path,
         )
@@ -532,12 +545,12 @@ class NERSCBackend(ComputeBackend):
         ts = int(time.time() * 1000)
         script_path = f"{self.working_dir}/scripts/{ts}_stream-{model_name}/inference.py"
         log_path = f"{self.working_dir}/scripts/{ts}_stream-{model_name}/job.out"
-        pre_launch = self._script_pre_launch(py_script, script_path)
+        executable, arguments = self._script_inline_args(py_script, script_path)
         environment = self._build_environment(require_tiled=True)
         effective_limit = time_limit or "02:00:00"
         job_id = await self.client.submit_job(
-            executable="python",
-            arguments=[script_path],
+            executable=executable,
+            arguments=arguments,
             working_dir=self.working_dir,
             container_image=self.container_image,
             name=f"emblase-stream-{model_name}",
@@ -546,7 +559,6 @@ class NERSCBackend(ComputeBackend):
             constraint=self.constraint,
             queue_name=self.queue,
             environment=environment,
-            pre_launch=pre_launch,
             stdout_path=log_path,
             stderr_path=log_path,
         )

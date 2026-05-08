@@ -313,6 +313,11 @@ EMBLASE_NERSC_ACCOUNT=m3792_g   # not m3792
 `NERSCBackend`.  `/global/cfs` is intentionally excluded — it is not
 guaranteed to be available on GPU nodes and causes job startup failures.
 
+The Python inference script is base64-encoded and passed as an inline
+`bash -c` command (no `pre_launch` or filesystem API calls needed).  The
+`pre_launch` field was dropped because it executes on the IRI API / login
+node, not the compute node, so it cannot write to `/pscratch`.
+
 ---
 
 ## Models
