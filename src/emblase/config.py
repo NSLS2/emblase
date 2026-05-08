@@ -67,14 +67,6 @@ class Settings(BaseSettings):
     # "debug"  → gpu_ss11 / gpu_debug QOS — fast, but capped at 30 min.
     # ""       → let the scheduler pick (lands on gpu_debug by default).
     nersc_queue: str = "shared"
-    # Absolute path to the secrets file on the NERSC compute node (inside the container).
-    # This file holds Tiled/MLflow credentials read by inference scripts at startup.
-    # Create it once via:
-    #   python scripts/submit_nersc.py secrets --path /global/u2/<i>/<user>/.emblase_secrets
-    # $HOME (/global/u2/...) is bind-mounted read-only inside podman-hpc containers.
-    # The preamble uses os.path.expanduser(), so both absolute paths and ~ are accepted.
-    # Perlmutter home path convention: /global/u2/<first_letter>/<username>
-    nersc_secrets_file: str = "~/.emblase_secrets"
 
     # Compute backend selection: "local", "orion", or "nersc"
     compute_backend: str = "local"

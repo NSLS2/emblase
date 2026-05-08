@@ -80,7 +80,7 @@ class _FakeClient:
         self.resource_id = "perlmutter"
 
     async def upload_script(
-        self, content: str, remote_path: str, filesystem_resource_id: str = "scratch"
+        self, content: str, remote_path: str, filesystem_resource_id: str = "scratch", mode: str = "400"
     ) -> None:
         self.uploaded[remote_path] = content
 
@@ -97,7 +97,6 @@ class _FakeClient:
         gpus_per_process: int = 1,
         constraint: str = "",
         queue_name: str = "",
-        environment: dict | None = None,
         pre_launch: str = "",
         stdout_path: str = "",
         stderr_path: str = "",
@@ -113,7 +112,6 @@ class _FakeClient:
             "time_limit_s": time_limit_s,
             "constraint": constraint,
             "queue_name": queue_name,
-            "environment": environment,
             "pre_launch": pre_launch,
             "stdout_path": stdout_path,
             "stderr_path": stderr_path,
@@ -178,13 +176,12 @@ async def test_nersc_backend_submit_injects_tiled_env(monkeypatch):
     )
     await backend.submit(model_name="vit", output="results/scan1")
 
-    # Secrets are delivered via ~/.emblase_secrets — verify the preamble references it
+    # Secrets are baked directly into the preamble — verify key vars are present
     script_path = backend._jobs[client._job_id]["script_path"]
     script_src = client.uploaded[script_path]
-    assert ".emblase_secrets" in script_src
+    assert "EMBLASE_TILED_API_KEY" in script_src
     # No per-job .env file should be uploaded to /pscratch
     assert not any(k.endswith("/.env") for k in client.uploaded)
-    assert client.submitted.get("environment") is None
 
 
 @pytest.mark.asyncio
@@ -239,11 +236,12 @@ async def test_nersc_backend_submit_injects_mlflow_env(monkeypatch):
     )
     await backend.submit(model_name="vit")
 
-    # No secrets written to /pscratch — secrets are in ~/.emblase_secrets on Perlmutter
+    # No secrets written to /pscratch as a separate .env file
     assert not any(k.endswith("/.env") for k in client.uploaded)
-    # Preamble should reference the secrets file
+    # Preamble should bake in the MLflow credentials directly
     script_path = backend._jobs[client._job_id]["script_path"]
-    assert ".emblase_secrets" in client.uploaded[script_path]
+    assert "EMBLASE_MLFLOW_TRACKING_URI" in client.uploaded[script_path]
+    assert "EMBLASE_MLFLOW_API_KEY" in client.uploaded[script_path]
 
 
 @pytest.mark.asyncio
@@ -372,11 +370,10 @@ async def test_nersc_backend_submit_streaming_injects_tiled_env(monkeypatch):
     assert job_id == "77"
     # No per-job .env file should be uploaded to /pscratch
     assert not any(k.endswith("/.env") for k in client.uploaded)
-    assert client.submitted.get("environment") is None
-    # Preamble in the uploaded script must reference ~/.emblase_secrets
+    # Preamble in the uploaded script must bake in credentials directly
     script_path = backend._jobs["77"]["script_path"]
     uploaded_src = client.uploaded[script_path]
-    assert ".emblase_secrets" in uploaded_src
+    assert "EMBLASE_TILED_SERVER_URI" in uploaded_src
     assert "_on_new_image_data" in uploaded_src or "streaming" in uploaded_src
 
 
@@ -628,70 +625,109 @@ async def test_nersc_backend_submit_uploads_script():
 
 
 # ---------------------------------------------------------------------------
-# _dotenv_loader_preamble
+# _secrets_preamble
 # ---------------------------------------------------------------------------
 
 
-def test_dotenv_loader_preamble_loads_home_secrets(tmp_path):
-    """The preamble reads KEY='value' lines from ~/.emblase_secrets (or override path)."""
-    import os
+def test_secrets_preamble_bakes_in_credentials(monkeypatch):
+    """The preamble must contain os.environ.setdefault calls for all secret vars."""
+    import emblase.compute.nersc as nersc_module
 
-    secrets_file = tmp_path / ".emblase_secrets"
-    secrets_file.write_text("EMBLASE_TEST_KEY='hello world'\n")
-    secrets_file.chmod(0o600)
+    monkeypatch.setattr(nersc_module.settings, "mlflow_tracking_uri", "https://mlflow.example.com")
+    monkeypatch.setattr(nersc_module.settings, "mlflow_api_key", "mlf-key")
+    monkeypatch.setattr(nersc_module.settings, "tiled_server_uri", "https://tiled.example.com")
+    monkeypatch.setattr(nersc_module.settings, "tiled_api_key", "tiled-key")
+    monkeypatch.setattr(nersc_module.settings, "tiled_access_tags", "smi_sandbox")
+    monkeypatch.setattr(nersc_module.settings, "nersc_models_dir", "/pscratch/models")
 
     backend = NERSCBackend(
         client=_FakeClient(),
         working_dir="/pscratch/jobs",
         models_dir="/pscratch/models",
     )
-    preamble = backend._dotenv_loader_preamble(
-        secrets_file=str(secrets_file),
-        extra_env={"JOB_DIR": "/pscratch/jobs/scripts/123_vit"},
-    )
+    preamble = backend._secrets_preamble(extra_env={"JOB_DIR": "/pscratch/jobs/123"})
+
     # Must be valid Python
     compile(preamble, "<preamble>", "exec")
-    # Execute it and verify both extra_env and secrets are set
-    saved = os.environ.pop("EMBLASE_TEST_KEY", None)
-    saved_jd = os.environ.pop("JOB_DIR", None)
-    try:
-        exec(preamble, {})  # noqa: S102
-        assert os.environ.get("EMBLASE_TEST_KEY") == "hello world"
-        assert os.environ.get("JOB_DIR") == "/pscratch/jobs/scripts/123_vit"
-        # File must NOT be deleted — it is a permanent protected file
-        assert secrets_file.exists()
-    finally:
-        os.environ.pop("EMBLASE_TEST_KEY", None)
-        os.environ.pop("JOB_DIR", None)
-        if saved is not None:
-            os.environ["EMBLASE_TEST_KEY"] = saved
-        if saved_jd is not None:
-            os.environ["JOB_DIR"] = saved_jd
+
+    assert "EMBLASE_MLFLOW_TRACKING_URI" in preamble
+    assert "https://mlflow.example.com" in preamble
+    assert "EMBLASE_MLFLOW_API_KEY" in preamble
+    assert "mlf-key" in preamble
+    assert "EMBLASE_TILED_SERVER_URI" in preamble
+    assert "EMBLASE_TILED_API_KEY" in preamble
+    assert "EMBLASE_TILED_ACCESS_TAGS" in preamble
+    assert "smi_sandbox" in preamble
+    assert "JOB_DIR" in preamble
+    assert "/pscratch/jobs/123" in preamble
 
 
-def test_dotenv_loader_preamble_missing_file_is_silent():
-    """Missing secrets file should not crash the job — secrets just won't be set."""
+def test_secrets_preamble_omits_empty_values(monkeypatch):
+    """Variables with empty values must not appear in the preamble."""
+    import emblase.compute.nersc as nersc_module
+
+    monkeypatch.setattr(nersc_module.settings, "mlflow_tracking_uri", "https://mlflow.example.com")
+    monkeypatch.setattr(nersc_module.settings, "mlflow_api_key", "")
+    monkeypatch.setattr(nersc_module.settings, "tiled_server_uri", "")
+    monkeypatch.setattr(nersc_module.settings, "tiled_api_key", "")
+    monkeypatch.setattr(nersc_module.settings, "tiled_access_tags", "")
+    monkeypatch.setattr(nersc_module.settings, "nersc_models_dir", "/pscratch/models")
+
     backend = NERSCBackend(
         client=_FakeClient(),
         working_dir="/pscratch/jobs",
         models_dir="/pscratch/models",
     )
-    preamble = backend._dotenv_loader_preamble(
-        secrets_file="/nonexistent/path/.emblase_secrets",
-    )
+    preamble = backend._secrets_preamble()
     compile(preamble, "<preamble>", "exec")
-    # Should execute without error even if file is absent
-    exec(preamble, {})  # noqa: S102
+
+    assert "EMBLASE_MLFLOW_TRACKING_URI" in preamble
+    assert "EMBLASE_MLFLOW_API_KEY" not in preamble
+    assert "EMBLASE_TILED_SERVER_URI" not in preamble
+
+
+def test_secrets_preamble_is_executable(monkeypatch):
+    """Executing the preamble must set the expected env vars via setdefault."""
+    import os
+    import emblase.compute.nersc as nersc_module
+
+    monkeypatch.setattr(nersc_module.settings, "mlflow_tracking_uri", "https://mlflow.example.com")
+    monkeypatch.setattr(nersc_module.settings, "mlflow_api_key", "secret-key")
+    monkeypatch.setattr(nersc_module.settings, "tiled_server_uri", "")
+    monkeypatch.setattr(nersc_module.settings, "tiled_api_key", "")
+    monkeypatch.setattr(nersc_module.settings, "tiled_access_tags", "")
+    monkeypatch.setattr(nersc_module.settings, "nersc_models_dir", "/pscratch/models")
+
+    backend = NERSCBackend(
+        client=_FakeClient(),
+        working_dir="/pscratch/jobs",
+        models_dir="/pscratch/models",
+    )
+    preamble = backend._secrets_preamble(extra_env={"JOB_DIR": "/pscratch/jobs/abc"})
+
+    for key in ("EMBLASE_MLFLOW_TRACKING_URI", "EMBLASE_MLFLOW_API_KEY", "JOB_DIR"):
+        os.environ.pop(key, None)
+    try:
+        exec(preamble, {})  # noqa: S102
+        assert os.environ.get("EMBLASE_MLFLOW_TRACKING_URI") == "https://mlflow.example.com"
+        assert os.environ.get("EMBLASE_MLFLOW_API_KEY") == "secret-key"
+        assert os.environ.get("JOB_DIR") == "/pscratch/jobs/abc"
+    finally:
+        for key in ("EMBLASE_MLFLOW_TRACKING_URI", "EMBLASE_MLFLOW_API_KEY", "JOB_DIR"):
+            os.environ.pop(key, None)
 
 
 @pytest.mark.asyncio
-async def test_nersc_backend_submit_script_has_dotenv_preamble(monkeypatch):
-    """Uploaded inference script must start with the secrets loader preamble."""
+async def test_nersc_backend_submit_script_has_secrets_preamble(monkeypatch):
+    """Uploaded inference script must start with the secrets preamble with baked-in creds."""
     import emblase.compute.nersc as nersc_module
 
     monkeypatch.setattr(nersc_module.settings, "tiled_server_uri", "https://t.test")
     monkeypatch.setattr(nersc_module.settings, "tiled_api_key", "k")
     monkeypatch.setattr(nersc_module.settings, "tiled_access_tags", "")
+    monkeypatch.setattr(nersc_module.settings, "mlflow_tracking_uri", "")
+    monkeypatch.setattr(nersc_module.settings, "mlflow_api_key", "")
+    monkeypatch.setattr(nersc_module.settings, "nersc_models_dir", "/pscratch/models")
 
     client = _FakeClient(job_id="77")
     backend = NERSCBackend(
@@ -703,20 +739,22 @@ async def test_nersc_backend_submit_script_has_dotenv_preamble(monkeypatch):
 
     script_path = backend._jobs["77"]["script_path"]
     script_src = client.uploaded[script_path]
-    assert "_secrets_path" in script_src, "secrets loader preamble not found in uploaded script"
-    assert ".emblase_secrets" in script_src
-    # File must NOT be deleted (permanent file, not per-job upload)
+    assert "emblase job environment" in script_src, "secrets preamble header not found"
+    assert "EMBLASE_TILED_SERVER_URI" in script_src
+    assert "https://t.test" in script_src
+    # No file-reading logic — credentials are baked in directly
+    assert "open(" not in script_src.split("# --- end")[0]
     assert "os.remove" not in script_src
 
 
 # ---------------------------------------------------------------------------
-# NERSCClient.setup_secrets_file
+# NERSCClient.upload_script chmod
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_setup_secrets_file_uploads_and_chmods():
-    """setup_secrets_file() must POST to upload then PUT to chmod 600."""
+async def test_upload_script_chmods_400():
+    """upload_script() must POST upload then PUT chmod 400."""
     calls: list[dict] = []
 
     class _MockResponse:
@@ -736,7 +774,6 @@ async def test_setup_secrets_file_uploads_and_chmods():
             return _MockResponse()
 
         async def get(self, url, **kwargs):
-            # _poll_task call — return completed immediately
             calls.append({"method": "GET", "url": url})
             return type(
                 "R",
@@ -760,22 +797,20 @@ async def test_setup_secrets_file_uploads_and_chmods():
 
     real_client._ensure_client = _fake_ensure
 
-    await real_client.setup_secrets_file(
-        content="EMBLASE_TILED_API_KEY='testkey'\n",
-        remote_path="/global/u2/j/jdoe/.emblase_secrets",
-        home_resource_id="homes",
+    await real_client.upload_script(
+        content="print('hello')",
+        remote_path="/pscratch/sd/d/dallan/jobs/scripts/123/inference.py",
     )
 
     post_calls = [c for c in calls if c["method"] == "POST"]
     put_calls = [c for c in calls if c["method"] == "PUT"]
 
-    assert len(post_calls) >= 1
-    assert "filesystem/upload/homes" in post_calls[0]["url"]
-    assert post_calls[0]["params"]["path"] == "/global/u2/j/jdoe/.emblase_secrets"
-
+    # mkdir + upload
+    assert any("upload" in c["url"] for c in post_calls)
+    # chmod 400
     assert len(put_calls) >= 1
-    assert "filesystem/chmod/homes" in put_calls[0]["url"]
-    assert put_calls[0]["json"]["mode"] == "600"
+    assert "filesystem/chmod/scratch" in put_calls[0]["url"]
+    assert put_calls[0]["json"]["mode"] == "400"
 
 
 def test_model_cache_uses_orion_models_dir(monkeypatch, tmp_path):

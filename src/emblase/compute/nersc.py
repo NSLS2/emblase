@@ -23,7 +23,7 @@ API:
     ``/filesystem/mkdir/{resource_id}``            POST    Create directory on ``/pscratch``
     ``/filesystem/upload/{resource_id}``           POST    Upload a file (≤ 5 MB) to any filesystem
     ``/filesystem/download/{resource_id}``         GET     Download a file (≤ 5 MB) from ``/pscratch``
-    ``/filesystem/chmod/{resource_id}``            PUT     Set file permissions (e.g. ``600`` for secrets)
+    ``/filesystem/chmod/{resource_id}``            PUT     Set file permissions
     ``/filesystem/tail/{resource_id}``             GET     Read last N lines of a file (job logs)
     ``/task/{task_id}``                            GET     Poll an async filesystem task to completion
     =============================================  ======  ====================================================
@@ -33,8 +33,8 @@ API:
     ============  =====================================================
     Resource ID   Filesystem / purpose
     ============  =====================================================
-    ``scratch``   ``/pscratch`` — fast Lustre scratch, group-readable
-    ``homes``     ``/global/u2/...`` — user home dirs, ``$HOME``
+    ``scratch``   ``/pscratch`` — fast Lustre scratch
+    ``homes``     ``/global/u2/...`` — user home dirs
     ``cfs``       ``/global/cfs/...`` — community/project storage
     ``archive``   HPSS tape archive
     ``compute``   Perlmutter compute (jobs)
@@ -50,35 +50,48 @@ Job delivery:
 
         POST /filesystem/mkdir/scratch  {"path": "<script_dir>", "parent": true}
         POST /filesystem/upload/scratch?path=<script_path>   (multipart, ≤ 5 MB)
+        PUT  /filesystem/chmod/scratch   {"path": "<script_path>", "mode": "400"}
 
-    The job then runs::
+    The job then runs inside a podman-hpc container::
 
         executable: python
         arguments:  [<script_path>]
 
-    ``JOB_DIR`` (non-secret, equal to the script directory) is baked directly
-    into a preamble prepended to the rendered script at submit time.
+    ``/pscratch`` is bind-mounted at the same path inside the container so the
+    script is visible.  Only one volume mount is supported by podman-hpc on
+    Perlmutter — two mounts produce an ``invalid reference format`` error.
 
 Secrets injection:
-    All secrets (``EMBLASE_TILED_*``, ``EMBLASE_MLFLOW_*``) are read at job
-    startup from a user-managed file on Perlmutter (default
-    ``/global/u2/<i>/<user>/.emblase_secrets``, ``chmod 600``).  ``$HOME`` is
-    bind-mounted read-only inside podman-hpc containers.  The file is **never
-    written by Emblase during job submission** — it is created once via::
+    All secrets (``EMBLASE_TILED_*``, ``EMBLASE_MLFLOW_*``) are baked at
+    submit time into a short Python preamble that is prepended to the rendered
+    inference script::
 
-        python scripts/submit_nersc.py secrets \\
-            --home-resource homes \\
-            --path /global/u2/j/jdoe/.emblase_secrets
+        import os as _os
+        _os.environ.setdefault('EMBLASE_MLFLOW_TRACKING_URI', '...')
+        ...
 
-    Earlier approaches tried and rejected:
+    The script is then uploaded to ``/pscratch`` and ``chmod 400`` (owner
+    read-only).  The secrets exist on disk only for the duration of the job;
+    once the job completes the file stays on ``/pscratch`` but is readable only
+    by the submitting user (standard Lustre POSIX permissions).
 
-    * IRI ``environment`` field — confirmed silently ignored by podman-hpc
-      (probe job 52700081: zero custom vars reached the container).
-    * Per-job ``.env`` on ``/pscratch`` — functionally worked but exposed
-      secrets on a group-readable Lustre filesystem.
+    Approaches investigated and rejected:
+
+    * ``$HOME`` bind-mount — ``$HOME`` inside the container is ``/root``,
+      not the user's Perlmutter home; the home filesystem is not mounted.
+    * Two volume mounts (``/pscratch`` + ``/global/u2/...``) — podman-hpc
+      treats the second entry as a container image name and fails with
+      ``invalid reference format``.
+    * IRI ``container.env`` field — silently ignored by podman-hpc
+      (confirmed: probe job 52700081, zero vars reached the container).
+    * IRI top-level ``environment`` field — also silently ignored inside the
+      container (confirmed: probe job 52708889).
+    * Bare-metal execution (no container) — rejected by Slurm policy on
+      Perlmutter GPU nodes; ``sbatch`` returns "does not match any supported
+      policy" without a container image.
     * ``pre_launch`` heredoc — silently ignored for podman container jobs.
-    * ``bash -c "<cmd>"`` in arguments — ``-c`` intercepted by podman as
-      ``--cpu-shares``.
+    * ``bash -c "<cmd>"`` in arguments — ``-c`` is intercepted by podman as
+      ``--cpu-shares`` before reaching bash.
 
 Perlmutter queues:
     The ``queue_name`` field in the IRI JobSpec maps to Slurm partition names
@@ -299,11 +312,16 @@ class NERSCClient:
         content: str,
         remote_path: str,
         filesystem_resource_id: str = "scratch",
+        mode: str = "400",
     ) -> None:
         """Upload *content* as a text file to *remote_path* on the remote filesystem.
 
         Creates all parent directories first (``mkdir -p`` semantics).
         Uses the IRI filesystem API (max 5 MB per file).
+
+        The file is chmod'd to *mode* (default ``400``, owner read-only) after
+        upload.  Scripts contain credentials baked into the preamble, so
+        read-only by owner is the tightest practical permission on Lustre.
         """
         client = await self._ensure_client()
         remote_dir = remote_path.rsplit("/", 1)[0]
@@ -321,6 +339,14 @@ class NERSCClient:
             f"{self.base_url}/filesystem/upload/{filesystem_resource_id}",
             params={"path": remote_path},
             files={"file": (remote_path.rsplit("/", 1)[-1], content.encode(), "text/plain")},
+        )
+        resp.raise_for_status()
+        await self._poll_task(resp.json()["task_id"])
+
+        # chmod — owner read-only so credentials in the preamble are not world-readable
+        resp = await client.put(
+            f"{self.base_url}/filesystem/chmod/{filesystem_resource_id}",
+            json={"path": remote_path, "mode": mode},
         )
         resp.raise_for_status()
         await self._poll_task(resp.json()["task_id"])
@@ -349,60 +375,6 @@ class NERSCClient:
         raw = result.get("content") or result.get("output") or ""
         return raw.encode() if isinstance(raw, str) else raw
 
-    async def setup_secrets_file(
-        self,
-        content: str,
-        remote_path: str,
-        home_resource_id: str = "homes",
-    ) -> None:
-        """Upload *content* to *remote_path* on the home filesystem and chmod it 600.
-
-        This is a one-time setup operation.  The file holds Tiled/MLflow
-        credentials that inference jobs read at startup from inside the
-        podman-hpc container (``$HOME`` is bind-mounted read-only).
-
-        Parameters
-        ----------
-        content:
-            File content in ``KEY='value'`` format — one variable per line.
-        remote_path:
-            Absolute destination path on the remote filesystem, e.g.
-            ``/global/u2/j/jdoe/.emblase_secrets``.  Use
-            ``scripts/submit_nersc.py ls /global/u2/<i>/<user>`` to confirm
-            your home path.  Avoid ``~`` — tilde expansion by the IRI API
-            is not guaranteed.
-        home_resource_id:
-            IRI filesystem resource ID for ``$HOME``.  On Perlmutter this is
-            ``"homes"`` (confirmed from ``GET /status/resources``).
-
-        Raises
-        ------
-        httpx.HTTPStatusError
-            If the upload or chmod API call fails.
-        RuntimeError
-            If the upload task fails.
-        """
-        client = await self._ensure_client()
-
-        # Upload
-        resp = await client.post(
-            f"{self.base_url}/filesystem/upload/{home_resource_id}",
-            params={"path": remote_path},
-            files={"file": (remote_path.rsplit("/", 1)[-1], content.encode(), "text/plain")},
-        )
-        resp.raise_for_status()
-        await self._poll_task(resp.json()["task_id"])
-
-        # chmod 600 — owner read/write only
-        resp = await client.put(
-            f"{self.base_url}/filesystem/chmod/{home_resource_id}",
-            json={"path": remote_path, "mode": "600"},
-        )
-        resp.raise_for_status()
-        await self._poll_task(resp.json()["task_id"])
-
-        logger.info("Secrets file written and protected: %s  (chmod 600)", remote_path)
-
     # ------------------------------------------------------------------
     # Job submission / management
     # ------------------------------------------------------------------
@@ -420,7 +392,6 @@ class NERSCClient:
         gpus_per_process: int = 1,
         constraint: str = "",
         queue_name: str = "",
-        environment: dict[str, str] | None = None,
         pre_launch: str = "",
         stdout_path: str = "",
         stderr_path: str = "",
@@ -448,10 +419,9 @@ class NERSCClient:
         if gpus_per_process >= 1:
             resources["gpu_cores_per_process"] = gpus_per_process
 
-        # Mount /pscratch into the container at the same path so that
-        # uploaded scripts and model weights are visible inside the
-        # container.  /global/cfs is omitted — it is not always available on
-        # GPU nodes and an invalid mount path fails the job at startup.
+        # Only /pscratch is mounted — two volume mounts cause podman-hpc to
+        # fail with "invalid reference format" (treats the second entry as an
+        # image name).  Scripts and model weights both live on /pscratch.
         if volume_mounts is None:
             volume_mounts = [
                 {"source": "/pscratch", "target": "/pscratch", "read_only": False},
@@ -465,16 +435,10 @@ class NERSCClient:
             "container": {
                 "image": container_image,
                 "volume_mounts": volume_mounts,
-                # NOTE: container["env"] is also silently ignored by podman-hpc on Perlmutter
-                # (confirmed: probe job 52700081 — zero custom vars reached the container).
-                # Kept here in case a future IRI API version respects it.
-                **({"env": environment} if environment else {}),
             },
             "resources": resources,
             "attributes": attributes,
         }
-        # NOTE: top-level payload["environment"] is also silently ignored by podman-hpc.
-        # Secrets are delivered via ~/.emblase_secrets instead (see module docstring).
         if pre_launch:
             payload["pre_launch"] = pre_launch
         if stdout_path:
@@ -531,24 +495,14 @@ class NERSCClient:
 class NERSCBackend(ComputeBackend):
     """Submit inference jobs to NERSC (Perlmutter) via the IRI REST API.
 
-    All secrets (``EMBLASE_TILED_*``, ``EMBLASE_MLFLOW_*``) are read at job
-    startup from a user-managed ``~/.emblase_secrets`` file on Perlmutter
-    (``chmod 600``).  ``$HOME`` is bind-mounted read-only inside podman-hpc
-    containers.  The file is **never written by Emblase** — the user creates
-    it once on the login node.  ``JOB_DIR`` (non-secret) is baked into the
-    preamble at submit time.
+    Secrets (``EMBLASE_TILED_*``, ``EMBLASE_MLFLOW_*``) are baked at submit
+    time into a short Python preamble prepended to the rendered inference
+    script.  The script is uploaded to ``/pscratch`` and immediately
+    ``chmod 400`` (owner read-only).  ``JOB_DIR`` (non-secret) is included
+    in the same preamble.
 
-    Earlier approaches that were tried and rejected:
-
-    * ``pre_launch`` heredoc — silently ignored for podman container jobs on
-      Perlmutter; no output appears before the container starts.
-    * ``bash -c "<cmd>"`` in arguments — the IRI API passes each argument as a
-      separate token to ``podman run``, so ``-c`` is intercepted by podman as
-      ``--cpu-shares`` before reaching bash.
-    * IRI ``environment`` field — confirmed silently ignored by podman-hpc
-      (probe job 52700081: zero custom vars reached the container).
-    * Per-job ``.env`` on ``/pscratch`` — functionally worked but exposed
-      secrets on a group-readable Lustre filesystem.
+    See the module docstring for a full account of secrets delivery approaches
+    that were investigated and rejected.
     """
 
     def __init__(
@@ -585,59 +539,37 @@ class NERSCBackend(ComputeBackend):
         return h * 3600 + m * 60 + s
 
     def _validate_environment(self, *, require_tiled: bool = False) -> None:
-        """Raise early if required settings are missing.
-
-        Secrets are never injected here — they are loaded at job startup from
-        ``~/.emblase_secrets`` (see module docstring).
-        """
+        """Raise early if required settings are missing."""
         if require_tiled and not settings.tiled_server_uri:
             raise ValueError("EMBLASE_TILED_SERVER_URI is not set — required for this job type.")
 
-    def _dotenv_loader_preamble(
-        self,
-        secrets_file: str | None = None,
-        extra_env: dict[str, str] | None = None,
-    ) -> str:
+    def _secrets_preamble(self, extra_env: dict[str, str] | None = None) -> str:
         """Return a Python preamble that injects credentials into ``os.environ``.
 
-        Two sources are combined, applied in order:
+        All values are baked in at submit time as ``os.environ.setdefault``
+        calls.  The script is uploaded ``chmod 400`` (owner read-only) so that
+        the credentials are not visible to other users on the Lustre filesystem.
 
-        1. *extra_env* — non-secret key/value pairs (e.g. ``JOB_DIR``) baked
-           directly as ``os.environ.setdefault(...)`` calls.  Safe to embed in
-           the script because they contain no secrets.
-
-        2. *secrets_file* — path to a ``chmod 600`` KEY='value' file that the
-           user has placed in their ``$HOME`` on Perlmutter (default
-           ``~/.emblase_secrets``).  ``$HOME`` is bind-mounted read-only inside
-           podman-hpc containers.  The file is **never** written by Emblase —
-           the user creates it once.  It is NOT deleted after reading (it is a
-           permanent protected file, not a per-job upload).
-
-        This approach avoids writing secrets to ``/pscratch`` (world-readable
-        Lustre) and avoids the IRI ``environment`` field (confirmed silently
-        ignored by podman-hpc on Perlmutter).
+        *extra_env* holds non-secret key/value pairs (e.g. ``JOB_DIR``) that
+        are included in the same block for convenience.
         """
-        resolved = secrets_file or settings.nersc_secrets_file or "~/.emblase_secrets"
-        extra_lines = ""
+        env: dict[str, str] = {
+            "EMBLASE_MLFLOW_TRACKING_URI": settings.mlflow_tracking_uri,
+            "EMBLASE_MLFLOW_API_KEY": settings.mlflow_api_key,
+            "EMBLASE_TILED_SERVER_URI": settings.tiled_server_uri,
+            "EMBLASE_TILED_API_KEY": settings.tiled_api_key,
+            "EMBLASE_NERSC_MODELS_DIR": str(settings.nersc_models_dir),
+        }
+        if settings.tiled_access_tags:
+            env["EMBLASE_TILED_ACCESS_TAGS"] = settings.tiled_access_tags
         if extra_env:
-            for k, v in extra_env.items():
-                extra_lines += f"_os.environ.setdefault({k!r}, {v!r})\n"
-        return (
-            "# --- inject job parameters and load secrets from ~/.emblase_secrets ---\n"
-            "import os as _os\n"
-            + extra_lines
-            + f"_secrets_path = _os.path.expanduser({resolved!r})\n"
-            "if _os.path.exists(_secrets_path):\n"
-            "    with open(_secrets_path) as _fh:\n"
-            "        for _line in _fh:\n"
-            "            _line = _line.strip()\n"
-            "            if _line and not _line.startswith('#') and '=' in _line:\n"
-            "                _k, _, _v = _line.partition('=')\n"
-            '                _v = _v.strip("\'\\"")\n'
-            "                _os.environ.setdefault(_k.strip(), _v)\n"
-            "del _secrets_path\n"
-            "# --- end secrets loader ---\n\n"
-        )
+            env.update(extra_env)
+        lines = ["# --- emblase job environment ---", "import os as _os"]
+        for k, v in env.items():
+            if v:
+                lines.append(f"_os.environ.setdefault({k!r}, {v!r})")
+        lines.append("# --- end emblase job environment ---\n")
+        return "\n".join(lines) + "\n"
 
     def _job_paths(self, slug: str) -> tuple[str, str, str]:
         """Return (script_path, log_path, script_dir) for a timestamped job slug."""
@@ -658,7 +590,7 @@ class NERSCBackend(ComputeBackend):
         job_name: str,
     ) -> str:
         """Upload *py_script*, submit the job, record metadata, and return the job ID."""
-        preamble = self._dotenv_loader_preamble(extra_env={"JOB_DIR": script_dir})
+        preamble = self._secrets_preamble(extra_env={"JOB_DIR": script_dir})
         await self.client.upload_script(preamble + py_script, script_path)
         job_id = await self.client.submit_job(
             executable="python",
