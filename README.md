@@ -263,13 +263,14 @@ Jobs are submitted to Perlmutter via the [IRI Superfacility API](https://api.iri
 
 1. `NERSCBackend` renders the Python inference script locally (same template
    used by Orion).
-2. The script is uploaded to `/pscratch` via
-   `POST /filesystem/upload/scratch` before the job is submitted.
-3. The job runs `python <script_path>` inside the container.  All secrets
-   (`EMBLASE_TILED_*`, `EMBLASE_MLFLOW_*`) and `JOB_DIR` are injected via
-   the IRI `environment` field — confirmed working on Perlmutter.
-4. When `--output` (Tiled) is set, embeddings are written directly to Tiled
-   — no files land on `/pscratch`.  When omitted, `output.npy` is saved to
+2. All secrets (`EMBLASE_TILED_*`, `EMBLASE_MLFLOW_*`) and `JOB_DIR` are
+   baked into a short Python preamble prepended to the script at submit time.
+3. The script is uploaded to `/pscratch` via `POST /filesystem/upload/scratch`
+   and immediately `chmod 400` (owner read-only).
+4. The job runs `python <script_path>` inside the podman-hpc container with
+   `/pscratch` bind-mounted at the same path.
+5. When `--output` (Tiled) is set, embeddings are written directly to Tiled —
+   no files land on `/pscratch`. When omitted, `output.npy` is saved to
    `JOB_DIR` and can be retrieved via `GET /filesystem/download/scratch`.
 
 ```bash
@@ -287,12 +288,21 @@ python scripts/submit_nersc.py status <job_id>
 # cancel
 python scripts/submit_nersc.py cancel <job_id>
 
-# list available Perlmutter resources
-python scripts/submit_nersc.py resources
-
 # tail job output log (path printed at submission time)
 python scripts/submit_nersc.py logs <job_id> \
     --log-file /pscratch/sd/d/<user>/emblase/jobs/scripts/<ts>_<model>/job.out
+
+# list available Perlmutter resources
+python scripts/submit_nersc.py resources
+
+# browse /pscratch (scratch is the default resource)
+python scripts/submit_nersc.py ls /pscratch/sd/d/<user>
+
+# browse $HOME on Perlmutter
+python scripts/submit_nersc.py ls /global/u2/<i>/<user> --resource homes
+
+# read a remote file
+python scripts/submit_nersc.py cat /pscratch/sd/d/<user>/somefile
 ```
 
 ### Perlmutter queues (`EMBLASE_NERSC_QUEUE`)
@@ -322,17 +332,13 @@ EMBLASE_NERSC_ACCOUNT=m3792_g   # not m3792
 
 - The Shifter container image (`ghcr.io/genematx/emblase:latest`) includes
   all `[compute]` dependencies: torch, transformers, mlflow, sklearn, etc.
-- `/pscratch` is mounted into the container automatically.  `/global/cfs` is
-  excluded — it is not reliably available on GPU nodes.
+- `/pscratch` is the only volume mounted into the container. Two mounts are
+  not supported by podman-hpc on Perlmutter (produces `invalid reference
+  format`), so scripts and model weights both live on `/pscratch`.
 - The inference script is uploaded fresh at submission time via the IRI
   filesystem API; no container rebuild is needed when the script changes.
-
-**Approaches tried and rejected:**
-
-- **`pre_launch` heredoc** — silently ignored for podman container jobs; the
-  script was never written before the container started.
-- **`bash -c "<cmd>"`** — the IRI API passes each argument as a separate token
-  to `podman run`, so `-c` is intercepted by podman as `--cpu-shares`.
+- Secrets are baked into the script preamble at submit time and never written
+  to a separate file. The script is `chmod 400` immediately after upload.
 
 ---
 
@@ -364,7 +370,7 @@ values.
 | `EMBLASE_ORION_API_KEY` | Orion REST API key |
 | `EMBLASE_MLFLOW_TRACKING_URI` | MLflow tracking server URI |
 | `EMBLASE_MLFLOW_API_KEY` | MLflow API key |
-| `EMBLASE_MODEL_CACHE_DIR` | Local cache for downloaded MLflow model weights |
+| `EMBLASE_ORION_MODELS_DIR` | Path to model weights on Orion NFS (default `<repo>/models`) |
 | `EMBLASE_NERSC_API_TOKEN` | IRI Superfacility API bearer token (Globus `iri_api` scope) |
 | `EMBLASE_NERSC_RESOURCE_ID` | Perlmutter resource ID (default `perlmutter`) |
 | `EMBLASE_NERSC_ACCOUNT` | NERSC project account; use `_g` suffix for GPU (e.g. `m3792_g`) |
@@ -380,7 +386,7 @@ values.
 ## Development
 
 ```bash
-pixi run python -m pytest tests/ -x -q   # 182 tests, no GPU or live connections required
+pixi run python -m pytest tests/ -x -q   # 188 tests, no GPU or live connections required
 ```
 
 ---
