@@ -90,7 +90,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "--output",
         required=True,
         metavar="TILED_PATH",
-        help="Tiled path of the results container (run output at OUTPUT/<run_key>).",
+        help="Tiled --output path passed to each streaming job.  If the path is an existing "
+             "LatentSpaceEmbedding it is appended to; if it doesn't exist an LSE is created "
+             "there; if it exists but is not an LSE a new LSE named "
+             "{run_key}_stream_{timestamp} is created inside it.",
     )
     p.add_argument(
         "--backend",

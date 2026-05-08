@@ -205,7 +205,10 @@ def _add_model_args(p: argparse.ArgumentParser) -> None:
         "--output",
         default="",
         metavar="TILED_PATH",
-        help="Tiled path for the output LatentSpaceEmbedding container.",
+        help="Tiled path for output.  If the path is an existing LatentSpaceEmbedding "
+             "it is appended to; if it doesn't exist an LSE is created there; if it "
+             "exists but is not an LSE a new LSE named {run_key}_{mode}_{timestamp} "
+             "is created inside it.",
     )
     p.add_argument("--no-wait", action="store_true", help="Return immediately after submission.")
 

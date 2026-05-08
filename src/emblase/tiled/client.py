@@ -1,3 +1,4 @@
+import datetime
 import time
 from typing import Any, Callable, Literal, Optional, Sequence
 
@@ -202,6 +203,53 @@ def _infer_param_specs(params: dict[str, list]) -> dict[str, "ParamSpec"]:
     return specs
 
 
+def resolve_output_path(client, path: str, run_key: str = "", mode: str = "batch") -> str:
+    """Resolve ``path`` to a concrete LSE container path.
+
+    Three cases:
+
+    1. ``path`` does not exist → use it as-is (``write_output`` will create it).
+    2. ``path`` exists and **is** a ``LatentSpaceEmbedding`` → append to it; return ``path``.
+    3. ``path`` exists and is **not** a ``LatentSpaceEmbedding`` → treat as parent; create a
+       unique child name ``{run_key}_{mode}_{ts}`` and return ``{path}/{child}``.
+
+    Parameters
+    ----------
+    client:
+        Tiled root client.
+    path:
+        The value of ``--output`` from the CLI.
+    run_key:
+        The Bluesky run UID/key (used to build the child name in case 3).
+    mode:
+        ``"batch"`` or ``"stream"`` — included in the child name in case 3.
+    """
+    parts = [s for s in path.rstrip("/").split("/") if s]
+    if not parts:
+        return path
+
+    key = parts[-1]
+    parent_path = "/".join(parts[:-1])
+
+    try:
+        parent = client[parent_path] if parent_path else client
+        node = parent[key]
+    except KeyError:
+        # Path doesn't exist → create it there (case 1)
+        return path
+
+    if isinstance(node, LatentSpaceEmbedding):
+        # Case 2: existing LSE → append in-place
+        return path
+
+    # Case 3: exists but not an LSE → treat as parent
+    ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    prefix = run_key or ts  # fall back to pure timestamp if no run_key
+    child = f"{prefix}_{mode}_{ts}"
+    resolved = path.rstrip("/") + "/" + child
+    return resolved
+
+
 _embedding_container_cache: dict[tuple, "LatentSpaceEmbedding"] = {}
 
 
@@ -221,6 +269,8 @@ def write_output(
     embeddings: np.ndarray,
     images: Optional[list[np.ndarray]] = None,
     *,
+    run_key: str = "",
+    mode: str = "batch",
     source_entries: Optional[Sequence[TiledEntry]] = None,
     thumb_fn: Optional[Callable[[np.ndarray], np.ndarray]] = None,
     thumb_mode: str = "default",
@@ -237,19 +287,31 @@ def write_output(
 ) -> None:
     """Write embeddings into a LatentSpaceEmbedding container at ``path``.
 
-    Creates the container if it does not exist.
+    The ``path`` argument is resolved according to these rules:
+
+    * **Path does not exist** → create a new LSE container there.
+    * **Path exists and is an LSE** → append to it.
+    * **Path exists and is not an LSE** → treat it as a parent container; create a new
+      LSE child named ``{run_key}_{mode}_{timestamp}`` inside it.
 
     Parameters
     ----------
     client:
         An already-initialised tiled client pointing at the catalog root.
     path:
-        Slash-separated path to the target LatentSpaceEmbedding container.
+        Slash-separated path passed via ``--output``.  May point to an existing LSE,
+        a future LSE location, or a parent container.
     embeddings:
         Shape ``(N, D)`` float32 array of embedding vectors.
     images:
         List of N 2-D float32 numpy arrays used to generate thumbnails.
         If ``None``, zero arrays are stored.
+    run_key:
+        Bluesky run UID / key.  Used to build the child container name when ``path``
+        points to a non-LSE parent container.
+    mode:
+        ``"batch"`` or ``"stream"``.  Included in the child container name when
+        ``path`` points to a non-LSE parent container.
     source_entries:
         Original tiled entries used as input — stored as provenance in the
         ``_index`` table. Length must equal ``len(embeddings)`` if provided.
@@ -286,6 +348,11 @@ def write_output(
     access_tags:
         Tiled access tags applied to every node written.
     """
+    # ------------------------------------------------------------------
+    # Resolve path: append / create-in-place / create-as-child
+    # ------------------------------------------------------------------
+    path = resolve_output_path(client, path, run_key=run_key, mode=mode)
+
     n = len(embeddings)
     d = embedding_dim or embeddings.shape[1]
 
@@ -361,6 +428,7 @@ def write_output(
         params=params,
         access_tags=access_tags,
     )
+    return path
 
 
 NOTES_MAX_LEN = 1024

@@ -164,7 +164,7 @@ class InputsWatcher:
             self._seen_runs.add(run_key)
 
         run_path = _tiled_path(self.inputs_node) + f"/{run_key}"
-        output_path = f"{self.output_root}/{run_key}"
+        output_path = self.output_root
         logger.info("New run: %s  →  submitting streaming job", run_key)
 
         coro = self._submit(run_path, output_path)
