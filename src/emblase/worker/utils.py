@@ -23,8 +23,7 @@ def _mlflow_env() -> dict[str, str | None]:
 
 def _cache_root() -> Path:
     return Path(
-        os.environ.get("EMBLASE_MODEL_CACHE_DIR", "")
-        or Path.home() / ".cache" / "emblase" / "models"
+        os.environ.get("EMBLASE_MODELS_DIR", "") or Path.home() / ".cache" / "emblase" / "models"
     )
 
 

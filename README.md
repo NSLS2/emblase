@@ -257,9 +257,20 @@ ssh orion-staging.nsls2.bnl.gov "squeue -u <your-username>"
 ## NERSC job management
 
 Jobs are submitted to Perlmutter via the [IRI Superfacility API](https://api.iri.nersc.gov/docs)
-— no SSH required.  The inference script is uploaded to ``/pscratch`` via the
-IRI filesystem API before the job is submitted, then run as
-``python <script_path>`` inside the container.
+— no SSH required.
+
+### How it works
+
+1. `NERSCBackend` renders the Python inference script locally (same template
+   used by Orion).
+2. The script is uploaded to `/pscratch` via
+   `POST /filesystem/upload/scratch` before the job is submitted.
+3. The job runs `python <script_path>` inside the container.  All secrets
+   (`EMBLASE_TILED_*`, `EMBLASE_MLFLOW_*`) and `JOB_DIR` are injected via
+   the IRI `environment` field — confirmed working on Perlmutter.
+4. When `--output` (Tiled) is set, embeddings are written directly to Tiled
+   — no files land on `/pscratch`.  When omitted, `output.npy` is saved to
+   `JOB_DIR` and can be retrieved via `GET /filesystem/download/scratch`.
 
 ```bash
 # submit batch inference
@@ -279,7 +290,7 @@ python scripts/submit_nersc.py cancel <job_id>
 # list available Perlmutter resources
 python scripts/submit_nersc.py resources
 
-# tail job output log (pass path printed at submission time)
+# tail job output log (path printed at submission time)
 python scripts/submit_nersc.py logs <job_id> \
     --log-file /pscratch/sd/d/<user>/emblase/jobs/scripts/<ts>_<model>/job.out
 ```
@@ -296,9 +307,8 @@ Valid values on Perlmutter:
 | `regular` | `gpu_ss11` | `gpu_regular` | Standard allocation queue |
 | *(empty)* | `gpu_ss11` | `gpu_debug` | Scheduler default (same as `debug`) |
 
-> **Note:** values like `gpu_shared`, `gpu_ss11`, `gpu_debug` are QOS names and
-> will be rejected by the IRI API with a 400 error.  Use the partition names
-> above.
+> **Note:** `gpu_shared`, `gpu_ss11`, `gpu_debug` etc. are QOS names — the IRI
+> API expects partition names (left column above) and returns 400 for QOS names.
 
 ### NERSC account suffix
 
@@ -308,23 +318,21 @@ GPU jobs on Perlmutter must bill against the `_g`-suffixed project code:
 EMBLASE_NERSC_ACCOUNT=m3792_g   # not m3792
 ```
 
-### Container volume mounts
+### Container and script delivery
 
-`/pscratch` is mounted into the Shifter container automatically by
-`NERSCBackend`.  `/global/cfs` is intentionally excluded — it is not
-guaranteed to be available on GPU nodes and causes job startup failures.
+- The Shifter container image (`ghcr.io/genematx/emblase:latest`) includes
+  all `[compute]` dependencies: torch, transformers, mlflow, sklearn, etc.
+- `/pscratch` is mounted into the container automatically.  `/global/cfs` is
+  excluded — it is not reliably available on GPU nodes.
+- The inference script is uploaded fresh at submission time via the IRI
+  filesystem API; no container rebuild is needed when the script changes.
 
-The Python inference script is uploaded to ``/pscratch`` via the IRI
-filesystem API (``POST /filesystem/upload/scratch``) before the job is
-submitted, then run as ``python <script_path>`` inside the container.
+**Approaches tried and rejected:**
 
-Earlier approaches that were tried and rejected:
-
-- **`pre_launch` heredoc** — silently ignored for podman container jobs on
-  Perlmutter; the script was never written.
+- **`pre_launch` heredoc** — silently ignored for podman container jobs; the
+  script was never written before the container started.
 - **`bash -c "<cmd>"`** — the IRI API passes each argument as a separate token
-  to `podman run`, so `-c` is intercepted by podman as `--cpu-shares` before
-  reaching bash.
+  to `podman run`, so `-c` is intercepted by podman as `--cpu-shares`.
 
 ---
 
@@ -372,7 +380,7 @@ values.
 ## Development
 
 ```bash
-pixi run python -m pytest tests/ -x -q   # 122 tests, no GPU or live connections required
+pixi run python -m pytest tests/ -x -q   # 182 tests, no GPU or live connections required
 ```
 
 ---

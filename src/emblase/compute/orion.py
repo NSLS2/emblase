@@ -407,7 +407,7 @@ class OrionBackend(ComputeBackend):
     ) -> None:
         self.client = client or OrionClient()
         self.working_dir = working_dir or settings.orion_working_dir
-        self.models_dir = models_dir or settings.orion_models_dir
+        self.models_dir = models_dir or str(settings.models_dir)
         self.project_dir = project_dir or settings.orion_project_dir
         self.home = home or settings.orion_home
         self.account = account or settings.orion_account
@@ -498,8 +498,8 @@ class OrionBackend(ComputeBackend):
             env.append(f"EMBLASE_MLFLOW_TRACKING_URI={settings.mlflow_tracking_uri}")
             if settings.mlflow_api_key:
                 env.append(f"EMBLASE_MLFLOW_API_KEY={settings.mlflow_api_key}")
-            if settings.model_cache_dir:
-                env.append(f"EMBLASE_MODEL_CACHE_DIR={settings.model_cache_dir}")
+        if settings.models_dir:
+            env.append(f"EMBLASE_MODELS_DIR={settings.models_dir}")
         return env
 
     async def _submit_job(
@@ -509,7 +509,6 @@ class OrionBackend(ComputeBackend):
         output: str,
         *,
         require_tiled: bool,
-        mem: str = "16G",
     ) -> str:
         """Submit *script* to Orion, store metadata, return string job_id."""
         job_id = await self.client.submit_job(
@@ -633,7 +632,7 @@ class OrionBackend(ComputeBackend):
             tiled_input=True,
             mem=mem,
         )
-        return await self._submit_job(script, model_name, output, require_tiled=True, mem=mem)
+        return await self._submit_job(script, model_name, output, require_tiled=True)
 
     async def status(self, job_id: str) -> JobStatus:
         info = await self.client.get_job(int(job_id))

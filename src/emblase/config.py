@@ -6,7 +6,12 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     """Application settings, loaded from environment / .env file."""
 
-    # Paths
+    # Single models directory — used for both manually uploaded local models and
+    # the MLflow artifact cache.  Set EMBLASE_MODELS_DIR to an absolute writable
+    # path on the compute node.
+    # On Orion: /nsls2/users/<user>/code/emblase/models  (persistent NFS)
+    # On NERSC: /pscratch/sd/<i>/<user>/emblase/models   (Lustre, 30-day purge)
+    # Local default: <repo>/models
     models_dir: Path = Path(__file__).resolve().parent.parent.parent / "models"
 
     # Tiled
@@ -27,10 +32,6 @@ class Settings(BaseSettings):
     mlflow_api_key: str = ""
     # MLflow experiment name used when logging runs during push
     mlflow_experiment: str = "emblase-models"
-    # Local directory where MLflow model artifacts are cached, keyed by name+version.
-    # On Orion this should be a persistent path (e.g. /nsls2/users/<user>/.cache/emblase/models).
-    # Falls back to ~/.cache/emblase/models if unset.
-    model_cache_dir: str = ""
 
     # Orion compute
     orion_api_url: str = "https://orion-api-staging.nsls2.bnl.gov"
@@ -38,7 +39,6 @@ class Settings(BaseSettings):
     orion_cluster: str = "orion"
     orion_project_dir: str = ""  # e.g. /nsls2/users/<user>/code/emblase
     orion_working_dir: str = ""  # e.g. /nsls2/users/<user>/code/emblase/jobs
-    orion_models_dir: str = ""  # e.g. /nsls2/users/<user>/code/emblase/models
     orion_home: str = ""  # e.g. /nsls2/users/<user>
     orion_account: str = "staff"
     orion_path: str = (
@@ -55,7 +55,6 @@ class Settings(BaseSettings):
     nersc_api_token: str = ""
     nersc_resource_id: str = "perlmutter"
     nersc_working_dir: str = ""
-    nersc_models_dir: str = ""
     nersc_account: str = ""
     nersc_container_image: str = "ghcr.io/genematx/emblase:latest"
     nersc_time_limit: str = "00:30:00"
@@ -65,6 +64,14 @@ class Settings(BaseSettings):
     # "debug"  → gpu_ss11 / gpu_debug QOS — fast, but capped at 30 min.
     # ""       → let the scheduler pick (lands on gpu_debug by default).
     nersc_queue: str = "shared"
+    # Absolute path to the secrets file on the NERSC compute node (inside the container).
+    # This file holds Tiled/MLflow credentials read by inference scripts at startup.
+    # Create it once via:
+    #   python scripts/submit_nersc.py secrets --path /global/u2/<i>/<user>/.emblase_secrets
+    # $HOME (/global/u2/...) is bind-mounted read-only inside podman-hpc containers.
+    # The preamble uses os.path.expanduser(), so both absolute paths and ~ are accepted.
+    # Perlmutter home path convention: /global/u2/<first_letter>/<username>
+    nersc_secrets_file: str = "~/.emblase_secrets"
 
     # Compute backend selection: "local", "orion", or "nersc"
     compute_backend: str = "local"

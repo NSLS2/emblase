@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import importlib.util
 import logging
-import os
 import sys
 from pathlib import Path
 
@@ -75,9 +74,7 @@ def _load_from_mlflow(model_name: str, **kwargs) -> torch.nn.Module:
     api_key = kwargs.get("mlflow_api_key")
     requested_version = kwargs.get("mlflow_version")
 
-    cache_root = kwargs.get("cache_dir") or Path(
-        os.environ.get("EMBLASE_MODEL_CACHE_DIR") or Path.home() / ".cache" / "emblase" / "models"
-    )
+    cache_root = kwargs.get("cache_dir") or settings.models_dir
 
     # Cache-first: if no specific version is requested, scan the local cache
     # for existing versions and use the highest one — no MLflow network call.
