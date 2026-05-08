@@ -259,6 +259,31 @@ class NERSCClient:
         resp.raise_for_status()
         await self._poll_task(resp.json()["task_id"])
 
+    async def download_file(
+        self,
+        remote_path: str,
+        filesystem_resource_id: str = "scratch",
+    ) -> bytes:
+        """Download a small file (≤ 5 MB) from *remote_path* and return its bytes.
+
+        Uses ``GET /filesystem/download/{resource_id}?path=<path>``.
+        The response follows the same task-polling pattern as upload.
+        """
+        client = await self._ensure_client()
+        resp = await client.get(
+            f"{self.base_url}/filesystem/download/{filesystem_resource_id}",
+            params={"path": remote_path},
+        )
+        resp.raise_for_status()
+        task_id = resp.json()["task_id"]
+        result = await self._poll_task(task_id)
+        # The API returns the file content base64-encoded under "file" or raw under "content"
+        import base64 as _b64
+        if "file" in result:
+            return _b64.b64decode(result["file"])
+        raw = result.get("content") or result.get("output") or ""
+        return raw.encode() if isinstance(raw, str) else raw
+
     # ------------------------------------------------------------------
     # Job submission / management
     # ------------------------------------------------------------------
@@ -424,11 +449,13 @@ class NERSCBackend(ComputeBackend):
             return int(parts[0])
         return h * 3600 + m * 60 + s
 
-    def _build_environment(self, *, require_tiled: bool = False) -> dict[str, str]:
+    def _build_environment(self, *, require_tiled: bool = False, job_dir: str = "") -> dict[str, str]:
         """Build the environment variable dict for a NERSC job."""
         if require_tiled and not settings.tiled_server_uri:
             raise ValueError("EMBLASE_TILED_SERVER_URI is not set — required for this job type.")
         env: dict[str, str] = {}
+        if job_dir:
+            env["JOB_DIR"] = job_dir
         if settings.tiled_server_uri:
             env["EMBLASE_TILED_SERVER_URI"] = settings.tiled_server_uri
             if settings.tiled_api_key:
@@ -503,8 +530,12 @@ class NERSCBackend(ComputeBackend):
         ts = int(time.time() * 1000)
         script_path = f"{self.working_dir}/scripts/{ts}_{model_name}/inference.py"
         log_path = f"{self.working_dir}/scripts/{ts}_{model_name}/job.out"
+        script_dir = script_path.rsplit("/", 1)[0]
         await self.client.upload_script(py_script, script_path)
-        environment = self._build_environment(require_tiled=bool(run_path or inputs or output))
+        environment = self._build_environment(
+            require_tiled=bool(run_path or inputs or output),
+            job_dir=script_dir,
+        )
         job_id = await self.client.submit_job(
             executable="python",
             arguments=[script_path],
@@ -575,8 +606,9 @@ class NERSCBackend(ComputeBackend):
         ts = int(time.time() * 1000)
         script_path = f"{self.working_dir}/scripts/{ts}_stream-{model_name}/inference.py"
         log_path = f"{self.working_dir}/scripts/{ts}_stream-{model_name}/job.out"
+        script_dir = script_path.rsplit("/", 1)[0]
         await self.client.upload_script(py_script, script_path)
-        environment = self._build_environment(require_tiled=True)
+        environment = self._build_environment(require_tiled=True, job_dir=script_dir)
         effective_limit = time_limit or "02:00:00"
         job_id = await self.client.submit_job(
             executable="python",
@@ -624,14 +656,31 @@ class NERSCBackend(ComputeBackend):
             return JobResult(job_id=job_id, status=st)
 
         if meta.get("output"):
+            # Results written to Tiled — nothing to download
             return JobResult(job_id=job_id, status=st)
+
+        # No Tiled output → try to download output.npy from the job dir on /pscratch
+        script_path = meta.get("script_path", "")
+        if script_path and st == JobStatus.completed:
+            job_dir = script_path.rsplit("/", 1)[0]
+            output_path = f"{job_dir}/output.npy"
+            try:
+                data = await self.client.download_file(output_path)
+                import io as _io
+                import numpy as _np
+                arr = _np.load(_io.BytesIO(data))
+                return JobResult(job_id=job_id, status=JobStatus.completed, output_data=arr)
+            except Exception as exc:
+                return JobResult(
+                    job_id=job_id,
+                    status=JobStatus.completed,
+                    error=f"Job completed but output.npy download failed: {exc}",
+                )
 
         return JobResult(
             job_id=job_id,
             status=st,
-            error="No local output path available — results written to Tiled or PSCRATCH"
-            if st == JobStatus.completed
-            else None,
+            error=None,
         )
 
     async def wait(
