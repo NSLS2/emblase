@@ -63,9 +63,14 @@ class Settings(BaseSettings):
     nersc_time_limit: str = "00:30:00"
     nersc_constraint: str = ""  # empty = no constraint, let Perlmutter pick any GPU node
     # Queue/partition for job submission.
-    # "shared" → shared_gpu_ss11 / gpu_shared QOS — fastest for single-GPU jobs.
-    # "debug"  → gpu_ss11 / gpu_debug QOS — fast, but capped at 30 min.
-    # ""       → let the scheduler pick (lands on gpu_debug by default).
+    # "shared"         → shared_gpu_ss11 / gpu_shared QOS — best for single-GPU jobs.
+    # "debug"          → gpu_ss11 / gpu_debug QOS — fast dispatch, ≤ 30 min cap.
+    # ""               → let the scheduler pick (lands on gpu_debug by default).
+    # "premium"        → gpu_ss11 / gpu_premium QOS — faster turn-around, higher cost;
+    #                    requires EMBLASE_NERSC_ACCOUNT=amsc006_g.
+    # "express_amsc_g" → real-time GPU access via 32 reserved AMSC nodes; requires
+    #                    EMBLASE_NERSC_ACCOUNT=amsc006_g.  Avoid >4 nodes or >2 h/job.
+    # "express_amsc"   → same pool, CPU nodes; requires EMBLASE_NERSC_ACCOUNT=amsc006.
     nersc_queue: str = "shared"
 
     # Compute backend selection: "local", "orion", or "nersc"

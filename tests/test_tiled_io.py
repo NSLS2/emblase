@@ -304,7 +304,6 @@ def test_write_output_passes_access_tags_to_append(mock_lse_cls, mock_create):
     call = container.append.call_args
     assert call.kwargs["access_tags"] == ["nsls2"]
 
-
     call = container.append.call_args
     assert call.kwargs["access_tags"] == ["nsls2"]
 
@@ -330,7 +329,6 @@ def _make_root_with(key: str, node) -> MagicMock:
 
 def test_resolve_output_path_nonexistent_returns_path_unchanged():
     """If the path doesn't exist, return it as-is so write_output creates it."""
-    from unittest.mock import create_autospec
 
     root = MagicMock()
     root.__getitem__ = MagicMock(side_effect=KeyError)
@@ -366,7 +364,7 @@ def test_resolve_output_path_non_lse_parent_creates_child():
     result = resolve_output_path(root, "catalog/results", run_key="abc123", mode="batch")
     assert result.startswith("catalog/results/abc123_batch_")
     # child name format: {run_key}_{mode}_{ts}
-    child = result[len("catalog/results/"):]
+    child = result[len("catalog/results/") :]
     parts = child.split("_")
     assert parts[0] == "abc123"
     assert parts[1] == "batch"
@@ -396,7 +394,7 @@ def test_resolve_output_path_no_run_key_falls_back_to_timestamp():
 
     result = resolve_output_path(root, "results", run_key="", mode="batch")
     # prefix is timestamp (YYYYMMDDTHHMMSSz) when run_key is empty
-    child = result[len("results/"):]
+    child = result[len("results/") :]
     assert "_batch_" in child
 
 

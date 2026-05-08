@@ -97,15 +97,25 @@ Perlmutter queues:
     The ``queue_name`` field in the IRI JobSpec maps to Slurm partition names
     (not QOS names — QOS names cause a 400 error).  Valid values:
 
-    ============  ====================  ============  ============================
-    queue_name    Slurm partition       Slurm QOS     Notes
-    ============  ====================  ============  ============================
-    ``"shared"``  ``shared_gpu_ss11``   gpu_shared    **Best for single-GPU jobs**
-                                                      — shares nodes, lowest wait
-    ``"debug"``   ``gpu_ss11``          gpu_debug     Fast dispatch, ≤ 30 min cap
-    ``""``        ``gpu_ss11``          gpu_debug     Scheduler default (= debug)
-    ``"regular"`` ``gpu_ss11``          gpu_regular   Standard, longer queue
-    ============  ====================  ============  ============================
+    ==================  ====================  ================  ================================
+    queue_name          Slurm partition       Slurm QOS         Notes
+    ==================  ====================  ================  ================================
+    ``"shared"``        ``shared_gpu_ss11``   gpu_shared        **Best for single-GPU jobs**
+                                                                — shares nodes, lowest wait
+    ``"debug"``         ``gpu_ss11``          gpu_debug         Fast dispatch, ≤ 30 min cap
+    ``""``              ``gpu_ss11``          gpu_debug         Scheduler default (= debug)
+    ``"regular"``       ``gpu_ss11``          gpu_regular       Standard, longer queue
+    ``"premium"``       ``gpu_ss11``          gpu_premium       Faster turn-around, higher cost;
+                                                                requires account ``amsc006_g``.
+    ``"express_amsc_g"``  ``gpu_ss11``        express_amsc_g    Real-time GPU access; pool of 32
+                                                                reserved nodes shared by AMSC
+                                                                projects.  Requires account
+                                                                ``amsc006_g``.  Avoid >4 nodes
+                                                                or >2 h per job.
+    ``"express_amsc"``  ``cpu_ss11``          express_amsc      Same reserved pool, CPU nodes.
+                                                                Requires account ``amsc006``.
+                                                                Same usage limits apply.
+    ==================  ====================  ================  ================================
 
     Default: ``"shared"`` (set via ``EMBLASE_NERSC_QUEUE``).
 

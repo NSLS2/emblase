@@ -135,9 +135,9 @@ def _build_parser() -> argparse.ArgumentParser:
             metavar="TILED_PATH",
             default="",
             help="Tiled path for output.  If the path is an existing LatentSpaceEmbedding "
-                 "it is appended to; if it doesn't exist an LSE is created there; if it "
-                 "exists but is not an LSE a new LSE named {run_key}_{mode}_{timestamp} "
-                 "is created inside it.",
+            "it is appended to; if it doesn't exist an LSE is created there; if it "
+            "exists but is not an LSE a new LSE named {run_key}_{mode}_{timestamp} "
+            "is created inside it.",
         )
         p.add_argument(
             "--thumb-mode",
@@ -335,6 +335,7 @@ async def _logs(task_id: str, lines: int = 100) -> None:
         info = await client.get_job(task_id)
         meta = (info.raw or {}).get("status", {}).get("meta_data", {})
         import json as _json
+
         try:
             admin = _json.loads(meta.get("admincomment", "{}"))
             path = admin.get("stdoutPath", "")
