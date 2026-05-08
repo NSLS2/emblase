@@ -331,16 +331,43 @@ async def _resources() -> None:
 
 
 async def _logs(task_id: str, lines: int = 100) -> None:
+    import json as _json
+
     async with NERSCClient() as client:
         info = await client.get_job(task_id)
         meta = (info.raw or {}).get("status", {}).get("meta_data", {})
-        import json as _json
 
+        # --- strategy 1: admincomment.stdoutPath (populated once job starts) ---
+        path = ""
         try:
-            admin = _json.loads(meta.get("admincomment", "{}"))
+            admin = _json.loads(meta.get("admincomment", "{}") or "{}")
             path = admin.get("stdoutPath", "")
         except (ValueError, TypeError):
-            path = ""
+            pass
+
+        # --- strategy 2: ls {workdir}/scripts/ and match by job-name slug ---
+        if not path:
+            workdir = meta.get("workdir", "")
+            jobname = meta.get("jobname", "")  # e.g. "emblase-stream-bnl-nsls2-smi-vit"
+            slug = jobname.removeprefix("emblase-")  # e.g. "stream-bnl-nsls2-smi-vit"
+            if workdir and slug:
+                scripts_dir = workdir.rstrip("/") + "/scripts"
+                try:
+                    entries = await client.ls(scripts_dir, filesystem_resource_id="scratch")
+                    # entries have full paths in "name"; find dirs ending with _{slug}
+                    matches = [
+                        e["name"]
+                        for e in entries
+                        if e.get("name", "").rstrip("/").endswith(f"_{slug}")
+                        and e.get("type") == "d"
+                    ]
+                    if matches:
+                        # pick the newest (highest timestamp prefix = lexicographically last)
+                        matches.sort(reverse=True)
+                        path = f"{matches[0]}/job.out"
+                except Exception as exc:
+                    logging.debug("ls fallback failed: %s", exc)
+
         if not path:
             print(
                 "Could not determine log path from job metadata.\n"
