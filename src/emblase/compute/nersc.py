@@ -26,19 +26,24 @@ API:
     the job payload via a ``pre_launch`` heredoc.
 
 Job delivery:
-    The rendered Python inference script is base64-encoded and passed inline as
-    a ``bash -c`` command so that no filesystem writes are needed before the job
-    starts::
+    The rendered Python inference script is uploaded to ``/pscratch`` via the
+    IRI filesystem API before the job is submitted::
 
-        executable: bash
-        arguments:  ["-c", "mkdir -p <dir> && echo <b64> | base64 -d > <script> && python <script>"]
+        POST /filesystem/mkdir/scratch  {"path": "<script_dir>", "parent": true}
+        POST /filesystem/upload/scratch?path=<script_path>   (multipart, ≤ 5 MB)
 
-    This replaces the earlier ``pre_launch`` heredoc approach, which ran on the
-    IRI API / login node rather than the compute node and therefore could not
-    write to ``/pscratch`` (which is only mounted on compute nodes).
+    The job then runs::
 
-    Writing to a file before running (rather than piping directly into python)
-    preserves readable tracebacks that include the script filename.
+        executable: python
+        arguments:  [<script_path>]
+
+    Earlier approaches that were tried and rejected:
+
+    * ``pre_launch`` heredoc — silently ignored for Shifter/podman container
+      jobs on Perlmutter; no output appears before the container starts.
+    * ``bash -c "<cmd>"`` in arguments — the IRI API passes each argument as a
+      separate token to ``podman run``, so ``-c`` is intercepted by podman as
+      ``--cpu-shares`` before reaching bash.
 
 Perlmutter queues:
     The ``queue_name`` field in the IRI JobSpec maps to Slurm partition names.
@@ -222,6 +227,37 @@ class NERSCClient:
         task_id = resp.json()["task_id"]
         result = await self._poll_task(task_id)
         return result.get("output", "") or result.get("content", "") or str(result)
+
+    async def upload_script(
+        self,
+        content: str,
+        remote_path: str,
+        filesystem_resource_id: str = "scratch",
+    ) -> None:
+        """Upload *content* as a text file to *remote_path* on the remote filesystem.
+
+        Creates all parent directories first (``mkdir -p`` semantics).
+        Uses the IRI filesystem API (max 5 MB per file).
+        """
+        client = await self._ensure_client()
+        remote_dir = remote_path.rsplit("/", 1)[0]
+
+        # mkdir -p
+        resp = await client.post(
+            f"{self.base_url}/filesystem/mkdir/{filesystem_resource_id}",
+            json={"path": remote_dir, "parent": True},
+        )
+        resp.raise_for_status()
+        await self._poll_task(resp.json()["task_id"])
+
+        # upload
+        resp = await client.post(
+            f"{self.base_url}/filesystem/upload/{filesystem_resource_id}",
+            params={"path": remote_path},
+            files={"file": (remote_path.rsplit("/", 1)[-1], content.encode(), "text/plain")},
+        )
+        resp.raise_for_status()
+        await self._poll_task(resp.json()["task_id"])
 
     # ------------------------------------------------------------------
     # Job submission / management
@@ -411,21 +447,16 @@ class NERSCBackend(ComputeBackend):
     def _script_inline_args(self, py_script: str, script_path: str) -> tuple[str, list[str]]:
         """Return (executable, arguments) that run *py_script* on the compute node.
 
-        The Python source is base64-encoded and decoded inline via bash so that
-        no filesystem writes are needed before the container starts.  This avoids
-        the ``pre_launch`` approach, which ran on the login/API node rather than
-        the compute node and therefore could not write to ``/pscratch``.
+        .. deprecated::
+            Use :meth:`NERSCClient.upload_script` to write the script to
+            ``/pscratch`` before job submission, then pass
+            ``executable="python", arguments=[script_path]``.  This method is
+            retained only as a fallback.
 
-        The generated command is::
-
-            bash -c "
-                mkdir -p <script_dir>
-                echo <b64> | base64 -d > <script_path>
-                python <script_path>
-            "
-
-        Writing to a file (rather than piping directly into python) preserves
-        readable tracebacks that include the script filename.
+        The IRI API splits ``executable`` on spaces and passes each token as a
+        separate ``podman run`` argument, so ``bash -c <cmd>`` cannot be used
+        (``-c`` is intercepted by podman as ``--cpu-shares``).  The filesystem
+        upload approach avoids this entirely.
         """
         encoded = base64.b64encode(py_script.encode()).decode()
         script_dir = script_path.rsplit("/", 1)[0]
@@ -473,11 +504,11 @@ class NERSCBackend(ComputeBackend):
         ts = int(time.time() * 1000)
         script_path = f"{self.working_dir}/scripts/{ts}_{model_name}/inference.py"
         log_path = f"{self.working_dir}/scripts/{ts}_{model_name}/job.out"
-        executable, arguments = self._script_inline_args(py_script, script_path)
+        await self.client.upload_script(py_script, script_path)
         environment = self._build_environment(require_tiled=bool(run_path or inputs or output))
         job_id = await self.client.submit_job(
-            executable=executable,
-            arguments=arguments,
+            executable="python",
+            arguments=[script_path],
             working_dir=self.working_dir,
             container_image=self.container_image,
             name=f"emblase-{model_name}",
@@ -545,12 +576,12 @@ class NERSCBackend(ComputeBackend):
         ts = int(time.time() * 1000)
         script_path = f"{self.working_dir}/scripts/{ts}_stream-{model_name}/inference.py"
         log_path = f"{self.working_dir}/scripts/{ts}_stream-{model_name}/job.out"
-        executable, arguments = self._script_inline_args(py_script, script_path)
+        await self.client.upload_script(py_script, script_path)
         environment = self._build_environment(require_tiled=True)
         effective_limit = time_limit or "02:00:00"
         job_id = await self.client.submit_job(
-            executable=executable,
-            arguments=arguments,
+            executable="python",
+            arguments=[script_path],
             working_dir=self.working_dir,
             container_image=self.container_image,
             name=f"emblase-stream-{model_name}",

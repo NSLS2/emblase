@@ -313,10 +313,17 @@ EMBLASE_NERSC_ACCOUNT=m3792_g   # not m3792
 `NERSCBackend`.  `/global/cfs` is intentionally excluded — it is not
 guaranteed to be available on GPU nodes and causes job startup failures.
 
-The Python inference script is base64-encoded and passed as an inline
-`bash -c` command (no `pre_launch` or filesystem API calls needed).  The
-`pre_launch` field was dropped because it executes on the IRI API / login
-node, not the compute node, so it cannot write to `/pscratch`.
+The Python inference script is uploaded to ``/pscratch`` via the IRI
+filesystem API (``POST /filesystem/upload/scratch``) before the job is
+submitted, then run as ``python <script_path>`` inside the container.
+
+Earlier approaches that were tried and rejected:
+
+- **`pre_launch` heredoc** — silently ignored for podman container jobs on
+  Perlmutter; the script was never written.
+- **`bash -c "<cmd>"`** — the IRI API passes each argument as a separate token
+  to `podman run`, so `-c` is intercepted by podman as `--cpu-shares` before
+  reaching bash.
 
 ---
 

@@ -76,7 +76,11 @@ class _FakeClient:
         self._job_id = job_id
         self._state = state
         self.submitted: dict = {}
+        self.uploaded: dict = {}  # remote_path -> content
         self.resource_id = "perlmutter"
+
+    async def upload_script(self, content: str, remote_path: str, filesystem_resource_id: str = "scratch") -> None:
+        self.uploaded[remote_path] = content
 
     async def submit_job(
         self,
@@ -145,15 +149,13 @@ async def test_nersc_backend_submit_calls_client():
     assert job_id == "99"
     assert "99" in backend._jobs
     assert backend._jobs["99"]["model_name"] == "vit"
-    # Script is base64-encoded inline in the bash -c argument — no pre_launch
-    assert client.submitted["executable"] == "bash"
-    bash_cmd = client.submitted["arguments"][-1]  # bash -c "<cmd>"
-    assert "base64" in bash_cmd
-    assert "inference.py" in bash_cmd
+    # Script uploaded to scratch before job submission
     script_path = backend._jobs["99"]["script_path"]
-    script_dir = script_path.rsplit("/", 1)[0]
-    assert f"mkdir -p {script_dir}" in bash_cmd
-    assert "pre_launch" not in client.submitted or client.submitted["pre_launch"] == ""
+    assert script_path in client.uploaded
+    assert "vit" in client.uploaded[script_path]
+    # Job submitted with plain python executable pointing at the uploaded script
+    assert client.submitted["executable"] == "python"
+    assert client.submitted["arguments"] == [script_path]
     assert client.submitted["container_image"] == "ghcr.io/nsls2/emblase:latest"
     assert client.submitted["account"] == "nslsii"
 
@@ -365,13 +367,10 @@ async def test_nersc_backend_submit_streaming_injects_tiled_env(monkeypatch):
     env = client.submitted["environment"]
     assert env.get("EMBLASE_TILED_SERVER_URI") == "https://tiled.example.com"
     assert env.get("EMBLASE_TILED_API_KEY") == "secret"
-    # Script is base64-encoded inline — must contain streaming-specific markers when decoded
-    bash_cmd = client.submitted["arguments"][-1]
-    import base64, re
-    b64 = re.search(r'echo ([A-Za-z0-9+/=]+) \| base64', bash_cmd)
-    assert b64, "base64 payload not found in bash -c command"
-    decoded = base64.b64decode(b64.group(1)).decode()
-    assert "_on_new_image_data" in decoded or "streaming" in decoded
+    # Script uploaded to scratch — must contain streaming-specific markers
+    script_path = list(client.uploaded.keys())[0]
+    uploaded_src = client.uploaded[script_path]
+    assert "_on_new_image_data" in uploaded_src or "streaming" in uploaded_src
 
 
 @pytest.mark.asyncio
@@ -602,7 +601,7 @@ async def test_nersc_client_missing_token_raises(monkeypatch):
 
 
 def test_script_inline_args_base64_roundtrip():
-    """_script_inline_args must produce a bash -c command that encodes the script correctly."""
+    """_script_inline_args (deprecated fallback) must still produce a correct base64 command."""
     import base64, re
     from emblase.compute.nersc import NERSCBackend, NERSCClient
 
@@ -619,14 +618,27 @@ def test_script_inline_args_base64_roundtrip():
     assert executable == "bash"
     assert args[0] == "-c"
     cmd = args[1]
-
-    # must create the full subdirectory
     assert "mkdir -p /pscratch/jobs/scripts/1234567890_mymodel" in cmd
-    # must decode via base64 into the correct script path
-    assert f"base64 -d > {script_path}" in cmd
-    # base64 payload must decode back to the original script
     b64 = re.search(r'echo ([A-Za-z0-9+/=]+) \| base64', cmd)
-    assert b64, "base64 payload not found in command"
+    assert b64
     assert base64.b64decode(b64.group(1)).decode() == "print('hi')"
-    # no pre_launch / heredoc remnants
-    assert "__EMBLASE_EOF__" not in cmd
+
+
+@pytest.mark.asyncio
+async def test_nersc_backend_submit_uploads_script():
+    """submit() must upload the script to scratch before submitting the job."""
+    client = _FakeClient(job_id="55")
+    backend = NERSCBackend(
+        client=client,
+        working_dir="/pscratch/jobs",
+        models_dir="/pscratch/models",
+        account="proj_g",
+        container_image="img:latest",
+    )
+    job_id = await backend.submit(model_name="vit")
+
+    script_path = backend._jobs["55"]["script_path"]
+    assert script_path in client.uploaded, "script not uploaded before job submission"
+    assert "vit" in client.uploaded[script_path]
+    assert client.submitted["executable"] == "python"
+    assert client.submitted["arguments"] == [script_path]
