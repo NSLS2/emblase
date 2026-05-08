@@ -50,7 +50,7 @@ logging.basicConfig(
 log = logging.getLogger("emblase.streaming_inference")
 
 # --- job parameters (substituted at render time) ---
-job_dir         = os.environ["JOB_DIR"]
+job_dir         = os.environ.get("JOB_DIR", os.path.dirname(os.path.abspath(__file__)))
 model_name      = "{model_name}"
 batch_size      = {batch_size}
 run_path        = "{run_path}"

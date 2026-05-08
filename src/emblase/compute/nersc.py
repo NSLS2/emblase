@@ -503,10 +503,8 @@ class NERSCBackend(ComputeBackend):
         ts = int(time.time() * 1000)
         script_path = f"{self.working_dir}/scripts/{ts}_{model_name}/inference.py"
         log_path = f"{self.working_dir}/scripts/{ts}_{model_name}/job.out"
-        script_dir = script_path.rsplit("/", 1)[0]
         await self.client.upload_script(py_script, script_path)
         environment = self._build_environment(require_tiled=bool(run_path or inputs or output))
-        environment["JOB_DIR"] = script_dir
         job_id = await self.client.submit_job(
             executable="python",
             arguments=[script_path],
@@ -577,10 +575,8 @@ class NERSCBackend(ComputeBackend):
         ts = int(time.time() * 1000)
         script_path = f"{self.working_dir}/scripts/{ts}_stream-{model_name}/inference.py"
         log_path = f"{self.working_dir}/scripts/{ts}_stream-{model_name}/job.out"
-        script_dir = script_path.rsplit("/", 1)[0]
         await self.client.upload_script(py_script, script_path)
         environment = self._build_environment(require_tiled=True)
-        environment["JOB_DIR"] = script_dir
         effective_limit = time_limit or "02:00:00"
         job_id = await self.client.submit_job(
             executable="python",
