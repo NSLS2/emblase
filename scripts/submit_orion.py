@@ -8,6 +8,16 @@ status  Poll the state of a job by ID.
 cancel  Cancel a running job.
 logs    Stream the Slurm log of a job live from the Orion login node via SSH.
 
+Default input/output paths are read from the environment:
+
+    EMBLASE_TILED_INPUT_CONTAINER  — base path for --run (e.g. proposal/pi/project/_inputs)
+    EMBLASE_TILED_OUTPUT_CONTAINER — base path for --output (e.g. proposal/pi/project/results)
+
+Path resolution rules (same as pathlib):
+  --run run_1086139       → <EMBLASE_TILED_INPUT_CONTAINER>/run_1086139
+  --run ./run_1086139     → same as above
+  --run /full/tiled/path  → full/tiled/path  (absolute, overrides env var)
+
 Typical workflow
 ----------------
 Push commits, pull on Orion, then submit::
@@ -19,8 +29,7 @@ Push commits, pull on Orion, then submit::
 
     python scripts/submit_orion.py infer \\
         --model      bnl-nsls2-smi-vit \\
-        --run        smi/sandbox/confab26_demo/inputs/run_1086139 \\
-        --output     smi/sandbox/confab26_demo/results/run_1086139_vit \\
+        --run        run_1086139 \\
         --batch-size 1 \\
         --thumb-mode logroi \\
         --param      temperature:primary/LinkamThermal_temperature_current:float:°C \\
@@ -55,6 +64,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from emblase.compute import OrionBackend, OrionClient, parse_param_specs  # noqa: E402
 from emblase.compute.base import JobStatus  # noqa: E402
 from emblase.compute.orion import _SLURM_STATE_MAP  # noqa: E402
+from emblase.config import resolve_tiled_path, settings  # noqa: E402
 
 CONNECTIVITY_SCRIPT = """\
 #!/bin/bash
@@ -77,14 +87,17 @@ async def _infer(args: argparse.Namespace) -> None:
     backend = OrionBackend()
     param_specs = parse_param_specs(args.params)
 
+    run = resolve_tiled_path(args.run, settings.tiled_input_container)
+    output = resolve_tiled_path(args.output, settings.tiled_output_container)
+
     print("Backend         : ORION")
     print(
         f"Model           : {args.model}  ver={args.mlflow_version or 'latest'}  batch_size={args.batch_size}  thumb_mode={args.thumb_mode}"
     )
-    if args.run:
-        print(f"Run             : {args.run}")
-    print(f"Output          : {args.output or '(none)'}")
-    if args.run:
+    if run:
+        print(f"Run             : {run}")
+    print(f"Output          : {output or '(none)'}")
+    if run:
         print(f"Image key       : {args.image_key}")
     if param_specs:
         print(f"Params          : {list(param_specs)}")
@@ -98,7 +111,7 @@ async def _infer(args: argparse.Namespace) -> None:
     submit_kwargs: dict = dict(
         model_name=args.model,
         batch_size=args.batch_size,
-        output=args.output or "",
+        output=output,
         thumb_mode=args.thumb_mode,
         mlflow_version=args.mlflow_version,
         param_specs=param_specs,
@@ -106,8 +119,8 @@ async def _infer(args: argparse.Namespace) -> None:
         classifier=args.classifier,
     )
 
-    if args.run:
-        submit_kwargs.update(run_path=args.run, image_key=args.image_key)
+    if run:
+        submit_kwargs.update(run_path=run, image_key=args.image_key)
     elif args.npy_file:
         images = np.load(args.npy_file)
         print(f"Loaded {args.npy_file}: {images.shape}  dtype={images.dtype}")
@@ -222,10 +235,11 @@ def _add_model_args(p: argparse.ArgumentParser) -> None:
         "--output",
         default="",
         metavar="TILED_PATH",
-        help="Tiled path for output.  If the path is an existing LatentSpaceEmbedding "
-        "it is appended to; if it doesn't exist an LSE is created there; if it "
-        "exists but is not an LSE a new LSE named {run_key}_{mode}_{timestamp} "
-        "is created inside it.",
+        help="Tiled path for output.  Absolute (starts with '/') overrides "
+        "EMBLASE_TILED_OUTPUT_CONTAINER; relative (or no prefix) is appended to it. "
+        "If the resolved path is an existing LatentSpaceEmbedding it is appended to; "
+        "if it doesn't exist an LSE is created there; if it exists but is not an LSE "
+        "a new LSE named {run_key}_{mode}_{timestamp} is created inside it.",
     )
     p.add_argument("--no-wait", action="store_true", help="Return immediately after submission.")
 
@@ -269,7 +283,9 @@ def main() -> None:
         "--run",
         default="",
         metavar="TILED_PATH",
-        help="BlueskyRun Tiled path; frames read from run/<image_key>.",
+        help="BlueskyRun Tiled path; frames read from run/<image_key>.  "
+        "Absolute (starts with '/') overrides EMBLASE_TILED_INPUT_CONTAINER; "
+        "relative (or no prefix) is appended to it.",
     )
     src.add_argument(
         "--npy-file",

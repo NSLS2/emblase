@@ -24,27 +24,25 @@ from emblase.compute.orion import (
 # ---------------------------------------------------------------------------
 
 
-def test_nersc_state_map_covers_iri_states():
+@pytest.mark.parametrize(
+    "state, expected",
+    [
+        ("completed", JobStatus.completed),
+        ("failed", JobStatus.failed),
+        ("canceled", JobStatus.failed),
+        ("new", JobStatus.pending),
+        ("queued", JobStatus.pending),
+        ("held", JobStatus.pending),
+        ("active", JobStatus.running),
+    ],
+)
+def test_nersc_state_map(state, expected):
+    assert _NERSC_STATE_MAP[state] == expected
+
+
+def test_nersc_state_map_covers_all_iri_states():
     for state in ("new", "queued", "held", "active", "completed", "failed", "canceled"):
         assert state in _NERSC_STATE_MAP, f"Missing state: {state}"
-
-
-def test_nersc_state_map_completed():
-    assert _NERSC_STATE_MAP["completed"] == JobStatus.completed
-
-
-def test_nersc_state_map_failed_variants():
-    for state in ("failed", "canceled"):
-        assert _NERSC_STATE_MAP[state] == JobStatus.failed
-
-
-def test_nersc_state_map_pending_variants():
-    for state in ("new", "queued", "held"):
-        assert _NERSC_STATE_MAP[state] == JobStatus.pending
-
-
-def test_nersc_state_map_running():
-    assert _NERSC_STATE_MAP["active"] == JobStatus.running
 
 
 # ---------------------------------------------------------------------------
@@ -139,7 +137,8 @@ class _FakeClient:
 
 
 @pytest.mark.asyncio
-async def test_nersc_backend_submit_calls_client():
+async def test_nersc_backend_submit():
+    """submit() uploads the script then submits the job; metadata is stored."""
     client = _FakeClient(job_id="99")
     backend = NERSCBackend(
         client=client,
@@ -180,7 +179,6 @@ async def test_nersc_backend_submit_injects_tiled_env(monkeypatch):
     )
     await backend.submit(model_name="vit", output="results/scan1")
 
-    # Secrets are baked directly into the preamble — verify key vars are present
     script_path = backend._jobs[client._job_id]["script_path"]
     script_src = client.uploaded[script_path]
     assert "EMBLASE_TILED_API_KEY" in script_src
@@ -189,7 +187,8 @@ async def test_nersc_backend_submit_injects_tiled_env(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_nersc_backend_submit_injects_access_tags(monkeypatch):
+async def test_nersc_backend_submit_injects_access_tags_value(monkeypatch):
+    """Preamble must bake in the actual access-tag value, not just omit a .env file."""
     import emblase.compute.nersc as nersc_module
 
     monkeypatch.setattr(nersc_module.settings, "tiled_server_uri", "https://tiled.example.com")
@@ -204,7 +203,10 @@ async def test_nersc_backend_submit_injects_access_tags(monkeypatch):
     )
     await backend.submit(model_name="vit", output="results/scan1")
 
-    # No per-job .env should appear on /pscratch
+    script_path = backend._jobs[client._job_id]["script_path"]
+    script_src = client.uploaded[script_path]
+    assert "EMBLASE_TILED_ACCESS_TAGS" in script_src
+    assert "smi_sandbox,staff" in script_src
     assert not any(k.endswith("/.env") for k in client.uploaded)
 
 
@@ -240,9 +242,7 @@ async def test_nersc_backend_submit_injects_mlflow_env(monkeypatch):
     )
     await backend.submit(model_name="vit")
 
-    # No secrets written to /pscratch as a separate .env file
     assert not any(k.endswith("/.env") for k in client.uploaded)
-    # Preamble should bake in the MLflow credentials directly
     script_path = backend._jobs[client._job_id]["script_path"]
     assert "EMBLASE_MLFLOW_TRACKING_URI" in client.uploaded[script_path]
     assert "EMBLASE_MLFLOW_API_KEY" in client.uploaded[script_path]
@@ -305,10 +305,7 @@ async def test_nersc_client_submit_job_default_volume_mounts():
     real_client = NERSCClient.__new__(NERSCClient)
     real_client.resource_id = "perlmutter"
     real_client.base_url = "https://api.iri.nersc.gov/api/v1"
-    real_client._ensure_client = _CapturingClient()._ensure_client
-    real_client._http = _CapturingClient()
 
-    # Patch _ensure_client to return our capturing mock
     async def _fake_ensure():
         return _CapturingClient()
 
@@ -372,9 +369,7 @@ async def test_nersc_backend_submit_streaming_injects_tiled_env(monkeypatch):
     )
 
     assert job_id == "77"
-    # No per-job .env file should be uploaded to /pscratch
     assert not any(k.endswith("/.env") for k in client.uploaded)
-    # Preamble in the uploaded script must bake in credentials directly
     script_path = backend._jobs["77"]["script_path"]
     uploaded_src = client.uploaded[script_path]
     assert "EMBLASE_TILED_SERVER_URI" in uploaded_src
@@ -394,60 +389,48 @@ async def test_nersc_backend_submit_streaming_uses_extended_time_limit(monkeypat
         client=client,
         working_dir="/pscratch/jobs",
         models_dir="/pscratch/models",
-        time_limit="00:30:00",  # default batch limit; streaming should use 2h
+        time_limit="00:30:00",
     )
     await backend.submit_streaming(
         run_path="smi/sandbox/run_xyz",
         output="smi/sandbox/results/run_xyz",
         model_name="vit",
     )
-    # Streaming defaults to 2-hour limit → 7200 seconds
     assert client.submitted["time_limit_s"] == 7200
 
 
 # ---------------------------------------------------------------------------
-# NERSCBackend.status / wait / result / cancel
+# NERSCBackend.status / wait / result / cancel  (parametrized)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_nersc_backend_status_completed():
-    client = _FakeClient(job_id="1", state="completed")
+@pytest.mark.parametrize(
+    "iri_state, expected",
+    [
+        ("completed", JobStatus.completed),
+        ("failed", JobStatus.failed),
+        ("queued", JobStatus.pending),
+    ],
+)
+async def test_nersc_backend_status(iri_state, expected):
+    client = _FakeClient(job_id="1", state=iri_state)
     backend = NERSCBackend(client=client, working_dir="/j", models_dir="/m")
-    st = await backend.status("1")
-    assert st == JobStatus.completed
+    assert await backend.status("1") == expected
 
 
 @pytest.mark.asyncio
-async def test_nersc_backend_status_failed():
-    client = _FakeClient(job_id="2", state="failed")
+@pytest.mark.parametrize(
+    "iri_state, expected",
+    [
+        ("completed", JobStatus.completed),
+        ("failed", JobStatus.failed),
+    ],
+)
+async def test_nersc_backend_wait(iri_state, expected):
+    client = _FakeClient(job_id="4", state=iri_state)
     backend = NERSCBackend(client=client, working_dir="/j", models_dir="/m")
-    st = await backend.status("2")
-    assert st == JobStatus.failed
-
-
-@pytest.mark.asyncio
-async def test_nersc_backend_status_pending():
-    client = _FakeClient(job_id="3", state="queued")
-    backend = NERSCBackend(client=client, working_dir="/j", models_dir="/m")
-    st = await backend.status("3")
-    assert st == JobStatus.pending
-
-
-@pytest.mark.asyncio
-async def test_nersc_backend_wait_returns_completed():
-    client = _FakeClient(job_id="4", state="completed")
-    backend = NERSCBackend(client=client, working_dir="/j", models_dir="/m")
-    st = await backend.wait("4", poll_interval=0, timeout=10)
-    assert st == JobStatus.completed
-
-
-@pytest.mark.asyncio
-async def test_nersc_backend_wait_returns_failed():
-    client = _FakeClient(job_id="5", state="failed")
-    backend = NERSCBackend(client=client, working_dir="/j", models_dir="/m")
-    st = await backend.wait("5", poll_interval=0, timeout=10)
-    assert st == JobStatus.failed
+    assert await backend.wait("4", poll_interval=0, timeout=10) == expected
 
 
 @pytest.mark.asyncio
@@ -473,7 +456,7 @@ async def test_nersc_backend_result_with_output(monkeypatch):
 
     result = await backend.result("7")
     assert result.status == JobStatus.completed
-    assert result.output_data is None  # Tiled output — nothing to return locally
+    assert result.output_data is None
 
 
 @pytest.mark.asyncio
@@ -608,26 +591,6 @@ async def test_nersc_client_missing_token_raises(monkeypatch):
         await client._ensure_client()
 
 
-@pytest.mark.asyncio
-async def test_nersc_backend_submit_uploads_script():
-    """submit() must upload the script to scratch before submitting the job."""
-    client = _FakeClient(job_id="55")
-    backend = NERSCBackend(
-        client=client,
-        working_dir="/pscratch/jobs",
-        models_dir="/pscratch/models",
-        account="proj_g",
-        container_image="img:latest",
-    )
-    await backend.submit(model_name="vit")
-
-    script_path = backend._jobs["55"]["script_path"]
-    assert script_path in client.uploaded, "script not uploaded before job submission"
-    assert "vit" in client.uploaded[script_path]
-    assert client.submitted["executable"] == "python"
-    assert client.submitted["arguments"] == [script_path]
-
-
 # ---------------------------------------------------------------------------
 # _secrets_preamble
 # ---------------------------------------------------------------------------
@@ -651,7 +614,6 @@ def test_secrets_preamble_bakes_in_credentials(monkeypatch):
     )
     preamble = backend._secrets_preamble(extra_env={"JOB_DIR": "/pscratch/jobs/123"})
 
-    # Must be valid Python
     compile(preamble, "<preamble>", "exec")
 
     assert "EMBLASE_MLFLOW_TRACKING_URI" in preamble
@@ -747,7 +709,6 @@ async def test_nersc_backend_submit_script_has_secrets_preamble(monkeypatch):
     assert "emblase job environment" in script_src, "secrets preamble header not found"
     assert "EMBLASE_TILED_SERVER_URI" in script_src
     assert "https://t.test" in script_src
-    # No file-reading logic — credentials are baked in directly
     assert "open(" not in script_src.split("# --- end")[0]
     assert "os.remove" not in script_src
 
@@ -810,9 +771,7 @@ async def test_upload_script_chmods_400():
     post_calls = [c for c in calls if c["method"] == "POST"]
     put_calls = [c for c in calls if c["method"] == "PUT"]
 
-    # mkdir + upload
     assert any("upload" in c["url"] for c in post_calls)
-    # chmod 400
     assert len(put_calls) >= 1
     assert "filesystem/chmod/scratch" in put_calls[0]["url"]
     assert put_calls[0]["json"]["mode"] == "400"
@@ -856,3 +815,42 @@ def test_model_cache_uses_nersc_models_dir(monkeypatch, tmp_path):
         _models.load_model("bnl-nsls2-smi-vit")
 
     assert captured["cache_root"] == str(tmp_path / "nersc_models")
+
+
+# ---------------------------------------------------------------------------
+# submit_streaming — param_specs serialised into rendered script
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_nersc_backend_submit_streaming_param_specs_in_script(monkeypatch):
+    """param_specs must survive JSON serialisation into the streaming script."""
+    import emblase.compute.nersc as nersc_module
+
+    monkeypatch.setattr(nersc_module.settings, "tiled_server_uri", "https://tiled.example.com")
+    monkeypatch.setattr(nersc_module.settings, "tiled_api_key", "")
+    monkeypatch.setattr(nersc_module.settings, "tiled_access_tags", "")
+
+    from emblase.compute import parse_param_specs
+
+    param_specs = parse_param_specs(
+        ["temperature:primary/LinkamThermal_temperature_current:float:°C"]
+    )
+
+    client = _FakeClient(job_id="99")
+    backend = NERSCBackend(
+        client=client,
+        working_dir="/pscratch/jobs",
+        models_dir="/pscratch/models",
+    )
+    await backend.submit_streaming(
+        run_path="smi/sandbox/run_xyz",
+        output="smi/sandbox/results/run_xyz",
+        model_name="vit",
+        param_specs=param_specs,
+    )
+
+    script_path = backend._jobs["99"]["script_path"]
+    script_src = client.uploaded[script_path]
+    assert "temperature" in script_src
+    assert "LinkamThermal_temperature_current" in script_src
