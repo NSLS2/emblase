@@ -4,9 +4,9 @@ export default defineConfig({
   build: {
     lib: {
       entry: "src/index.tsx",
-      name: "TiledEmbeddingView",
+      name: "EmblaseViewer",
       formats: ["iife"],
-      fileName: () => "embedding-view.js",
+      fileName: () => "viewer.js",
     },
     rollupOptions: {
       external: ["react", "react-dom"],

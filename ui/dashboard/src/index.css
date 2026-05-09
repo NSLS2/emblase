@@ -1,0 +1,47 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    font-family: 'Inter', system-ui, sans-serif;
+  }
+
+  body {
+    @apply bg-gray-950 text-gray-100 antialiased;
+  }
+
+  * {
+    @apply border-gray-800;
+  }
+}
+
+@layer utilities {
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: #374151 transparent;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 6px;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background-color: #374151;
+    border-radius: 3px;
+  }
+}
+
+/* ANSI color approximations for log viewer */
+.log-reset  { color: #d1d5db; }
+.log-red    { color: #f87171; }
+.log-green  { color: #4ade80; }
+.log-yellow { color: #facc15; }
+.log-blue   { color: #60a5fa; }
+.log-magenta{ color: #e879f9; }
+.log-cyan   { color: #22d3ee; }
+.log-white  { color: #f9fafb; }

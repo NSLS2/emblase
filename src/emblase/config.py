@@ -98,6 +98,20 @@ class Settings(BaseSettings):
     # Compute backend selection: "local", "orion", or "nersc"
     compute_backend: str = "local"
 
+    # Chat app (AmSC LLM assistant)
+    chatapp_url: str = "https://chat-amsc-dev.nsls2.bnl.gov"
+    chatapp_token: str = ""
+    chatapp_model: str = "openai/gpt-oss-20b"
+
+    # Dashboard web server
+    # Port the dashboard FastAPI server listens on (default 8765).
+    # Override with EMBLASE_DASHBOARD_PORT in your .env file.
+    dashboard_port: int = 8765
+    # If true, the dashboard server auto-opens a browser tab on startup.
+    dashboard_open_browser: bool = True
+    # MLflow model name prefix shown in the Models section.
+    mlflow_model_prefix: str = "bnl-nsls2-"
+
     model_config = {
         "env_file": Path(__file__).resolve().parent.parent.parent / ".env",
         "env_prefix": "EMBLASE_",
