@@ -9,10 +9,10 @@ import httpx
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
-from ...compute.base import JobStatus
 from ...config import settings
 
 router = APIRouter(prefix="/compute", tags=["compute"])
+
 
 # ── Orion ─────────────────────────────────────────────────────────────────────
 
@@ -33,7 +33,6 @@ async def orion_status() -> dict[str, Any]:
     if not settings.orion_api_key:
         return {"status": "unconfigured", "message": "EMBLASE_ORION_API_KEY not set"}
     try:
-        # Attempt to list jobs to verify connectivity
         data = await _orion_get(f"/api/v1/compute/{settings.orion_cluster}/jobs")
         jobs = data if isinstance(data, list) else data.get("jobs", [])
         running = [j for j in jobs if j.get("job_state") in ("PENDING", "RUNNING", "CONFIGURING")]
@@ -59,17 +58,25 @@ async def orion_jobs() -> dict[str, Any]:
     try:
         data = await _orion_get(f"/api/v1/compute/{settings.orion_cluster}/jobs")
         jobs = data if isinstance(data, list) else data.get("jobs", [])
-        return {"jobs": jobs[:20]}  # Return last 20
+        return {"jobs": jobs[:20]}
     except Exception as exc:
         return {"jobs": [], "error": str(exc)}
 
 
 @router.get("/orion/jobs/{job_id}/status")
 async def orion_job_status(job_id: str) -> dict[str, Any]:
-    """Get status for a specific Orion job."""
+    """Get status for a specific Orion job — returns structured state/node/stdout."""
     try:
-        data = await _orion_get(f"/api/v1/compute/{settings.orion_cluster}/jobs/{job_id}")
-        return data
+        from ...compute.orion import OrionClient
+
+        async with OrionClient() as client:
+            job = await client.get_job(int(job_id))
+        return {
+            "job_id": job.job_id,
+            "state": job.state,
+            "node": job.node,
+            "stdout": job.stdout,
+        }
     except Exception as exc:
         return {"error": str(exc)}
 
@@ -86,7 +93,7 @@ async def orion_cancel_job(job_id: str) -> dict[str, Any]:
                 f"{settings.orion_api_url.rstrip('/')}/api/v1/compute/{settings.orion_cluster}/jobs/{job_id}"
             )
             resp.raise_for_status()
-            return {"status": "cancelled", "job_id": job_id}
+        return {"status": "cancelled", "job_id": job_id}
     except Exception as exc:
         return {"error": str(exc)}
 
@@ -99,6 +106,86 @@ async def _nersc_client():
     from ...compute.nersc import NERSCClient
 
     return NERSCClient()
+
+
+def _extract_log_path_sync(raw: dict | None) -> str:
+    """Strategy 1 only (sync): parse admincomment JSON → stdoutPath.
+
+    Returns empty string if not found or not yet populated by SLURM.
+    """
+    if not raw:
+        return ""
+    import json as _json
+
+    status_obj = raw.get("status") or {}
+    meta = status_obj.get("meta_data") or {}
+
+    # admincomment is a JSON string populated by SLURM once the job finishes
+    try:
+        admin_raw = meta.get("admincomment", "") or ""
+        if admin_raw:
+            admin = _json.loads(admin_raw)
+            path = admin.get("stdoutPath", "")
+            if path and isinstance(path, str) and path.strip():
+                return path.strip()
+    except (ValueError, TypeError):
+        pass
+
+    # Fallback: simple field candidates
+    for candidate in [
+        status_obj.get("stdoutPath"),
+        status_obj.get("stdout"),
+        raw.get("stdout_path"),
+    ]:
+        if candidate and isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+
+    return ""
+
+
+async def _resolve_log_path(client: Any, raw: dict | None) -> str:
+    """Resolve log path using the same two strategies as scripts/submit_nersc.py.
+
+    Strategy 1: parse admincomment JSON → stdoutPath  (populated after job ends)
+    Strategy 2: ls {workdir}/scripts/ and find the matching timestamped directory
+                (works while the job is still running)
+    """
+    path = _extract_log_path_sync(raw)
+    if path:
+        return path
+
+    if not raw:
+        return ""
+
+    status_obj = raw.get("status") or {}
+    meta = status_obj.get("meta_data") or {}
+    workdir = meta.get("workdir", "")
+    jobname = meta.get("jobname", "")  # e.g. "emblase-bnl-nsls2-smi-vit"
+    slug = jobname.removeprefix("emblase-")  # e.g. "bnl-nsls2-smi-vit"
+
+    if not (workdir and slug):
+        return ""
+
+    scripts_dir = workdir.rstrip("/") + "/scripts"
+    try:
+        entries = await client.ls(scripts_dir, filesystem_resource_id="scratch")
+        matches = [
+            e["name"]
+            for e in entries
+            if e.get("name", "").rstrip("/").endswith(f"_{slug}")
+            and e.get("type") == "d"
+        ]
+        if matches:
+            matches.sort(reverse=True)  # newest first (timestamp prefix)
+            return f"{matches[0]}/job.out"
+    except Exception:
+        pass
+
+    return ""
+
+
+# Keep the old name as an alias for the status endpoint
+_extract_log_path = _extract_log_path_sync
 
 
 @router.get("/nersc/status")
@@ -128,12 +215,17 @@ async def nersc_status() -> dict[str, Any]:
 
 @router.get("/nersc/jobs/{job_id}/status")
 async def nersc_job_status(job_id: str) -> dict[str, Any]:
-    """Get status for a specific NERSC job."""
+    """Get status for a specific NERSC job, including discovered log path."""
     try:
         client = await _nersc_client()
         async with client:
             job = await client.get_job(job_id)
-        return {"job_id": job.job_id, "state": job.state, "raw": job.raw}
+        return {
+            "job_id": job.job_id,
+            "state": job.state,
+            "log_path": _extract_log_path(job.raw),
+            "raw": job.raw,
+        }
     except Exception as exc:
         return {"error": str(exc)}
 
@@ -151,29 +243,44 @@ async def nersc_cancel_job(job_id: str) -> dict[str, Any]:
 
 
 async def _nersc_log_generator(job_id: str, log_path: str, interval: float = 10.0) -> AsyncGenerator[str, None]:
-    """SSE generator that polls NERSC job logs every *interval* seconds."""
+    """SSE generator that polls NERSC job logs every *interval* seconds.
+
+    If *log_path* is empty the generator tries to discover the stdout path using
+    the same two-strategy lookup as scripts/submit_nersc.py:
+      1. admincomment JSON → stdoutPath  (populated after job ends)
+      2. ls {workdir}/scripts/ → find timestamped dir  (works while running)
+    Emits a ``state`` event each cycle so the UI can track job state.
+    """
     client = await _nersc_client()
     last_line_count = 0
+    resolved_path = log_path.strip()
+
+    # IRI terminal states (raw strings returned by the API)
+    _terminal = {"completed", "failed", "canceled"}
+
     while True:
         try:
             async with client:
-                # First get job state
                 job = await client.get_job(job_id)
-                state = job.state
+                state = job.state  # raw IRI string: "active", "completed", etc.
 
-                # Try to get log
-                try:
-                    content = await client.read_file_tail(log_path, lines=200)
-                    lines = content.splitlines()
-                    new_lines = lines[last_line_count:]
-                    last_line_count = len(lines)
-                    for line in new_lines:
-                        yield f"data: {line}\n\n"
-                except Exception as log_exc:
-                    yield f"data: [log not yet available: {log_exc}]\n\n"
+                if not resolved_path:
+                    resolved_path = await _resolve_log_path(client, job.raw)
 
-                # Signal terminal states
-                if state in ("completed", "failed", "canceled"):
+                if resolved_path:
+                    try:
+                        content = await client.read_file_tail(resolved_path, lines=500)
+                        lines = content.splitlines()
+                        new_lines = lines[last_line_count:]
+                        last_line_count = len(lines)
+                        for line in new_lines:
+                            yield f"data: {line}\n\n"
+                    except Exception as log_exc:
+                        yield f"data: [log not yet available: {log_exc}]\n\n"
+                else:
+                    yield f"data: [locating log file… state={state}]\n\n"
+
+                if state in _terminal:
                     yield f"event: job_done\ndata: {state}\n\n"
                     break
                 else:

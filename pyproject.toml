@@ -44,6 +44,19 @@ compute = [
     "pandas>=2.0",
 ]
 
+# emblase[dashboard] — minimal deps for running the monitoring dashboard server.
+# No torch, no mlflow SDK, no heavy ML libraries — all MLflow queries go through
+# the REST API directly via httpx.
+dashboard = [
+    "fastapi>=0.115",
+    "httpx>=0.28.1,<0.29",
+    "numpy>=1.24",
+    "pydantic>=2.0",
+    "pydantic-settings>=2.0",
+    "python-dotenv>=1.0",
+    "uvicorn[standard]>=0.30",
+]
+
 # emblase[all] — full installation (router + compute).
 all = [
     "emblase[compute]",
@@ -79,9 +92,17 @@ emblase = { path = ".", editable = true }
 default = { solve-group = "default" }
 dev = { features = ["dev"], solve-group = "default" }
 compute = { features = ["compute"], solve-group = "compute" }
+dashboard = { features = ["dashboard"], solve-group = "default" }
 
 [tool.pixi.feature.compute.pypi-dependencies]
 emblase = { path = ".", editable = true, extras = ["compute"] }
+
+[tool.pixi.feature.dashboard.pypi-dependencies]
+emblase = { path = ".", editable = true, extras = ["dashboard"] }
+
+[tool.pixi.feature.dashboard.tasks]
+# Run the dashboard server in the lightweight dashboard environment
+dashboard = "python -m emblase.dashboard.server"
 
 [tool.pixi.tasks]
 orion = "python scripts/submit_orion.py"

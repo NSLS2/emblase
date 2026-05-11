@@ -1,13 +1,14 @@
 // Shared types for the EMBLASE Dashboard
 
 export type ServiceStatus = 'online' | 'offline' | 'error' | 'timeout' | 'unconfigured' | 'placeholder' | 'degraded' | 'loading'
+export type Theme = 'dark' | 'light'
 
 export interface TiledStatus {
   status: ServiceStatus
   server_uri?: string
   tiled_version?: string
   python_version?: string
-  api_version?: string
+  api_version?: string | number
   input_container?: string
   output_container?: string
   error?: string
@@ -89,6 +90,16 @@ export interface AppConfig {
   compute_backend: string
 }
 
+export interface JobRecord {
+  job_id: string
+  backend: 'nersc' | 'orion'
+  mode: 'batch' | 'stream'
+  model_name: string
+  submitted_at: number
+  log_path?: string
+  state?: string
+}
+
 export interface JobSubmitResult {
   job_id: string
   backend: string
@@ -101,6 +112,28 @@ export interface ParamSpec {
   source: string
   dtype: string
   units: string
+}
+
+// Instrument (simulate acquisition) state from /api/instrument/status
+export interface InstrumentStatus {
+  status: 'idle' | 'running' | 'done' | 'error'
+  src: string
+  rename: string
+  frames_written: number
+  frames_total: number
+  elapsed: number
+  error: string
+  inputs_container: string
+}
+
+// Watcher state from /api/watcher/status
+export interface WatcherStatus {
+  status: 'idle' | 'running' | 'error'
+  backend: string
+  inputs_path: string
+  jobs_submitted: number
+  error: string
+  inputs_container: string
 }
 
 export interface BatchJobRequest {
@@ -122,19 +155,20 @@ export interface BatchJobRequest {
   orion_account?: string
 }
 
-export interface StreamJobRequest {
+export interface WatcherStartRequest {
+  backend: 'orion' | 'nersc'
   model_name: string
   mlflow_version: string
-  run_path: string
   output_container: string
   batch_size: number
   image_key: string
   thumb_mode: string
-  param_specs: ParamSpec[]
   projector?: string
   classifier?: string
   nersc_queue?: string
   nersc_account?: string
   nersc_time_limit?: string
   nersc_constraint?: string
+  orion_account?: string
+  replay_existing: boolean
 }

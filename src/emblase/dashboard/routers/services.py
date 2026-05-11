@@ -8,6 +8,7 @@ Covers:
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from typing import Any
 
 import httpx
@@ -18,24 +19,46 @@ from ...config import settings
 router = APIRouter(tags=["services"])
 
 
-# ── MLflow ────────────────────────────────────────────────────────────────────
+# ── MLflow helpers ────────────────────────────────────────────────────────────
+
+
+@asynccontextmanager
+async def _mlflow_client(timeout: float = 10.0):
+    """Yield a configured AsyncClient for the MLflow REST API."""
+    headers: dict[str, str] = {}
+    if settings.mlflow_api_key:
+        headers["X-Api-Key"] = settings.mlflow_api_key
+    async with httpx.AsyncClient(
+        base_url=settings.mlflow_tracking_uri.rstrip("/"),
+        headers=headers,
+        timeout=timeout,
+    ) as client:
+        yield client
+
+
+# ── MLflow endpoints ──────────────────────────────────────────────────────────
 
 
 @router.get("/mlflow/status")
 async def mlflow_status() -> dict[str, Any]:
-    """Return MLflow server reachability and basic info."""
+    """Return MLflow server reachability and basic info.
+
+    Uses registered-models/search (a cheap, single-result probe) rather than
+    experiments/list which returns 404 on some MLflow-compatible deployments.
+
+    The MLflow REST API is called directly via httpx — no mlflow SDK needed.
+    This keeps the dashboard environment lightweight and avoids version-pinning
+    the heavy mlflow package just for a status check.
+    """
     if not settings.mlflow_tracking_uri:
         return {"status": "unconfigured", "message": "EMBLASE_MLFLOW_TRACKING_URI not set"}
     try:
-        uri = settings.mlflow_tracking_uri.rstrip("/")
-        headers: dict[str, str] = {}
-        if settings.mlflow_api_key:
-            headers["X-Api-Key"] = settings.mlflow_api_key
-
-        async with httpx.AsyncClient(timeout=10.0, headers=headers) as client:
-            resp = await client.get(f"{uri}/api/2.0/mlflow/experiments/list")
+        async with _mlflow_client() as client:
+            resp = await client.get(
+                "/api/2.0/mlflow/registered-models/search",
+                params={"max_results": 1},
+            )
             resp.raise_for_status()
-
         return {
             "status": "online",
             "tracking_uri": settings.mlflow_tracking_uri,
@@ -43,7 +66,6 @@ async def mlflow_status() -> dict[str, Any]:
             "model_prefix": settings.mlflow_model_prefix,
         }
     except Exception as exc:
-        # Some servers don't expose /experiments/list — still report what we know
         return {
             "status": "error",
             "error": str(exc),
@@ -53,27 +75,56 @@ async def mlflow_status() -> dict[str, Any]:
 
 @router.get("/mlflow/models")
 async def mlflow_models() -> dict[str, Any]:
-    """List registered models with the configured prefix (e.g. 'bnl-nsls2-')."""
+    """List registered models with the configured prefix via MLflow REST API.
+
+    Paginates through registered-models/search until exhausted.  A client-side
+    prefix filter is applied as a fallback for servers that ignore the filter param.
+    """
     if not settings.mlflow_tracking_uri:
         return {"models": [], "error": "EMBLASE_MLFLOW_TRACKING_URI not set"}
     try:
-        import asyncio
+        prefix = settings.mlflow_model_prefix  # e.g. "bnl-nsls2-"
+        models: list[dict[str, Any]] = []
+        page_token: str | None = None
 
-        from ...mlflow_registry import list_models
+        async with _mlflow_client(timeout=15.0) as client:
+            while True:
+                params: dict[str, Any] = {"max_results": 200}
+                if prefix:
+                    params["filter"] = f"name LIKE '{prefix}%'"
+                if page_token:
+                    params["page_token"] = page_token
 
-        loop = asyncio.get_event_loop()
-        model_list = await loop.run_in_executor(None, list_models)
-        prefix = settings.mlflow_model_prefix
-        filtered = [
-            {
-                "name": m.name,
-                "latest_version": m.latest_version,
-                "description": m.description,
-            }
-            for m in model_list
-            if not prefix or m.name.startswith(prefix)
-        ]
-        return {"models": filtered, "total": len(filtered), "prefix_filter": prefix}
+                resp = await client.get(
+                    "/api/2.0/mlflow/registered-models/search",
+                    params=params,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+
+                for m in data.get("registered_models", []):
+                    name: str = m.get("name", "")
+                    # Client-side fallback filter (handles servers that ignore the filter param)
+                    if prefix and not name.startswith(prefix):
+                        continue
+                    latest_versions = m.get("latest_versions", [])
+                    latest = (
+                        max(int(v["version"]) for v in latest_versions)
+                        if latest_versions
+                        else None
+                    )
+                    models.append({
+                        "name": name,
+                        "latest_version": latest,
+                        "description": m.get("description") or None,
+                    })
+
+                page_token = data.get("next_page_token")
+                if not page_token:
+                    break
+
+        models.sort(key=lambda m: m["name"])
+        return {"models": models, "total": len(models), "prefix_filter": prefix}
     except Exception as exc:
         return {"models": [], "error": str(exc)}
 

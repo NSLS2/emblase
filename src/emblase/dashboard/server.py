@@ -25,7 +25,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from ..config import settings
-from .routers import compute, jobs, services, tiled
+from .routers import compute, jobs, services, tiled, instrument, watcher
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +115,8 @@ app.include_router(tiled.router, prefix="/api")
 app.include_router(compute.router, prefix="/api")
 app.include_router(services.router, prefix="/api")
 app.include_router(jobs.router, prefix="/api")
+app.include_router(instrument.router, prefix="/api")
+app.include_router(watcher.router, prefix="/api")
 
 
 @app.get("/api/config")
@@ -163,7 +165,6 @@ if _DIST_DIR.exists():
     app.mount("/", StaticFiles(directory=str(_DIST_DIR), html=True), name="spa")
 
 
-
 # ── Main entry point ──────────────────────────────────────────────────────────
 
 
@@ -180,11 +181,6 @@ def main() -> None:
         _build_ui()
     else:
         logger.info("Dashboard UI is up-to-date — skipping build")
-
-    # Re-mount static files if the build just ran and they weren't mounted at startup
-    if _DIST_DIR.exists() and not any(getattr(r, "name", None) == "spa" for r in app.routes):
-        app.mount("/logos", StaticFiles(directory=str(_LOGOS_DIR)), name="logos")
-        app.mount("/", StaticFiles(directory=str(_DIST_DIR), html=True), name="spa")
 
     logger.info("Starting EMBLASE Dashboard on http://localhost:%d", port)
 

@@ -58,8 +58,6 @@ async def tiled_container_info() -> dict[str, Any]:
         if not path:
             return None
         try:
-            # Use the metadata endpoint for the container
-            encoded = path.replace("/", "%2F")
             data = await _tiled_get(f"/api/v1/metadata/{path}")
             attributes = data.get("data", {}).get("attributes", {})
             return {

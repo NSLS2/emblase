@@ -1,20 +1,16 @@
 import React, { useState, useCallback } from 'react'
-import { Play, X, Plus, Trash2, ChevronDown, ChevronUp, Loader2,
-         XCircle, RotateCcw, Info } from 'lucide-react'
+import { Radio, X, ChevronDown, ChevronUp, Loader2, XCircle, RotateCcw, Info, Plus, Trash2 } from 'lucide-react'
 import { postJSON } from '../../api'
-import type { BatchJobRequest, ParamSpec, MLflowModel, AppConfig, JobSubmitResult, JobRecord } from '../../types'
+import type { WatcherStartRequest, ParamSpec, MLflowModel, AppConfig } from '../../types'
 
-const STORAGE_KEY = 'emblase-job-form'
-
+const STORAGE_KEY = 'emblase-watcher-form'
 const NERSC_QUEUES = [
-  { value: 'shared',         label: 'shared',         desc: 'Shared GPU nodes — best for single-GPU jobs, lowest wait time' },
-  { value: 'debug',          label: 'debug',           desc: 'Fast dispatch, ≤ 30 min cap — ideal for testing' },
-  { value: 'regular',        label: 'regular',         desc: 'Standard GPU partition, longer queue' },
-  { value: 'premium',        label: 'premium',         desc: 'Faster turnaround, higher cost — requires amsc006_g account' },
-  { value: 'express_amsc_g', label: 'express_amsc_g',  desc: '32 reserved AMSC GPU nodes — real-time access, requires amsc006_g' },
-  { value: 'express_amsc',   label: 'express_amsc',    desc: '32 reserved AMSC CPU nodes — requires amsc006 account' },
+  { value: 'shared',         label: 'shared',         desc: 'Shared GPU nodes — best for single-GPU jobs' },
+  { value: 'debug',          label: 'debug',           desc: 'Fast dispatch, ≤ 30 min cap' },
+  { value: 'regular',        label: 'regular',         desc: 'Standard GPU partition' },
+  { value: 'premium',        label: 'premium',         desc: 'Faster turnaround, higher cost' },
+  { value: 'express_amsc_g', label: 'express_amsc_g',  desc: '32 reserved AMSC GPU nodes' },
 ]
-
 const THUMB_MODES = ['logroi', 'default']
 
 type Backend = 'nersc' | 'orion'
@@ -23,7 +19,6 @@ interface Form {
   backend: Backend
   modelName: string
   mlflowVersion: string
-  inputContainer: string   // source data path for batch re-analysis
   outputContainer: string
   batchSize: number
   imageKey: string
@@ -36,14 +31,14 @@ interface Form {
   nerscTimeLimit: string
   nerscConstraint: string
   orionAccount: string
+  replayExisting: boolean
 }
 
-function defaultForm(config: AppConfig | null, backend: Backend): Form {
+function defaultForm(config: AppConfig | null): Form {
   return {
-    backend,
+    backend: 'orion',
     modelName: 'bnl-nsls2-smi-vit',
     mlflowVersion: '',
-    inputContainer: '',
     outputContainer: config?.tiled_output_container || '',
     batchSize: 1,
     imageKey: 'primary/pil900KW_image',
@@ -53,34 +48,38 @@ function defaultForm(config: AppConfig | null, backend: Backend): Form {
     paramSpecs: [],
     nerscQueue: config?.nersc_queue || 'shared',
     nerscAccount: config?.nersc_account || '',
-    nerscTimeLimit: config?.nersc_time_limit || '00:30:00',
+    nerscTimeLimit: config?.nersc_time_limit || '02:00:00',
     nerscConstraint: '',
     orionAccount: config?.orion_account || '',
+    replayExisting: false,
   }
 }
 
-function loadForm(config: AppConfig | null, backend: Backend): Form {
+function loadForm(config: AppConfig | null): Form {
   try {
     const raw = sessionStorage.getItem(STORAGE_KEY)
-    if (raw) return { ...defaultForm(config, backend), ...JSON.parse(raw), backend }
+    if (raw) return { ...defaultForm(config), ...JSON.parse(raw) }
   } catch {}
-  return defaultForm(config, backend)
+  return defaultForm(config)
 }
 
 function saveForm(f: Form) {
   try { sessionStorage.setItem(STORAGE_KEY, JSON.stringify(f)) } catch {}
 }
 
-interface JobSubmitPanelProps {
+interface WatcherPanelProps {
   config: AppConfig | null
   models: MLflowModel[]
   backend: Backend          // pre-selected from the button that was clicked
   onClose: () => void
-  onJobSubmitted: (job: JobRecord) => void
+  onStarted: () => void     // called after successful start
 }
 
-export function JobSubmitPanel({ config, models, backend: initialBackend, onClose, onJobSubmitted }: JobSubmitPanelProps) {
-  const [form, setFormRaw] = useState<Form>(() => loadForm(config, initialBackend))
+export function WatcherPanel({ config, models, backend: initialBackend, onClose, onStarted }: WatcherPanelProps) {
+  const [form, setFormRaw] = useState<Form>(() => {
+    const f = loadForm(config)
+    return { ...f, backend: initialBackend }
+  })
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -91,32 +90,25 @@ export function JobSubmitPanel({ config, models, backend: initialBackend, onClos
 
   const set = <K extends keyof Form>(key: K, val: Form[K]) => setForm(f => ({ ...f, [key]: val }))
 
-  const reset = () => {
-    const fresh = defaultForm(config, initialBackend)
-    setFormRaw(fresh)
-    saveForm(fresh)
-    setError(null)
-  }
+  const reset = () => { const f = defaultForm(config); setFormRaw(f); saveForm(f); setError(null) }
 
   const addParam = () => setForm(f => ({ ...f, paramSpecs: [...f.paramSpecs, { name: '', source: '', dtype: 'float', units: '' }] }))
   const removeParam = (i: number) => setForm(f => ({ ...f, paramSpecs: f.paramSpecs.filter((_, j) => j !== i) }))
   const updateParam = (i: number, key: keyof ParamSpec, val: string) =>
     setForm(f => ({ ...f, paramSpecs: f.paramSpecs.map((s, j) => j === i ? { ...s, [key]: val } : s) }))
 
-  const handleSubmit = async () => {
+  const handleStart = async () => {
     setSubmitting(true)
     setError(null)
     try {
-      const req: BatchJobRequest = {
+      const req: WatcherStartRequest = {
         backend: form.backend,
         model_name: form.modelName,
         mlflow_version: form.mlflowVersion,
-        input_container: form.inputContainer,
         output_container: form.outputContainer,
         batch_size: form.batchSize,
         image_key: form.imageKey,
         thumb_mode: form.thumbMode,
-        param_specs: form.paramSpecs.filter(p => p.name && p.source),
         projector: form.projector || undefined,
         classifier: form.classifier || undefined,
         nersc_queue: form.nerscQueue,
@@ -124,16 +116,10 @@ export function JobSubmitPanel({ config, models, backend: initialBackend, onClos
         nersc_time_limit: form.nerscTimeLimit,
         nersc_constraint: form.nerscConstraint,
         orion_account: form.orionAccount,
+        replay_existing: form.replayExisting,
       }
-      const res = await postJSON<JobSubmitResult>('/jobs/batch', req)
-      onJobSubmitted({
-        job_id: res.job_id,
-        backend: res.backend as 'nersc' | 'orion',
-        mode: 'batch',
-        model_name: form.modelName,
-        submitted_at: res.submitted_at,
-        log_path: res.log_path || undefined,
-      })
+      await postJSON('/watcher/start', req)
+      onStarted()
       onClose()
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err))
@@ -153,10 +139,10 @@ export function JobSubmitPanel({ config, models, backend: initialBackend, onClos
         {/* Header */}
         <div className="sticky top-0 z-10 flex items-center justify-between px-6 py-4 border-b border-theme bg-card/95 backdrop-blur">
           <div className="flex items-center gap-2">
-            <Play className="h-4 w-4 text-indigo-400" />
+            <Radio className="h-4 w-4 text-violet-500" />
             <div>
-              <h2 className="font-semibold text-primary">Submit Batch Job</h2>
-              <p className="text-xs text-secondary">Run inference on an existing dataset on {initialBackend.toUpperCase()}</p>
+              <h2 className="font-semibold text-primary">Live Watch</h2>
+              <p className="text-xs text-secondary">Subscribe to inputs container and auto-submit a streaming job per new run</p>
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -172,7 +158,7 @@ export function JobSubmitPanel({ config, models, backend: initialBackend, onClos
 
         <div className="px-6 py-5 space-y-5">
 
-          {/* Backend selector */}
+          {/* Backend */}
           <div>
             <label className="block text-xs text-secondary mb-1.5">Backend</label>
             <div className="flex rounded-lg border border-theme overflow-hidden text-xs">
@@ -198,9 +184,7 @@ export function JobSubmitPanel({ config, models, backend: initialBackend, onClos
                     {!inferenceModels.find(m => m.name === 'bnl-nsls2-smi-vit') && (
                       <option value="bnl-nsls2-smi-vit">bnl-nsls2-smi-vit (default)</option>
                     )}
-                    {inferenceModels.map(m => (
-                      <option key={m.name} value={m.name}>{m.name} (v{m.latest_version})</option>
-                    ))}
+                    {inferenceModels.map(m => <option key={m.name} value={m.name}>{m.name} (v{m.latest_version})</option>)}
                   </select>
                 ) : (
                   <TInput value={form.modelName} onChange={v => set('modelName', v)} placeholder="bnl-nsls2-smi-vit" />
@@ -214,21 +198,20 @@ export function JobSubmitPanel({ config, models, backend: initialBackend, onClos
 
           <hr className="border-theme" />
 
-          {/* Data */}
-          <Section title="Data (Tiled)">
-            <Field label="Source data path (run or container to re-analyse)">
-              <TInput value={form.inputContainer} onChange={v => set('inputContainer', v)}
-                placeholder="e.g. smi/sandbox/demo/inputs/run_1086139" />
-            </Field>
+          {/* Tiled output */}
+          <Section title="Output (Tiled)">
             <Field label="Output container (where embeddings are written)">
               <TInput value={form.outputContainer} onChange={v => set('outputContainer', v)}
                 placeholder={config?.tiled_output_container || 'e.g. smi/sandbox/demo/output'} />
             </Field>
+            <p className="text-xs text-muted mt-1">
+              Inputs container: <code className="font-mono">{config?.tiled_input_container || 'from EMBLASE_TILED_INPUT_CONTAINER'}</code>
+            </p>
           </Section>
 
           <hr className="border-theme" />
 
-          {/* Inference parameters */}
+          {/* Inference params */}
           <Section title="Inference Parameters">
             <div className="grid grid-cols-3 gap-3">
               <Field label={<>Batch size <Tip text="Frames encoded per GPU call." /></>}>
@@ -246,15 +229,13 @@ export function JobSubmitPanel({ config, models, backend: initialBackend, onClos
             </div>
           </Section>
 
-          {/* Backend parameters */}
+          {/* Backend params */}
           <Section title={`${form.backend.toUpperCase()} Parameters`}>
             {form.backend === 'nersc' ? (
               <div className="grid grid-cols-2 gap-3">
                 <Field label="Queue">
                   <select value={form.nerscQueue} onChange={e => set('nerscQueue', e.target.value)} className="w-full input-base">
-                    {NERSC_QUEUES.map(q => (
-                      <option key={q.value} value={q.value} title={q.desc}>{q.label}</option>
-                    ))}
+                    {NERSC_QUEUES.map(q => <option key={q.value} value={q.value} title={q.desc}>{q.label}</option>)}
                   </select>
                   <p className="text-xs text-muted mt-0.5">{NERSC_QUEUES.find(q => q.value === form.nerscQueue)?.desc}</p>
                 </Field>
@@ -262,7 +243,7 @@ export function JobSubmitPanel({ config, models, backend: initialBackend, onClos
                   <TInput value={form.nerscAccount} onChange={v => set('nerscAccount', v)} placeholder="m3792_g" />
                 </Field>
                 <Field label="Time limit (HH:MM:SS)">
-                  <TInput value={form.nerscTimeLimit} onChange={v => set('nerscTimeLimit', v)} placeholder="00:30:00" />
+                  <TInput value={form.nerscTimeLimit} onChange={v => set('nerscTimeLimit', v)} placeholder="02:00:00" />
                 </Field>
                 <Field label="Constraint (optional)">
                   <TInput value={form.nerscConstraint} onChange={v => set('nerscConstraint', v)} placeholder="gpu" />
@@ -280,12 +261,13 @@ export function JobSubmitPanel({ config, models, backend: initialBackend, onClos
             <button onClick={() => setShowAdvanced(!showAdvanced)}
               className="flex items-center gap-1.5 text-xs text-secondary hover:text-primary transition-colors">
               {showAdvanced ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
-              Advanced — projector, classifier, experimental parameter specs
+              Advanced — projector, classifier, param specs, replay
             </button>
             {showAdvanced && (
               <div className="mt-3 space-y-4">
+                {/* Projector / classifier dropdowns */}
                 <div className="grid grid-cols-2 gap-3">
-                  <Field label={<>Projector <Tip text="UMAP approximator model. None = fit from scratch." /></>}>
+                  <Field label={<>Projector <Tip text="UMAP approximator. None = fit from scratch." /></>}>
                     {auxModels.length > 0 ? (
                       <select value={form.projector} onChange={e => set('projector', e.target.value)} className="w-full input-base">
                         <option value="">— none —</option>
@@ -298,7 +280,7 @@ export function JobSubmitPanel({ config, models, backend: initialBackend, onClos
                       <TInput value={form.projector} onChange={v => set('projector', v)} placeholder="bnl-nsls2-smi-umap" />
                     )}
                   </Field>
-                  <Field label={<>Classifier <Tip text="Cluster classifier model. None = no labels." /></>}>
+                  <Field label={<>Classifier <Tip text="Cluster classifier. None = no labels." /></>}>
                     {auxModels.length > 0 ? (
                       <select value={form.classifier} onChange={e => set('classifier', e.target.value)} className="w-full input-base">
                         <option value="">— none —</option>
@@ -313,11 +295,12 @@ export function JobSubmitPanel({ config, models, backend: initialBackend, onClos
                   </Field>
                 </div>
 
+                {/* Param specs */}
                 <div>
                   <div className="flex items-center justify-between mb-2">
                     <label className="text-xs text-secondary flex items-center gap-1">
                       Experimental Parameter Specs
-                      <Tip text="Scalar parameters recorded alongside each embedding (e.g. photon energy, detector distance)." />
+                      <Tip text="Scalar parameters recorded alongside each embedding (e.g. photon energy)." />
                     </label>
                     <button onClick={addParam} className="flex items-center gap-1 text-xs text-indigo-500 hover:text-indigo-400">
                       <Plus className="h-3.5 w-3.5" /> Add
@@ -325,7 +308,7 @@ export function JobSubmitPanel({ config, models, backend: initialBackend, onClos
                   </div>
                   {form.paramSpecs.length > 0 && (
                     <div className="grid grid-cols-4 gap-1 text-xs text-muted px-1 mb-1">
-                      <span>Name</span><span>Source (Tiled path)</span><span>Type</span><span>Units</span>
+                      <span>Name</span><span>Source</span><span>Type</span><span>Units</span>
                     </div>
                   )}
                   <div className="space-y-1.5">
@@ -349,6 +332,17 @@ export function JobSubmitPanel({ config, models, backend: initialBackend, onClos
                     )}
                   </div>
                 </div>
+
+                {/* Replay existing */}
+                <div className="flex items-center gap-2">
+                  <input type="checkbox" id="replay" checked={form.replayExisting}
+                    onChange={e => set('replayExisting', e.target.checked)}
+                    className="rounded border-theme" />
+                  <label htmlFor="replay" className="text-xs text-secondary flex items-center gap-1">
+                    Replay existing runs on startup
+                    <Tip text="If checked, runs already in the inputs container when the watcher starts will also trigger a streaming job. Uncheck for new-data-only mode." />
+                  </label>
+                </div>
               </div>
             )}
           </div>
@@ -356,11 +350,11 @@ export function JobSubmitPanel({ config, models, backend: initialBackend, onClos
           <hr className="border-theme" />
 
           {/* Submit */}
-          <button onClick={handleSubmit} disabled={submitting}
-            className="w-full flex items-center justify-center gap-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:bg-indigo-900 disabled:text-indigo-400 text-white font-medium py-2.5 text-sm transition-colors">
+          <button onClick={handleStart} disabled={submitting}
+            className="w-full flex items-center justify-center gap-2 rounded-lg bg-violet-600 hover:bg-violet-500 disabled:bg-violet-900 disabled:text-violet-400 text-white font-medium py-2.5 text-sm transition-colors">
             {submitting
-              ? <><Loader2 className="h-4 w-4 animate-spin" /> Submitting…</>
-              : <><Play className="h-4 w-4" /> Submit batch job to {form.backend.toUpperCase()}</>}
+              ? <><Loader2 className="h-4 w-4 animate-spin" /> Starting watcher…</>
+              : <><Radio className="h-4 w-4" /> Start Live Watch on {form.backend.toUpperCase()}</>}
           </button>
 
           {error && (

@@ -2,46 +2,92 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ── CSS custom properties for theming ────────────────────────────────────── */
+
+:root.dark {
+  --bg-page:      #030712;   /* gray-950 */
+  --bg-card:      #111827;   /* gray-900 */
+  --bg-input:     #030712;
+  --bg-hover:     #1f2937;   /* gray-800 */
+  --border:       #1f2937;
+  --border-hover: #374151;   /* gray-700 */
+  --text-primary: #f9fafb;   /* gray-50  */
+  --text-secondary:#9ca3af;  /* gray-400 */
+  --text-muted:   #4b5563;   /* gray-600 */
+  --accent:       #6366f1;   /* indigo-500 */
+  --accent-hover: #818cf8;
+}
+
+:root.light {
+  --bg-page:      #f1f5f9;   /* slate-100 */
+  --bg-card:      #ffffff;
+  --bg-input:     #f8fafc;   /* slate-50  */
+  --bg-hover:     #e2e8f0;   /* slate-200 */
+  --border:       #e2e8f0;
+  --border-hover: #cbd5e1;   /* slate-300 */
+  --text-primary: #0f172a;   /* slate-900 */
+  --text-secondary:#475569;  /* slate-600 */
+  --text-muted:   #94a3b8;   /* slate-400 */
+  --accent:       #4f46e5;   /* indigo-600 */
+  --accent-hover: #4338ca;
+}
+
 @layer base {
   :root {
     font-family: 'Inter', system-ui, sans-serif;
   }
-
   body {
-    @apply bg-gray-950 text-gray-100 antialiased;
-  }
-
-  * {
-    @apply border-gray-800;
+    background-color: var(--bg-page);
+    color: var(--text-primary);
+    @apply antialiased transition-colors duration-200;
   }
 }
 
+/* ── Tailwind utility aliases using CSS vars ─────────────────────────────── */
 @layer utilities {
+  .bg-page       { background-color: var(--bg-page); }
+  .bg-card       { background-color: var(--bg-card); }
+  .bg-input      { background-color: var(--bg-input); }
+  .bg-row-hover  { background-color: var(--bg-hover); }
+  .border-theme  { border-color: var(--border); }
+  .border-theme-hover { border-color: var(--border-hover); }
+  .text-primary  { color: var(--text-primary); }
+  .text-secondary{ color: var(--text-secondary); }
+  .text-muted    { color: var(--text-muted); }
+
+  .card {
+    background-color: var(--bg-card);
+    border-color: var(--border);
+    @apply rounded-xl border shadow-sm;
+  }
+  .input-base {
+    background-color: var(--bg-input);
+    border-color: var(--border);
+    color: var(--text-primary);
+    @apply rounded px-2 py-1.5 text-xs font-mono border focus:outline-none;
+  }
+  .input-base:focus {
+    border-color: var(--accent);
+  }
+
   .scrollbar-thin {
     scrollbar-width: thin;
-    scrollbar-color: #374151 transparent;
+    scrollbar-color: var(--border) transparent;
   }
-
-  .scrollbar-thin::-webkit-scrollbar {
-    width: 6px;
-  }
-
-  .scrollbar-thin::-webkit-scrollbar-track {
-    background: transparent;
-  }
-
+  .scrollbar-thin::-webkit-scrollbar { width: 6px; }
+  .scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
   .scrollbar-thin::-webkit-scrollbar-thumb {
-    background-color: #374151;
+    background-color: var(--border);
     border-radius: 3px;
   }
 }
 
-/* ANSI color approximations for log viewer */
-.log-reset  { color: #d1d5db; }
-.log-red    { color: #f87171; }
-.log-green  { color: #4ade80; }
-.log-yellow { color: #facc15; }
-.log-blue   { color: #60a5fa; }
-.log-magenta{ color: #e879f9; }
-.log-cyan   { color: #22d3ee; }
-.log-white  { color: #f9fafb; }
+/* ── ANSI color approximations for log viewer ────────────────────────────── */
+.log-reset   { color: var(--text-secondary); }
+.log-red     { color: #f87171; }
+.log-green   { color: #4ade80; }
+.log-yellow  { color: #facc15; }
+.log-blue    { color: #60a5fa; }
+.log-magenta { color: #e879f9; }
+.log-cyan    { color: #22d3ee; }
+.log-white   { color: var(--text-primary); }
