@@ -667,6 +667,10 @@ def test_secrets_preamble_is_executable(monkeypatch):
     monkeypatch.setattr(nersc_module.settings, "tiled_access_tags", "")
     monkeypatch.setattr(nersc_module.settings, "nersc_models_dir", "/pscratch/models")
 
+    mlflow_uri = "https://mlflow.example.com"
+    mlflow_parsed = urlparse(mlflow_uri)
+    assert mlflow_parsed.scheme == "https" and mlflow_parsed.hostname == "mlflow.example.com"
+
     backend = NERSCBackend(
         client=_FakeClient(),
         working_dir="/pscratch/jobs",
