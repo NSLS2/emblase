@@ -31,7 +31,7 @@ class CatalogArtifact:
     fqn: str
     name: str
     display_name: str | None
-    entity_type: str          # "artifact", "artifactCollection", "scientificWork", …
+    entity_type: str  # "artifact", "artifactCollection", "scientificWork", …
     description: str | None
     location: str | None
     parent_fqn: str | None

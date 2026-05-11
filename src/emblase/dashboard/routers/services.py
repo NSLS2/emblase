@@ -168,12 +168,19 @@ async def openmetadata_status() -> dict[str, Any]:
 
     _log = _logging.getLogger(__name__)
 
+    raw_catalog = settings.amsc_openmetadata_catalog_name or ""
+    # "bnl-lse-demo-storage.bnl-lse-demo-data-catalog"
+    #  └─ catalog_name (POST path segment) ──┘  └─ full root FQN ──────────────┘
+    catalog_name = raw_catalog.split(".")[0] if raw_catalog else None
+    root_fqn = raw_catalog if raw_catalog else (settings.amsc_openmetadata_parent_fqn or None)
+
     if not settings.amsc_openmetadata_token:
         return {
             "status": "unconfigured",
             "message": "EMBLASE_AMSC_OPENMETADATA_TOKEN is not set",
             "catalog_url": settings.amsc_openmetadata_catalog_url,
-            "catalog_name": settings.amsc_openmetadata_catalog_name or None,
+            "catalog_name": catalog_name,
+            "root_fqn": root_fqn,
         }
 
     from ...catalog.amsc import AmscClient
@@ -184,7 +191,8 @@ async def openmetadata_status() -> dict[str, Any]:
         return {
             "status": "online",
             "catalog_url": settings.amsc_openmetadata_catalog_url,
-            "catalog_name": settings.amsc_openmetadata_catalog_name or None,
+            "catalog_name": catalog_name,
+            "root_fqn": root_fqn,
             "parent_fqn": settings.amsc_openmetadata_parent_fqn or None,
             "projects": projects,
             "project_count": len(projects),
@@ -194,7 +202,8 @@ async def openmetadata_status() -> dict[str, Any]:
         return {
             "status": "error",
             "catalog_url": settings.amsc_openmetadata_catalog_url,
-            "catalog_name": settings.amsc_openmetadata_catalog_name or None,
+            "catalog_name": catalog_name,
+            "root_fqn": root_fqn,
             "error": str(exc),
         }
 

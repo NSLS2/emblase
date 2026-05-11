@@ -102,7 +102,7 @@ class Settings(BaseSettings):
     amsc_openmetadata_catalog_url: str = "https://api.american-science-cloud.org/api/current"
     amsc_openmetadata_token: str = ""
     amsc_openmetadata_catalog_name: str = ""  # e.g. "bnl-lse-demo-storage"
-    amsc_openmetadata_parent_fqn: str = ""    # FQN of the parent ScientificWork to publish under
+    amsc_openmetadata_parent_fqn: str = ""  # FQN of the parent ScientificWork to publish under
 
     # Chat app (AmSC LLM assistant)
     chatapp_url: str = "https://chat-amsc-dev.nsls2.bnl.gov"

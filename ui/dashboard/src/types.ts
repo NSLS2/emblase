@@ -76,6 +76,7 @@ export interface OpenMetadataStatus {
   status: ServiceStatus
   catalog_url?: string
   catalog_name?: string | null
+  root_fqn?: string | null
   parent_fqn?: string | null
   projects?: Record<string, unknown>[]
   project_count?: number

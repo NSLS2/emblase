@@ -158,6 +158,14 @@ export function OpenMetadataSection({ refreshTick }: OpenMetadataSectionProps) {
                 <span className="text-primary font-mono">{status.catalog_name}</span>
               </div>
             )}
+            {status?.root_fqn && (
+              <div className="flex items-start justify-between text-xs gap-2">
+                <span className="text-secondary flex-shrink-0">Root FQN</span>
+                <span className="text-muted font-mono text-[10px] text-right break-all" title={status.root_fqn}>
+                  {status.root_fqn}
+                </span>
+              </div>
+            )}
             {isOnline && (
               <div className="flex items-center justify-between text-xs">
                 <span className="text-secondary">Projects</span>
