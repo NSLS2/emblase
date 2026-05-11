@@ -352,7 +352,7 @@ function OrionJobItem({ job, expanded, onToggle }: {
           const prevState = jobStateRef.current
           setJobState('stopping')
           jobStateRef.current = 'stopping'
-          fetch(`/compute/orion/jobs/${job.job_id}`, { method: 'DELETE' })
+          fetch(`/api/compute/orion/jobs/${job.job_id}`, { method: 'DELETE' })
             .then(r => {
               if (!r.ok) throw new Error(`HTTP ${r.status}`)
               // keep polling until confirmed terminal
@@ -497,7 +497,7 @@ function NERSCJobItem({ job, expanded, onToggle }: {
           const prevState = jobStateRef.current
           setJobState('stopping')
           jobStateRef.current = 'stopping'
-          fetch(`/compute/nersc/jobs/${job.job_id}`, { method: 'DELETE' })
+          fetch(`/api/compute/nersc/jobs/${job.job_id}`, { method: 'DELETE' })
             .then(r => {
               if (!r.ok) throw new Error(`HTTP ${r.status}`)
               // resume background poll to confirm cancellation
