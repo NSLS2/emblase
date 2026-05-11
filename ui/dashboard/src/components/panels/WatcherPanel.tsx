@@ -40,12 +40,15 @@ function defaultForm(config: AppConfig | null): Form {
     modelName: 'bnl-nsls2-smi-vit',
     mlflowVersion: '',
     outputContainer: config?.tiled_output_container || '',
-    batchSize: 1,
+    batchSize: 4,
     imageKey: 'primary/pil900KW_image',
     thumbMode: 'logroi',
     projector: 'bnl-nsls2-smi-umap',
     classifier: 'bnl-nsls2-smi-class5',
-    paramSpecs: [],
+    paramSpecs: [
+      { name: 'temperature', source: 'primary/LinkamThermal_temperature_current', dtype: 'float', units: '°C' },
+      { name: 'piezo_x', source: 'primary/piezo_x', dtype: 'float', units: 'μm' },
+    ],
     nerscQueue: config?.nersc_queue || 'shared',
     nerscAccount: config?.nersc_account || '',
     nerscTimeLimit: config?.nersc_time_limit || '02:00:00',
@@ -109,6 +112,7 @@ export function WatcherPanel({ config, models, backend: initialBackend, onClose,
         batch_size: form.batchSize,
         image_key: form.imageKey,
         thumb_mode: form.thumbMode,
+        param_specs: form.paramSpecs.filter(p => p.name && p.source),
         projector: form.projector || undefined,
         classifier: form.classifier || undefined,
         nersc_queue: form.nerscQueue,
@@ -190,7 +194,7 @@ export function WatcherPanel({ config, models, backend: initialBackend, onClose,
                   <TInput value={form.modelName} onChange={v => set('modelName', v)} placeholder="bnl-nsls2-smi-vit" />
                 )}
               </Field>
-              <Field label="MLflow Version (blank = latest)">
+              <Field label={<>MLflow Version (blank = latest) <Tip text="Specific registered model version to load. Leave blank to always use the latest version in MLflow." /></>}>
                 <TInput value={form.mlflowVersion} onChange={v => set('mlflowVersion', v)} placeholder="latest" />
               </Field>
             </div>
@@ -200,7 +204,7 @@ export function WatcherPanel({ config, models, backend: initialBackend, onClose,
 
           {/* Tiled output */}
           <Section title="Output (Tiled)">
-            <Field label="Output container (where embeddings are written)">
+            <Field label={<>Output container <Tip text="Tiled path where embedding results are written. Defaults to the server's EMBLASE_TILED_OUTPUT_CONTAINER if left blank." /></>}>
               <TInput value={form.outputContainer} onChange={v => set('outputContainer', v)}
                 placeholder={config?.tiled_output_container || 'e.g. smi/sandbox/demo/output'} />
             </Field>
@@ -214,14 +218,14 @@ export function WatcherPanel({ config, models, backend: initialBackend, onClose,
           {/* Inference params */}
           <Section title="Inference Parameters">
             <div className="grid grid-cols-3 gap-3">
-              <Field label={<>Batch size <Tip text="Frames encoded per GPU call." /></>}>
+              <Field label={<>Batch size <Tip text="Number of frames encoded per GPU call. Larger values use more GPU memory but may improve throughput." /></>}>
                 <input type="number" min={1} max={256} value={form.batchSize}
                   onChange={e => set('batchSize', Number(e.target.value))} className="w-full input-base" />
               </Field>
-              <Field label="Image key">
+              <Field label={<>Image key <Tip text="Tiled path to the detector image array, in 'stream/key' form. E.g. 'primary/pil900KW_image'." /></>}>
                 <TInput value={form.imageKey} onChange={v => set('imageKey', v)} placeholder="primary/pil900KW_image" />
               </Field>
-              <Field label="Thumbnail mode">
+              <Field label={<>Thumbnail mode <Tip text="How thumbnails are generated: 'logroi' = log-scale crop of the ROI (recommended for scattering); 'default' = linear full frame." /></>}>
                 <select value={form.thumbMode} onChange={e => set('thumbMode', e.target.value)} className="w-full input-base">
                   {THUMB_MODES.map(m => <option key={m} value={m}>{m}</option>)}
                 </select>
@@ -245,7 +249,7 @@ export function WatcherPanel({ config, models, backend: initialBackend, onClose,
                 <Field label="Time limit (HH:MM:SS)">
                   <TInput value={form.nerscTimeLimit} onChange={v => set('nerscTimeLimit', v)} placeholder="02:00:00" />
                 </Field>
-                <Field label="Constraint (optional)">
+                <Field label={<>Constraint (optional) <Tip text="NERSC node feature constraint, e.g. 'gpu' or 'cpu'. Leave blank to use the queue default." /></>}>
                   <TInput value={form.nerscConstraint} onChange={v => set('nerscConstraint', v)} placeholder="gpu" />
                 </Field>
               </div>
@@ -267,7 +271,7 @@ export function WatcherPanel({ config, models, backend: initialBackend, onClose,
               <div className="mt-3 space-y-4">
                 {/* Projector / classifier dropdowns */}
                 <div className="grid grid-cols-2 gap-3">
-                  <Field label={<>Projector <Tip text="UMAP approximator. None = fit from scratch." /></>}>
+                  <Field label={<>Projector <Tip text="UMAP model that projects high-dimensional embeddings to 2D for visualisation. 'None' fits a fresh UMAP over all embeddings at job end." /></>}>
                     {auxModels.length > 0 ? (
                       <select value={form.projector} onChange={e => set('projector', e.target.value)} className="w-full input-base">
                         <option value="">— none —</option>
@@ -280,7 +284,7 @@ export function WatcherPanel({ config, models, backend: initialBackend, onClose,
                       <TInput value={form.projector} onChange={v => set('projector', v)} placeholder="bnl-nsls2-smi-umap" />
                     )}
                   </Field>
-                  <Field label={<>Classifier <Tip text="Cluster classifier. None = no labels." /></>}>
+                  <Field label={<>Classifier <Tip text="Model that assigns a cluster label to each embedding. 'None' skips classification — no labels are written to the output." /></>}>
                     {auxModels.length > 0 ? (
                       <select value={form.classifier} onChange={e => set('classifier', e.target.value)} className="w-full input-base">
                         <option value="">— none —</option>

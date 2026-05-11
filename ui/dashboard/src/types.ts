@@ -7,10 +7,9 @@ export interface TiledStatus {
   status: ServiceStatus
   server_uri?: string
   tiled_version?: string
-  python_version?: string
   api_version?: string | number
-  input_container?: string
   output_container?: string
+  output_count?: number | null
   error?: string
   message?: string
 }
@@ -163,6 +162,7 @@ export interface WatcherStartRequest {
   batch_size: number
   image_key: string
   thumb_mode: string
+  param_specs: ParamSpec[]
   projector?: string
   classifier?: string
   nersc_queue?: string

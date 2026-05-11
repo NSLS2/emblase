@@ -33,14 +33,27 @@ async def tiled_status() -> dict[str, Any]:
 
     try:
         data = await _tiled_get("/api/v1/")
+
+        # Fetch output container item count in parallel (best-effort)
+        output_count: int | None = None
+        output_path = settings.tiled_output_container
+        if output_path:
+            try:
+                search = await _tiled_get(
+                    f"/api/v1/search/{output_path.strip('/')}?page[limit]=0",
+                    timeout=5.0,
+                )
+                output_count = search.get("meta", {}).get("count")
+            except Exception:
+                pass
+
         return {
             "status": "online",
             "server_uri": settings.tiled_server_uri,
             "tiled_version": data.get("library_version", "unknown"),
-            "python_version": data.get("python_version", "unknown"),
             "api_version": data.get("api_version", "unknown"),
-            "input_container": settings.tiled_input_container or None,
-            "output_container": settings.tiled_output_container or None,
+            "output_container": output_path or None,
+            "output_count": output_count,
         }
     except httpx.TimeoutException:
         return {"status": "timeout", "server_uri": settings.tiled_server_uri}

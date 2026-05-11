@@ -12,9 +12,7 @@ and serves it at http://localhost:<EMBLASE_DASHBOARD_PORT> (default 8765).
 from __future__ import annotations
 
 import logging
-import os
 import subprocess
-import sys
 import time
 import webbrowser
 from pathlib import Path
@@ -25,7 +23,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from ..config import settings
-from .routers import compute, jobs, services, tiled, instrument, watcher
+from .routers import compute, instrument, jobs, services, tiled, watcher
 
 logger = logging.getLogger(__name__)
 

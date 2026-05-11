@@ -113,8 +113,8 @@ mlflow = "python scripts/manage_mlflow.py"
 # Dashboard tasks
 # dashboard-build: compile the React UI (requires npm in PATH)
 dashboard-build = "bash -c 'cd ui/dashboard && npm install && npm run build && rm -rf ../../src/emblase/dashboard/static && cp -r dist ../../src/emblase/dashboard/static'"
-# dashboard: auto-build UI if stale, then start the monitoring dashboard server
-dashboard = "python -m emblase.dashboard.server"
+# # dashboard: auto-build UI if stale, then start the monitoring dashboard server
+# dashboard = "python -m emblase.dashboard.server"
 # viewer-build: compile the embedding scatter Tiled plugin UI (requires npm in PATH)
 # Output: ui/viewer/dist/viewer.js → src/emblase/tiled/static/main.js
 viewer-build = "bash -c 'cd ui/viewer && npm install && npm run build && cp dist/viewer.js ../../src/emblase/tiled/static/main.js'"

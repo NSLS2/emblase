@@ -1592,8 +1592,8 @@ packages:
   requires_python: '>=3.8'
 - pypi: ./
   name: emblase
-  version: 0.1.2.dev38+g92cc6a80d.d20260509
-  sha256: e2903a6f8b0dbb8acc795857201a02fe48b0392e25a5106b3f991c83e2a074a0
+  version: 0.1.2.dev39+gf2a61f1dd.d20260511
+  sha256: 9a4bfdb4e63ff259c39d65099f68a9915a957310bd4c68000bb7816bef45996b
   requires_dist:
   - fastapi>=0.115
   - httpx>=0.28.1,<0.29

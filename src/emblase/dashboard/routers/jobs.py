@@ -13,7 +13,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from ...config import settings, resolve_tiled_path
+from ...config import resolve_tiled_path, settings
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
@@ -189,7 +189,12 @@ async def submit_batch(req: BatchJobRequest) -> dict[str, Any]:
             job_id, log_path = await _submit_batch_nersc(req)
         else:
             job_id, log_path = await _submit_batch_orion(req)
-        return {"job_id": job_id, "backend": req.backend, "log_path": log_path, "submitted_at": time.time()}
+        return {
+            "job_id": job_id,
+            "backend": req.backend,
+            "log_path": log_path,
+            "submitted_at": time.time(),
+        }
     except Exception as exc:
         raise HTTPException(500, str(exc))
 
@@ -202,6 +207,11 @@ async def submit_stream(req: StreamJobRequest) -> dict[str, Any]:
             job_id, log_path = await _submit_stream_nersc(req)
         else:
             job_id, log_path = await _submit_stream_orion(req)
-        return {"job_id": job_id, "backend": req.backend, "log_path": log_path, "submitted_at": time.time()}
+        return {
+            "job_id": job_id,
+            "backend": req.backend,
+            "log_path": log_path,
+            "submitted_at": time.time(),
+        }
     except Exception as exc:
         raise HTTPException(500, str(exc))

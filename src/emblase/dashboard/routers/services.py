@@ -109,15 +109,15 @@ async def mlflow_models() -> dict[str, Any]:
                         continue
                     latest_versions = m.get("latest_versions", [])
                     latest = (
-                        max(int(v["version"]) for v in latest_versions)
-                        if latest_versions
-                        else None
+                        max(int(v["version"]) for v in latest_versions) if latest_versions else None
                     )
-                    models.append({
-                        "name": name,
-                        "latest_version": latest,
-                        "description": m.get("description") or None,
-                    })
+                    models.append(
+                        {
+                            "name": name,
+                            "latest_version": latest,
+                            "description": m.get("description") or None,
+                        }
+                    )
 
                 page_token = data.get("next_page_token")
                 if not page_token:

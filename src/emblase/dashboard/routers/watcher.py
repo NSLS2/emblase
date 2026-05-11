@@ -22,44 +22,20 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from ...config import settings, resolve_tiled_path
+from ...config import resolve_tiled_path, settings
 
 router = APIRouter(prefix="/watcher", tags=["watcher"])
 
 
-# ── State ─────────────────────────────────────────────────────────────────────
-
-class _WatcherState:
-    def __init__(self) -> None:
-        self.status: str = "idle"   # idle | running | error
-        self.backend_name: str = ""
-        self.inputs_path: str = ""
-        self.jobs_submitted: int = 0
-        self.error: str = ""
-        self._watcher: Any = None
-        self._loop: asyncio.AbstractEventLoop | None = None
-        self._thread: threading.Thread | None = None
-        self._lock = threading.Lock()
-        # All jobs submitted by the watcher across the server lifetime
-        # Each entry: {job_id, backend, mode, model_name, submitted_at}
-        self.job_records: list[dict[str, Any]] = []
-
-    def to_dict(self) -> dict[str, Any]:
-        with self._lock:
-            return {
-                "status": self.status,
-                "backend": self.backend_name,
-                "inputs_path": self.inputs_path,
-                "jobs_submitted": self.jobs_submitted,
-                "error": self.error,
-                "inputs_container": settings.tiled_input_container,
-            }
-
-
-_ws = _WatcherState()
-
-
 # ── Request model ─────────────────────────────────────────────────────────────
+
+
+class ParamSpec(BaseModel):
+    name: str
+    source: str
+    dtype: str = "float"
+    units: str = ""
+
 
 class WatcherStartRequest(BaseModel):
     backend: str = Field(default="orion", description="Compute backend: orion or nersc")
@@ -69,6 +45,7 @@ class WatcherStartRequest(BaseModel):
     batch_size: int = Field(default=1, ge=1, le=256)
     image_key: str = "primary/pil900KW_image"
     thumb_mode: str = "logroi"
+    param_specs: list[ParamSpec] = []
     projector: str | None = None
     classifier: str | None = None
     # NERSC-specific
@@ -82,24 +59,62 @@ class WatcherStartRequest(BaseModel):
     replay_existing: bool = False
 
 
+# ── Watcher state ────────────────────────────────────────────────────────────
+
+
+class WatcherState:
+    """Thread-safe holder for watcher lifecycle state."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.status: str = "idle"  # idle | running | error
+        self.backend_name: str = ""
+        self.inputs_path: str = ""
+        self.jobs_submitted: int = 0
+        self.job_records: list[dict] = []
+        self.error: str = ""
+        self._watcher = None  # InputsWatcher instance while running
+        self._thread: threading.Thread | None = None
+        self._loop = None  # asyncio event loop for the watcher thread
+
+    def to_dict(self) -> dict[str, Any]:
+        with self._lock:
+            return {
+                "status": self.status,
+                "backend": self.backend_name,
+                "inputs_path": self.inputs_path,
+                "jobs_submitted": self.jobs_submitted,
+                "error": self.error,
+            }
+
+
+_ws = WatcherState()
+
+
 # ── Watcher thread ────────────────────────────────────────────────────────────
+
 
 def _run_watcher(req: WatcherStartRequest) -> None:
     """Start InputsWatcher in a background thread. Updates _ws state."""
     try:
         import os
+
         try:
             import certifi as _certifi
+
             os.environ.setdefault("SSL_CERT_FILE", _certifi.where())
         except ImportError:
             pass
 
         from tiled.client import from_uri
+
         from ...pipeline.streaming import InputsWatcher
 
         tiled_uri = settings.tiled_server_uri
         inputs_path = settings.tiled_input_container
-        output_path = resolve_tiled_path(req.output_container or None, settings.tiled_output_container)
+        output_path = resolve_tiled_path(
+            req.output_container or None, settings.tiled_output_container
+        )
 
         if not tiled_uri:
             raise RuntimeError("EMBLASE_TILED_SERVER_URI is not set")
@@ -118,6 +133,7 @@ def _run_watcher(req: WatcherStartRequest) -> None:
         # Build backend with any per-request overrides, same pattern as jobs.py
         if req.backend == "nersc":
             from ...compute.nersc import NERSCBackend
+
             backend = NERSCBackend(
                 account=req.nersc_account or None,
                 queue=req.nersc_queue or None,
@@ -126,6 +142,7 @@ def _run_watcher(req: WatcherStartRequest) -> None:
             )
         else:
             from ...compute.orion import OrionBackend
+
             backend = OrionBackend(account=req.orion_account or None)
 
         loop = asyncio.new_event_loop()
@@ -142,6 +159,9 @@ def _run_watcher(req: WatcherStartRequest) -> None:
         _original_submit = backend.submit_streaming
 
         async def _counted_submit(*args, **kwargs):
+            # Extract run_path from kwargs to find any matching scheduled record
+            run_path: str = kwargs.get("run_path", args[0] if args else "")
+            run_key = run_path.rsplit("/", 1)[-1] if run_path else ""
             job_id = await _original_submit(*args, **kwargs)
             record: dict[str, Any] = {
                 "job_id": str(job_id),
@@ -149,11 +169,34 @@ def _run_watcher(req: WatcherStartRequest) -> None:
                 "mode": "stream",
                 "model_name": req.model_name,
                 "submitted_at": time.time(),
+                "state": "",
             }
             with _ws._lock:
                 _ws.jobs_submitted += 1
-                _ws.job_records.append(record)
+                # Replace placeholder scheduled record if present
+                scheduled_id = f"scheduled-{run_key}"
+                replaced = False
+                for i, r in enumerate(_ws.job_records):
+                    if r.get("job_id") == scheduled_id:
+                        _ws.job_records[i] = record
+                        replaced = True
+                        break
+                if not replaced:
+                    _ws.job_records.append(record)
             return job_id
+
+        def _on_queued(run_key: str) -> None:
+            """Record a placeholder entry for a run waiting in the queue."""
+            record: dict[str, Any] = {
+                "job_id": f"scheduled-{run_key}",
+                "backend": req.backend,
+                "mode": "stream",
+                "model_name": req.model_name,
+                "submitted_at": time.time(),
+                "state": "scheduled",
+            }
+            with _ws._lock:
+                _ws.job_records.append(record)
 
         backend.submit_streaming = _counted_submit
 
@@ -166,9 +209,16 @@ def _run_watcher(req: WatcherStartRequest) -> None:
             image_key=req.image_key,
             thumb_mode=req.thumb_mode,
             mlflow_version=req.mlflow_version,
+            param_specs={
+                s.name: {"source": s.source, "dtype": s.dtype, "units": s.units}
+                for s in req.param_specs
+                if s.name and s.source
+            }
+            or None,
             projector=req.projector,
             classifier=req.classifier,
             loop=loop,
+            on_queued=_on_queued,
         )
 
         with _ws._lock:
@@ -190,6 +240,7 @@ def _run_watcher(req: WatcherStartRequest) -> None:
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
+
 
 @router.post("/start")
 async def watcher_start(req: WatcherStartRequest) -> dict[str, Any]:

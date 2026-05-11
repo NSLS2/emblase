@@ -14,7 +14,7 @@ export function InstrumentSection({ config, refreshTick }: InstrumentSectionProp
   const [loading, setLoading] = useState(true)
 
   // Configurable fields
-  const [src, setSrc] = useState('')
+  const [src, setSrc] = useState('/smi/sandbox/confab26_demo/sources/run_1086139')
   const [imageKey, setImageKey] = useState('primary/pil900KW_image')
   const [batchDelay, setBatchDelay] = useState(0.1)
   const [submitting, setSubmitting] = useState(false)

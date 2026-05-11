@@ -74,7 +74,7 @@ export function ModelsSection({ config, refreshTick, manualRefreshTick, onModels
           {status?.message && <p className="text-xs text-secondary">{status.message}</p>}
 
           {/* Model cards — always visible, scrollable */}
-          <div className="space-y-1.5 max-h-52 overflow-y-auto scrollbar-thin">
+          <div className="space-y-1.5 max-h-60 overflow-y-auto scrollbar-thin">
             {loadingModels && (
               <p className="text-xs text-muted italic px-1">Loading models…</p>
             )}

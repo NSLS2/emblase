@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react'
 import { Cpu, Activity, Copy, ChevronDown, ChevronUp, Clock,
-         CheckCircle2, XCircle, Radio, Play, Square } from 'lucide-react'
+         CheckCircle2, XCircle, Radio, Play, Square, Loader2 } from 'lucide-react'
 import { fetchJSON, postJSON, createSSE } from '../../api'
 import type { OrionStatus, NERSCStatus, AppConfig, JobRecord, WatcherStatus } from '../../types'
 import { StatusBadge } from '../StatusBadge'
@@ -38,13 +38,17 @@ function isTerminal(state: string): boolean {
 function stateIcon(jobState: string) {
   const s = normaliseState(jobState)
   if (!s) return <Activity className="h-3.5 w-3.5 text-muted" />
+  if (s === 'scheduled')
+    return <Clock className="h-3.5 w-3.5 text-sky-400" />
+  if (s === 'stopping' || s.includes('cancel'))
+    return <XCircle className="h-3.5 w-3.5 text-orange-400" />
   if (s.includes('running') || s.includes('active'))
     return <Radio className="h-3.5 w-3.5 text-violet-500 animate-pulse" />
   if (s.includes('pend') || s.includes('queue') || s.includes('configur'))
     return <Clock className="h-3.5 w-3.5 text-yellow-500" />
   if (s.includes('done') || s.includes('complet') || s.includes('finish'))
     return <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
-  if (s.includes('fail') || s.includes('cancel') || s.includes('timeout') || s.includes('node_fail') || s.includes('memory'))
+  if (s.includes('fail') || s.includes('timeout') || s.includes('node_fail') || s.includes('memory'))
     return <XCircle className="h-3.5 w-3.5 text-red-500" />
   return <Activity className="h-3.5 w-3.5 text-muted" />
 }
@@ -61,12 +65,14 @@ export function ComputeSection({
 }: ComputeSectionProps) {
   const [tab, setTab] = useState<ComputeTab>('nersc')
 
-  // Auto-switch to Jobs tab when a new job is submitted
-  const prevCount = useRef(0)
+  // Auto-switch to Jobs tab when a new job is submitted (not on initial load)
+  const prevCount = useRef(jobHistory.length)
   useEffect(() => {
     if (jobHistory.length > prevCount.current) {
       prevCount.current = jobHistory.length
       setTab('history')
+    } else {
+      prevCount.current = jobHistory.length
     }
   }, [jobHistory.length])
 
@@ -132,7 +138,7 @@ function JobHistoryPanel({ jobs }: { jobs: JobRecord[] }) {
   }
 
   return (
-    <div className="space-y-2">
+    <div className="h-48 overflow-y-auto scrollbar-thin space-y-2 pr-0.5">
       {jobs.map(job => (
         <JobHistoryItem key={job.job_id} job={job}
           expanded={expandedId === job.job_id}
@@ -142,187 +148,374 @@ function JobHistoryPanel({ jobs }: { jobs: JobRecord[] }) {
   )
 }
 
+// ── Terminal-job cache ────────────────────────────────────────────────────────
+// Persists final state + log lines for jobs that have reached a terminal state,
+// so re-mounting the component (e.g. switching tabs) never re-fetches.
+interface CachedJob { state: string; lines: string[] }
+const terminalCache = new Map<string, CachedJob>()
+
+// Known-state cache — stores the last-known state for any job, including
+// non-terminal ones. Initialised from job.state (from localStorage) so the
+// correct icon is shown instantly on mount without waiting for a poll.
+const knownStateCache = new Map<string, string>()
+
 // Poll intervals
-const NERSC_STATE_POLL_MS = 10_000
-const ORION_STATE_POLL_MS = 6_000
+const NERSC_STATE_POLL_MS = 15_000  // NERSC background fallback; SSE is primary
+const ORION_STATE_POLL_MS = 8_000
+
+// ── Dispatcher ────────────────────────────────────────────────────────────────
 
 function JobHistoryItem({ job, expanded, onToggle }: {
   job: JobRecord; expanded: boolean; onToggle: () => void
 }) {
-  // jobState: always normalised to lowercase
-  const [jobState, setJobState] = useState(() => normaliseState(job.state || ''))
-  const [logLines, setLogLines] = useState<string[]>([])
-  const [logStarted, setLogStarted] = useState(false)
-  const stopLogRef = useRef<(() => void) | null>(null)
-  const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  if (job.backend === 'orion') {
+    return <OrionJobItem job={job} expanded={expanded} onToggle={onToggle} />
+  }
+  return <NERSCJobItem job={job} expanded={expanded} onToggle={onToggle} />
+}
 
-  // Refs so interval callbacks always see fresh values without needing re-creation
-  const expandedRef = useRef(expanded)
+// ── Shared header row ─────────────────────────────────────────────────────────
+
+function JobItemHeader({ job, jobState, polling, expanded, onToggle, onCancel }: {
+  job: JobRecord; jobState: string; polling: boolean; expanded: boolean; onToggle: () => void
+  onCancel?: () => void
+}) {
+  const copyId = () => navigator.clipboard.writeText(job.job_id).catch(() => {})
+  const submittedTs = new Date(job.submitted_at * 1000)
+    .toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+
+  const isStopping = normaliseState(jobState) === 'stopping'
+  const isScheduled = normaliseState(jobState) === 'scheduled'
+  // show cancel button when: state is known, not terminal, not already stopping, not a placeholder scheduled id, not fetching
+  const showCancel = onCancel
+    && !isTerminal(jobState)
+    && !isStopping
+    && jobState !== ''
+    && !polling
+    && !job.job_id.startsWith('scheduled-')
+
+  return (
+    <button onClick={onToggle}
+      className="w-full flex items-center gap-2 px-3 py-2 bg-card hover:bg-row-hover transition-colors text-left">
+      {polling
+        ? <Loader2 className="h-3.5 w-3.5 text-violet-400 animate-spin flex-shrink-0" />
+        : stateIcon(jobState)}
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <code className="text-xs font-mono text-primary">{job.job_id}</code>
+          {!isScheduled && (
+            <button onClick={e => { e.stopPropagation(); copyId() }}
+              className="text-muted hover:text-secondary transition-colors">
+              <Copy className="h-3 w-3" />
+            </button>
+          )}
+          {jobState && (
+            <span className={`text-[10px] font-mono bg-page border border-theme rounded px-1 ${
+              isStopping ? 'text-orange-400' : isScheduled ? 'text-sky-400' : 'text-muted'
+            }`}>
+              {isStopping ? 'stopping…' : jobState}
+            </span>
+          )}
+        </div>
+        <p className="text-xs text-muted truncate">
+          {job.mode} · {job.backend.toUpperCase()} · {job.model_name}
+        </p>
+      </div>
+      <div className="flex items-center gap-1.5 flex-shrink-0">
+        <span className="text-xs text-muted">{submittedTs}</span>
+        {showCancel && (
+          <button
+            onClick={e => { e.stopPropagation(); onCancel!() }}
+            title="Cancel job"
+            className="text-muted hover:text-red-500 transition-colors">
+            <Square className="h-3.5 w-3.5" />
+          </button>
+        )}
+        {expanded
+          ? <ChevronUp className="h-3.5 w-3.5 text-muted" />
+          : <ChevronDown className="h-3.5 w-3.5 text-muted" />}
+      </div>
+    </button>
+  )
+}
+
+// ── Shared log panel ──────────────────────────────────────────────────────────
+
+function LogPanel({ lines, placeholder }: { lines: string[]; placeholder: string }) {
+  const containerRef = useRef<HTMLDivElement>(null)
+  // Auto-scroll the log panel itself (not the page) when new lines arrive
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    el.scrollTop = el.scrollHeight
+  }, [lines.length])
+
+  return (
+    <div className="border-t border-theme bg-page">
+      <div ref={containerRef} className="h-56 overflow-y-auto scrollbar-thin p-3 font-mono text-xs leading-relaxed">
+        {lines.length === 0
+          ? <span className="text-muted italic">{placeholder}</span>
+          : lines.map((line, i) => (
+            <div key={i} className="whitespace-pre-wrap text-primary">{line}</div>
+          ))}
+      </div>
+    </div>
+  )
+}
+
+// ── Orion job item ────────────────────────────────────────────────────────────
+// Polls /compute/orion/jobs/{id}/status every ORION_STATE_POLL_MS.
+// Skips polling entirely if already terminal (terminalCache). Uses knownStateCache
+// to show the correct icon immediately on re-mount without a blocking fetch.
+
+function OrionJobItem({ job, expanded, onToggle }: {
+  job: JobRecord; expanded: boolean; onToggle: () => void
+}) {
+  const cached = terminalCache.get(job.job_id)
+
+  // Seed knownStateCache from job record on first encounter
+  const initialState = (() => {
+    if (cached) return cached.state
+    const known = knownStateCache.get(job.job_id)
+    if (known) return known
+    const s = normaliseState(job.state || '')
+    if (s) knownStateCache.set(job.job_id, s)
+    return s
+  })()
+
+  const [jobState, setJobState] = useState(initialState)
+  const [lines, setLines] = useState<string[]>(() => cached?.lines ?? [])
+  // fetching = true only during an in-flight HTTP request (not between polls)
+  const [fetching, setFetching] = useState(false)
+  const done = !!cached || isTerminal(initialState)
+
+  const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const pollErrorsRef = useRef(0)
   const jobStateRef = useRef(jobState)
-  useEffect(() => { expandedRef.current = expanded }, [expanded])
   useEffect(() => { jobStateRef.current = jobState }, [jobState])
 
-  const appendLog = useCallback((line: string) => {
-    setLogLines(prev => [...prev, `[${ts()}] ${line}`])
+  const appendLine = useCallback((text: string) => {
+    setLines(prev => [...prev, `[${ts()}] ${text}`])
   }, [])
 
-  const pollMs = job.backend === 'nersc' ? NERSC_STATE_POLL_MS : ORION_STATE_POLL_MS
+  const stopPolling = useCallback(() => {
+    if (pollTimerRef.current) { clearInterval(pollTimerRef.current); pollTimerRef.current = null }
+  }, [])
 
-  // ── Background state polling ───────────────────────────────────────────────
-  // Only poll while state is non-terminal. Stops itself once done/failed/etc.
-  const fetchState = useCallback(() => {
-    // Stop polling if we already know this job is done
-    if (isTerminal(jobStateRef.current)) {
-      if (pollTimerRef.current) {
-        clearInterval(pollTimerRef.current)
-        pollTimerRef.current = null
+  const poll = useCallback(() => {
+    if (isTerminal(jobStateRef.current)) { stopPolling(); return }
+    setFetching(true)
+    fetchJSON<{ state?: string; node?: string | null; not_found?: boolean; error?: string }>(
+      `/compute/orion/jobs/${job.job_id}/status`
+    ).then(d => {
+      setFetching(false)
+      if (!d.state) {
+        pollErrorsRef.current++
+        if (pollErrorsRef.current >= 3) stopPolling()
+        return
       }
-      return
-    }
+      pollErrorsRef.current = 0
+      const ns = normaliseState(d.state)
+      setJobState(ns)
+      jobStateRef.current = ns
+      knownStateCache.set(job.job_id, ns)
 
-    if (job.backend === 'nersc') {
-      fetchJSON<{ state?: string; log_path?: string }>(
-        `/compute/nersc/jobs/${job.job_id}/status`
-      ).then(d => {
-        if (d.state) {
-          const ns = normaliseState(d.state)
-          setJobState(ns)
-          // Stop interval if now terminal
-          if (isTerminal(ns) && pollTimerRef.current) {
-            clearInterval(pollTimerRef.current)
-            pollTimerRef.current = null
-          }
-        }
-      }).catch(() => {})
-    } else {
-      fetchJSON<{ job_id?: number; state?: string; node?: string | null; error?: string }>(
-        `/compute/orion/jobs/${job.job_id}/status`
-      ).then(d => {
-        if (!d.state) return  // ignore empty/error responses — don't clobber known state
+      const node = d.node ? `  node=${d.node}` : ''
+      const note = d.not_found ? '  (purged from API)' : ''
+      appendLine(`state=${ns}${node}${note}`)
+
+      if (isTerminal(ns)) {
+        stopPolling()
+        setLines(prev => {
+          terminalCache.set(job.job_id, { state: ns, lines: prev })
+          return prev
+        })
+      }
+    }).catch(() => {
+      setFetching(false)
+      pollErrorsRef.current++
+      if (pollErrorsRef.current >= 3) stopPolling()
+    })
+  }, [job.job_id, appendLine, stopPolling])
+
+  useEffect(() => {
+    if (done) return
+    poll()
+    pollTimerRef.current = setInterval(poll, ORION_STATE_POLL_MS)
+    return stopPolling
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  return (
+    <div className="rounded-lg border border-theme overflow-hidden">
+      <JobItemHeader job={job} jobState={jobState} polling={fetching} expanded={expanded} onToggle={onToggle}
+        onCancel={() => {
+          const prevState = jobStateRef.current
+          setJobState('stopping')
+          jobStateRef.current = 'stopping'
+          fetch(`/compute/orion/jobs/${job.job_id}`, { method: 'DELETE' })
+            .then(r => {
+              if (!r.ok) throw new Error(`HTTP ${r.status}`)
+              // keep polling until confirmed terminal
+              if (!pollTimerRef.current) {
+                pollTimerRef.current = setInterval(poll, ORION_STATE_POLL_MS)
+              }
+            })
+            .catch(() => {
+              // revert — cancel request failed
+              setJobState(prevState)
+              jobStateRef.current = prevState
+            })
+        }} />
+      {expanded && (
+        <LogPanel
+          lines={lines}
+          placeholder={jobState ? `state=${jobState}` : 'Fetching status…'}
+        />
+      )}
+    </div>
+  )
+}
+
+// ── NERSC job item ────────────────────────────────────────────────────────────
+// Background status poll until SSE connects or terminal. SSE streams job.out
+// live when expanded. Terminal state + lines frozen in terminalCache.
+// knownStateCache ensures correct icon is shown on re-mount without blocking.
+
+function NERSCJobItem({ job, expanded, onToggle }: {
+  job: JobRecord; expanded: boolean; onToggle: () => void
+}) {
+  const cached = terminalCache.get(job.job_id)
+
+  const initialState = (() => {
+    if (cached) return cached.state
+    const known = knownStateCache.get(job.job_id)
+    if (known) return known
+    const s = normaliseState(job.state || '')
+    if (s) knownStateCache.set(job.job_id, s)
+    return s
+  })()
+
+  const [jobState, setJobState] = useState(initialState)
+  const [lines, setLines] = useState<string[]>(() => cached?.lines ?? [])
+  const [sseStarted, setSseStarted] = useState(false)
+  // fetching = true only while an HTTP request or SSE stream is in-flight
+  const [fetching, setFetching] = useState(false)
+  const done = !!cached || isTerminal(initialState)
+
+  const stopSseRef = useRef<(() => void) | null>(null)
+  const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const sseActiveRef = useRef(false)
+  const pollErrorsRef = useRef(0)
+  const jobStateRef = useRef(jobState)
+  useEffect(() => { jobStateRef.current = jobState }, [jobState])
+
+  const stopPolling = useCallback(() => {
+    if (pollTimerRef.current) { clearInterval(pollTimerRef.current); pollTimerRef.current = null }
+  }, [])
+
+  const pollState = useCallback(() => {
+    if (sseActiveRef.current || isTerminal(jobStateRef.current)) { stopPolling(); return }
+    setFetching(true)
+    fetchJSON<{ state?: string }>(`/compute/nersc/jobs/${job.job_id}/status`)
+      .then(d => {
+        setFetching(false)
+        if (!d.state) { pollErrorsRef.current++; if (pollErrorsRef.current >= 3) stopPolling(); return }
+        pollErrorsRef.current = 0
         const ns = normaliseState(d.state)
         setJobState(ns)
-        if (isTerminal(ns) && pollTimerRef.current) {
-          clearInterval(pollTimerRef.current)
-          pollTimerRef.current = null
-        }
-        // Append a timestamped status line only when expanded
-        if (expandedRef.current) {
-          const node = d.node || '(queued)'
-          appendLog(`state=${ns}  node=${node}`)
-        }
-      }).catch(() => {})
-    }
-  }, [job.backend, job.job_id, appendLog])
+        jobStateRef.current = ns
+        knownStateCache.set(job.job_id, ns)
+        if (isTerminal(ns)) stopPolling()
+      }).catch(() => {
+        setFetching(false)
+        pollErrorsRef.current++
+        if (pollErrorsRef.current >= 3) stopPolling()
+      })
+  }, [job.job_id, stopPolling])
 
-  // Start polling on mount; stop on unmount
   useEffect(() => {
-    // Don't even start if already terminal from persisted state
-    if (!isTerminal(jobState)) {
-      fetchState()
-      pollTimerRef.current = setInterval(fetchState, pollMs)
-    }
+    if (done) return
+    pollState()
+    pollTimerRef.current = setInterval(pollState, NERSC_STATE_POLL_MS)
     return () => {
-      if (pollTimerRef.current) clearInterval(pollTimerRef.current)
-      stopLogRef.current?.()
+      stopPolling()
+      stopSseRef.current?.()
     }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Orion: fetch and display status immediately on first expand ───────────
   useEffect(() => {
-    if (!expanded || job.backend !== 'orion') return
-    if (logLines.length > 0) return  // already seeded
+    if (!expanded || sseStarted || done || job.backend !== 'nersc') return
+    setSseStarted(true)
 
-    fetchJSON<{ state?: string; node?: string | null }>(
-      `/compute/orion/jobs/${job.job_id}/status`
-    ).then(d => {
-      if (d.state) {
-        const ns = normaliseState(d.state)
-        setJobState(ns)
-        const node = d.node || '(queued)'
-        appendLog(`state=${ns}  node=${node}`)
-      } else if (jobState) {
-        appendLog(`state=${jobState}  (no update)`)
-      }
-    }).catch(() => {
-      if (jobState) appendLog(`state=${jobState}  (poll failed)`)
-    })
-  }, [expanded]) // eslint-disable-line react-hooks/exhaustive-deps
+    const startSSE = (path: string) => {
+      sseActiveRef.current = true
+      setFetching(true)
+      stopPolling()
 
-  // ── NERSC: start SSE log stream once on first expand ─────────────────────
-  useEffect(() => {
-    if (!expanded || logStarted || job.backend !== 'nersc') return
-    setLogStarted(true)
-
-    const start = (path: string) => {
       const params = path ? `?log_path=${encodeURIComponent(path)}` : ''
-      stopLogRef.current = createSSE(
+      stopSseRef.current = createSSE(
         `/compute/nersc/jobs/${job.job_id}/logs${params}`,
         (data) => {
-          // Skip internal discovery messages (not meaningful to the user)
-          if (data.startsWith('[log: ')) return
-          setLogLines(prev => [...prev, data])
+          setLines(prev => [...prev, data])
         },
         (event, data) => {
-          if (event === 'state' || event === 'job_done') setJobState(normaliseState(data))
+          if (event === 'state' || event === 'job_done') {
+            const ns = normaliseState(data)
+            setJobState(ns)
+            jobStateRef.current = ns
+            knownStateCache.set(job.job_id, ns)
+            if (event === 'job_done') {
+              sseActiveRef.current = false
+              setFetching(false)
+              stopSseRef.current?.()
+              setLines(prev => {
+                terminalCache.set(job.job_id, { state: ns, lines: prev })
+                return prev
+              })
+            }
+          }
         }
       )
     }
 
     if (job.log_path) {
-      start(job.log_path)
+      startSSE(job.log_path)
     } else {
       fetchJSON<{ state?: string; log_path?: string }>(
         `/compute/nersc/jobs/${job.job_id}/status`
       ).then(d => {
-        if (d.state) setJobState(normaliseState(d.state))
-        start(d.log_path || '')
-      }).catch(() => start(''))
+        if (d.state) { setJobState(normaliseState(d.state)); knownStateCache.set(job.job_id, normaliseState(d.state)) }
+        startSSE(d.log_path || '')
+      }).catch(() => startSSE(''))
     }
   }, [expanded]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const copyId = () => navigator.clipboard.writeText(job.job_id).catch(() => {})
-  const submittedTs = new Date(job.submitted_at * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-
   return (
     <div className="rounded-lg border border-theme overflow-hidden">
-      <button onClick={onToggle}
-        className="w-full flex items-center gap-2 px-3 py-2 bg-card hover:bg-row-hover transition-colors text-left">
-        {stateIcon(jobState)}
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-1.5 flex-wrap">
-            <code className="text-xs font-mono text-primary">{job.job_id}</code>
-            <button onClick={e => { e.stopPropagation(); copyId() }}
-              className="text-muted hover:text-secondary transition-colors">
-              <Copy className="h-3 w-3" />
-            </button>
-            {jobState && (
-              <span className="text-[10px] text-muted font-mono bg-page border border-theme rounded px-1">
-                {jobState}
-              </span>
-            )}
-          </div>
-          <p className="text-xs text-muted truncate">
-            {job.mode} · {job.backend.toUpperCase()} · {job.model_name}
-          </p>
-        </div>
-        <div className="flex items-center gap-1.5 flex-shrink-0">
-          <span className="text-xs text-muted">{submittedTs}</span>
-          {expanded ? <ChevronUp className="h-3.5 w-3.5 text-muted" /> : <ChevronDown className="h-3.5 w-3.5 text-muted" />}
-        </div>
-      </button>
-
+      <JobItemHeader job={job} jobState={jobState} polling={fetching} expanded={expanded} onToggle={onToggle}
+        onCancel={() => {
+          const prevState = jobStateRef.current
+          setJobState('stopping')
+          jobStateRef.current = 'stopping'
+          fetch(`/compute/nersc/jobs/${job.job_id}`, { method: 'DELETE' })
+            .then(r => {
+              if (!r.ok) throw new Error(`HTTP ${r.status}`)
+              // resume background poll to confirm cancellation
+              if (!pollTimerRef.current && !sseActiveRef.current) {
+                pollTimerRef.current = setInterval(pollState, NERSC_STATE_POLL_MS)
+              }
+            })
+            .catch(() => {
+              // revert — cancel request failed
+              setJobState(prevState)
+              jobStateRef.current = prevState
+            })
+        }} />
       {expanded && (
-        <div className="border-t border-theme bg-page">
-          <div className="h-56 overflow-y-auto scrollbar-thin p-3 font-mono text-xs leading-relaxed">
-            {logLines.length === 0
-              ? <span className="text-muted italic">
-                  {job.backend === 'nersc' ? 'Connecting to log stream…' : 'Fetching status…'}
-                </span>
-              : logLines.map((line, i) => (
-                <div key={i} className="whitespace-pre-wrap text-primary">{line}</div>
-              ))}
-          </div>
-        </div>
+        <LogPanel
+          lines={lines}
+          placeholder={sseStarted ? 'Connecting to log stream…' : (jobState ? `state=${jobState}` : 'Waiting…')}
+        />
       )}
     </div>
   )

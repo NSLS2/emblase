@@ -65,7 +65,11 @@ async def orion_jobs() -> dict[str, Any]:
 
 @router.get("/orion/jobs/{job_id}/status")
 async def orion_job_status(job_id: str) -> dict[str, Any]:
-    """Get status for a specific Orion job — returns structured state/node/stdout."""
+    """Get status for a specific Orion job — returns structured state/node/stdout.
+
+    If the job is not found (404) it is treated as completed/purged so the
+    frontend stops polling.
+    """
     try:
         from ...compute.orion import OrionClient
 
@@ -77,6 +81,11 @@ async def orion_job_status(job_id: str) -> dict[str, Any]:
             "node": job.node,
             "stdout": job.stdout,
         }
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            # Job no longer exists in the Orion API — treat as completed/purged
+            return {"job_id": job_id, "state": "COMPLETED", "node": None, "not_found": True}
+        return {"error": str(exc)}
     except Exception as exc:
         return {"error": str(exc)}
 
@@ -84,6 +93,9 @@ async def orion_job_status(job_id: str) -> dict[str, Any]:
 @router.delete("/orion/jobs/{job_id}")
 async def orion_cancel_job(job_id: str) -> dict[str, Any]:
     """Cancel an Orion job."""
+    import logging as _logging
+
+    _log = _logging.getLogger(__name__)
     try:
         async with httpx.AsyncClient(
             timeout=15.0,
@@ -93,9 +105,13 @@ async def orion_cancel_job(job_id: str) -> dict[str, Any]:
                 f"{settings.orion_api_url.rstrip('/')}/api/v1/compute/{settings.orion_cluster}/jobs/{job_id}"
             )
             resp.raise_for_status()
+        _log.info("Cancelled Orion job %s", job_id)
         return {"status": "cancelled", "job_id": job_id}
     except Exception as exc:
-        return {"error": str(exc)}
+        _log.error("Failed to cancel Orion job %s: %s", job_id, exc)
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 # ── NERSC ─────────────────────────────────────────────────────────────────────
@@ -172,8 +188,7 @@ async def _resolve_log_path(client: Any, raw: dict | None) -> str:
         matches = [
             e["name"]
             for e in entries
-            if e.get("name", "").rstrip("/").endswith(f"_{slug}")
-            and e.get("type") == "d"
+            if e.get("name", "").rstrip("/").endswith(f"_{slug}") and e.get("type") == "d"
         ]
         if matches:
             matches.sort(reverse=True)  # newest first (timestamp prefix)
@@ -205,7 +220,9 @@ async def nersc_status() -> dict[str, Any]:
             "queue": settings.nersc_queue,
             "container_image": settings.nersc_container_image,
             "time_limit": settings.nersc_time_limit,
-            "available_resources": [r.get("name", r) if isinstance(r, dict) else r for r in resources],
+            "available_resources": [
+                r.get("name", r) if isinstance(r, dict) else r for r in resources
+            ],
         }
     except httpx.TimeoutException:
         return {"status": "timeout", "api_uri": settings.nersc_api_uri}
@@ -233,16 +250,26 @@ async def nersc_job_status(job_id: str) -> dict[str, Any]:
 @router.delete("/nersc/jobs/{job_id}")
 async def nersc_cancel_job(job_id: str) -> dict[str, Any]:
     """Cancel a NERSC job."""
+    import logging as _logging
+
+    _log = _logging.getLogger(__name__)
     try:
-        client = await _nersc_client()
-        async with client:
+        from ...compute.nersc import NERSCClient
+
+        async with NERSCClient() as client:
             await client.cancel_job(job_id)
+        _log.info("Cancelled NERSC job %s", job_id)
         return {"status": "cancelled", "job_id": job_id}
     except Exception as exc:
-        return {"error": str(exc)}
+        _log.error("Failed to cancel NERSC job %s: %s", job_id, exc)
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
-async def _nersc_log_generator(job_id: str, log_path: str, interval: float = 10.0) -> AsyncGenerator[str, None]:
+async def _nersc_log_generator(
+    job_id: str, log_path: str, interval: float = 10.0
+) -> AsyncGenerator[str, None]:
     """SSE generator that polls NERSC job logs every *interval* seconds.
 
     If *log_path* is empty the generator tries to discover the stdout path using

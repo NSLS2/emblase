@@ -30,11 +30,12 @@ router = APIRouter(prefix="/instrument", tags=["instrument"])
 
 # ── State ─────────────────────────────────────────────────────────────────────
 
+
 class _State:
     """Process-global instrument state (single concurrent copy supported)."""
 
     def __init__(self) -> None:
-        self.status: str = "idle"       # idle | running | done | error
+        self.status: str = "idle"  # idle | running | done | error
         self.src: str = ""
         self.rename: str = ""
         self.frames_written: int = 0
@@ -64,6 +65,7 @@ _state = _State()
 
 # ── Request model ─────────────────────────────────────────────────────────────
 
+
 class InstrumentStartRequest(BaseModel):
     src: str = Field(..., description="Source Tiled run path to replay")
     image_key: str = "primary/pil900KW_image"
@@ -72,17 +74,21 @@ class InstrumentStartRequest(BaseModel):
 
 # ── Copy thread ───────────────────────────────────────────────────────────────
 
+
 def _run_copy(req: InstrumentStartRequest) -> None:
     """Run deepcopy in a background thread; updates _state throughout."""
     try:
         import os
+
         try:
             import certifi as _certifi
+
             os.environ.setdefault("SSL_CERT_FILE", _certifi.where())
         except ImportError:
             pass
 
         from tiled.client import from_uri
+
         from ...pipeline.copy_tiled import deepcopy
 
         tiled_uri = settings.tiled_server_uri
@@ -113,10 +119,18 @@ def _run_copy(req: InstrumentStartRequest) -> None:
 
         t_start = time.monotonic()
 
+        # Pre-fetch total frame count so the UI shows a progress bar immediately,
+        # before the structure walk reaches the image array (~10 s of Tiled RPCs).
+        try:
+            img_stream, img_key = req.image_key.rsplit("/", 1)
+            frames_total = src_node[img_stream][img_key].shape[0]
+        except Exception:
+            frames_total = 0
+
         with _state._lock:
             _state.rename = rename
             _state.frames_written = 0
-            _state.frames_total = 0
+            _state.frames_total = frames_total
 
         def _progress(written: int, total: int) -> None:
             if _state._stop_event.is_set():
@@ -150,6 +164,7 @@ def _run_copy(req: InstrumentStartRequest) -> None:
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
+
 
 @router.post("/start")
 async def instrument_start(req: InstrumentStartRequest) -> dict[str, Any]:

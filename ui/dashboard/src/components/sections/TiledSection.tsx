@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { Database, ExternalLink, Folder } from 'lucide-react'
+import { Database, ExternalLink, Folder, Layers } from 'lucide-react'
 import { fetchJSON } from '../../api'
 import type { TiledStatus, AppConfig } from '../../types'
 import { StatusBadge } from '../StatusBadge'
@@ -31,8 +31,15 @@ export function TiledSection({ config, refreshTick }: TiledSectionProps) {
 
   useEffect(() => { fetchStatus() }, [refreshTick])
 
-  // Only show "Checking…" on the very first load — never flicker back once resolved
   const serviceStatus = loading && resolvedStatus === 'loading' ? 'loading' : resolvedStatus
+
+  // Build the Tiled UI browse URL for the output container
+  const browseUrl = (() => {
+    if (!status?.server_uri || !status?.output_container) return null
+    const base = status.server_uri.replace(/\/api\/v1\/?$/, '').replace(/\/$/, '')
+    const path = status.output_container.replace(/^\//, '')
+    return `${base}/ui/browse/${path}`
+  })()
 
   return (
     <Card>
@@ -51,38 +58,27 @@ export function TiledSection({ config, refreshTick }: TiledSectionProps) {
       <CardBody>
         {status && (
           <div className="space-y-3">
+            {/* Server URI */}
             {status.server_uri && (
               <div className="flex items-center justify-between">
-                <span className="text-xs text-gray-500">Server URI</span>
-                <a
-                  href={status.server_uri}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex items-center gap-1 text-xs text-blue-500 hover:text-blue-400 font-mono truncate max-w-xs"
-                >
-                  {status.server_uri}
+                <span className="text-xs text-secondary">Server</span>
+                <a href={status.server_uri} target="_blank" rel="noopener noreferrer"
+                  className="flex items-center gap-1 text-xs text-blue-500 hover:text-blue-400 font-mono truncate max-w-[200px]">
+                  {status.server_uri.replace(/^https?:\/\//, '')}
                   <ExternalLink className="h-3 w-3 flex-shrink-0" />
                 </a>
               </div>
             )}
+
+            {/* Version */}
             {status.tiled_version && (
               <div className="flex items-center justify-between">
-                <span className="text-xs text-secondary">Tiled Version</span>
+                <span className="text-xs text-secondary">Tiled</span>
                 <span className="text-xs text-primary font-mono">{status.tiled_version}</span>
               </div>
             )}
-            {status.python_version && (
-              <div className="flex items-center justify-between">
-                <span className="text-xs text-secondary">Python</span>
-                <span className="text-xs text-primary font-mono">{status.python_version}</span>
-              </div>
-            )}
-            {status.api_version !== undefined && status.api_version !== 0 && (
-              <div className="flex items-center justify-between">
-                <span className="text-xs text-secondary">API Version</span>
-                <span className="text-xs text-primary font-mono">{status.api_version}</span>
-              </div>
-            )}
+
+            {/* Error */}
             {status.error && (
               <p className="text-xs text-red-500 bg-red-500/10 border border-red-500/20 rounded px-2 py-1.5 font-mono">
                 {status.error}
@@ -90,29 +86,44 @@ export function TiledSection({ config, refreshTick }: TiledSectionProps) {
             )}
             {status.message && <p className="text-xs text-secondary">{status.message}</p>}
 
-            {/* Container paths */}
-            <div className="pt-1 space-y-2">
-              <ContainerPath label="Input Container" path={config?.tiled_input_container} />
-              <ContainerPath label="Output Container" path={config?.tiled_output_container} />
-            </div>
+            {/* Output container */}
+            {status.output_container && (
+              <div className="rounded-lg border border-blue-500/20 bg-blue-500/5 px-3 py-2.5 space-y-1.5">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <Folder className="h-3.5 w-3.5 text-blue-400 flex-shrink-0" />
+                    <span className="text-xs text-secondary font-medium">Output container</span>
+                  </div>
+                  {browseUrl && (
+                    <a href={browseUrl} target="_blank" rel="noopener noreferrer"
+                      title="Browse in Tiled UI"
+                      className="flex items-center gap-1 text-xs text-blue-500 hover:text-blue-400 transition-colors flex-shrink-0">
+                      Browse <ExternalLink className="h-3 w-3" />
+                    </a>
+                  )}
+                </div>
+                <p className="text-xs text-blue-300/60 dark:text-blue-300/40 font-mono truncate pl-5">
+                  {status.output_container}
+                </p>
+                {status.output_count != null && (
+                  <div className="flex items-center gap-1.5 pl-5">
+                    <Layers className="h-3 w-3 text-blue-400 flex-shrink-0" />
+                    <span className="text-xs text-secondary">
+                      <span className="text-primary font-medium">{status.output_count.toLocaleString()}</span>
+                      {' '}result{status.output_count !== 1 ? 's' : ''}
+                    </span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            <p className="text-xs text-muted leading-relaxed pt-1">
+              Tiled provides structured access to raw detector frames and visualizes computed embeddings.
+            </p>
           </div>
         )}
-        {loading && <p className="text-xs text-muted">Checking Tiled…</p>}
+        {loading && !status && <p className="text-xs text-muted">Checking Tiled…</p>}
       </CardBody>
     </Card>
-  )
-}
-
-function ContainerPath({ label, path }: { label: string; path?: string }) {
-  return (
-    <div className="flex items-start gap-2 rounded-lg bg-page border border-theme px-3 py-2">
-      <Folder className="h-3.5 w-3.5 text-muted mt-0.5 flex-shrink-0" />
-      <div className="min-w-0">
-        <p className="text-xs text-secondary">{label}</p>
-        <p className="text-xs text-primary font-mono truncate">
-          {path || <span className="text-muted italic">not configured</span>}
-        </p>
-      </div>
-    </div>
   )
 }

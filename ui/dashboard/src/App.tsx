@@ -116,7 +116,6 @@ export default function App() {
 
   const timeString = lastRefresh.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 
-  const bnlLogo = theme === 'dark' ? '/logos/bnl-logo-dark.png'     : '/logos/bnl-logo-light.png'
   const genLogo = theme === 'dark' ? '/logos/genesis-logo-dark.png' : '/logos/genesis-logo-light.png'
 
   return (
@@ -127,10 +126,10 @@ export default function App() {
           <div className="flex h-16 items-center justify-between gap-4">
             <div className="flex items-center gap-4 min-w-0">
               <div className="flex items-center gap-2 flex-shrink-0">
-                <img src={bnlLogo} alt="BNL" className="h-8 object-contain"
+                <img src={genLogo} alt="Genesis" className="h-8 object-contain"
                   onError={e => { (e.target as HTMLImageElement).style.display = 'none' }} />
                 <div className="h-6 w-px bg-theme" />
-                <img src="/logos/tiled-logo.svg" alt="Tiled" className="h-6 object-contain"
+                <img src="/logos/bnl-logo-small.png" alt="BNL" className="h-7 object-contain"
                   onError={e => { (e.target as HTMLImageElement).style.display = 'none' }} />
               </div>
               <div className="min-w-0">
@@ -142,8 +141,6 @@ export default function App() {
             </div>
 
             <div className="hidden lg:flex items-center gap-3 flex-shrink-0">
-              <img src={genLogo} alt="Genesis" className="h-8 object-contain opacity-80"
-                onError={e => { (e.target as HTMLImageElement).style.display = 'none' }} />
             </div>
 
             <div className="flex items-center gap-2 flex-shrink-0">
@@ -165,20 +162,6 @@ export default function App() {
         </div>
       </header>
 
-      {/* ── Science banner ─────────────────────────────────────────────────── */}
-      <div className="border-b border-theme bg-gradient-to-r from-blue-500/5 via-transparent to-violet-500/5">
-        <div className="mx-auto max-w-7xl px-4 sm:px-6 py-3">
-          <p className="text-xs text-muted leading-relaxed text-center">
-            <span className="text-primary font-medium">Mission:</span>{' '}
-            AI/ML latent space exploration of synchrotron X-ray scattering data, combining{' '}
-            <span className="text-blue-500">Tiled</span> scientific data services,{' '}
-            <span className="text-violet-500">NERSC Perlmutter</span> GPU supercomputing,{' '}
-            <span className="text-pink-500">MLflow</span> model registry, and{' '}
-            <span className="text-teal-500">AmSC AI</span> assistants —
-            all orchestrated through the <span className="text-amber-500">American Science Cloud</span>.
-          </p>
-        </div>
-      </div>
 
       {/* ── Main content ───────────────────────────────────────────────────── */}
       <main className="mx-auto max-w-7xl px-4 sm:px-6 py-6 space-y-6">
@@ -295,9 +278,34 @@ function PipelineCard() {
           </React.Fragment>
         ))}
       </div>
-      <p className="text-[10px] text-muted mt-2 italic">
-        MLflow is read-only — models are pre-trained and loaded by compute jobs; no training happens here.
-      </p>
+      <div className="mt-4 pt-4 border-t border-theme space-y-2">
+        <p className="text-xs text-secondary font-medium">Mission</p>
+        <p className="text-xs text-muted leading-relaxed">
+          EMBLASE (<span className="text-primary font-medium">EMB</span>eddings &amp;{' '}
+          <span className="text-primary font-medium">LA</span>tent{' '}
+          <span className="text-primary font-medium">S</span>pace{' '}
+          <span className="text-primary font-medium">E</span>xplorer) automates AI/ML
+          analysis of synchrotron X-ray scattering data collected at{' '}
+          <span className="text-yellow-500">BNL NSLS-II</span> beamlines.
+          Raw detector frames are ingested by{' '}
+          <span className="text-blue-500">Tiled</span> and encoded into high-dimensional
+          embedding vectors by vision-transformer or variational-autoencoder models hosted
+          on <span className="text-pink-500">MLflow</span>.
+          Inference runs on GPU nodes at{' '}
+          <span className="text-violet-500">NERSC Perlmutter</span> or the{' '}
+          <span className="text-violet-400">Orion</span> cluster, submitted and monitored
+          directly from this dashboard.
+          Embeddings are written back to{' '}
+          <span className="text-emerald-500">Tiled</span> alongside optional UMAP
+          projections and classifier labels, then catalogued in{' '}
+          <span className="text-orange-500">OpenMetadata</span> for provenance tracking.
+          Scientists can explore the resulting latent space interactively, query
+          experiment metadata, and consult{' '}
+          <span className="text-teal-500">AmSC AI</span> assistants — all through
+          a unified interface orchestrated by the{' '}
+          <span className="text-amber-500">American Science Cloud</span>.
+        </p>
+      </div>
     </div>
   )
 }
