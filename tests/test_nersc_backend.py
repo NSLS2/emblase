@@ -749,7 +749,7 @@ async def test_nersc_backend_submit_script_has_secrets_preamble(monkeypatch):
     assert "emblase job environment" in script_src, "secrets preamble header not found"
     parsed = urlparse("https://t.test")
     assert parsed.scheme == "https" and parsed.hostname == "t.test"
-    assert f"EMBLASE_TILED_SERVER_URI='{parsed.geturl()}'" in script_src
+    assert f"'EMBLASE_TILED_SERVER_URI', '{parsed.geturl()}'" in script_src
     # No file-reading logic — credentials are baked in directly
     assert "open(" not in script_src.split("# --- end")[0]
     assert "os.remove" not in script_src
