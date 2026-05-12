@@ -5,7 +5,7 @@ Subcommands
 -----------
 push   <path>       Upload a local file or directory and register it.
 pull   <name>       Download a registered model.
-list               List all registered models.
+list                List all registered models.
 delete <name>       Delete a registered model and all its versions.
 
 Common flags

@@ -34,19 +34,6 @@ def _make_event(key):
     return e
 
 
-def test_single_child_created_submits_once():
-    """A single child_created event submits exactly one job."""
-    submit_mock = AsyncMock(return_value=42)
-    watcher, loop = _make_watcher(submit_mock)
-
-    watcher._on_child_created(_make_event("run_abc"))
-
-    # Give the coroutine time to run
-    time.sleep(0.2)
-
-    assert submit_mock.call_count == 1
-
-
 def test_duplicate_child_created_submits_once():
     """Two child_created events for the same key submit only one job."""
     submit_mock = AsyncMock(return_value=42)
@@ -101,3 +88,16 @@ def test_different_runs_each_submit_once():
     time.sleep(0.2)
 
     assert submit_mock.call_count == 2
+
+
+def test_stop_disconnects_subscription():
+    """stop() calls disconnect on the active subscription if one exists."""
+    submit_mock = AsyncMock(return_value=42)
+    watcher, loop = _make_watcher(submit_mock)
+
+    mock_sub = MagicMock()
+    watcher._sub = mock_sub
+
+    watcher.stop()
+
+    mock_sub.disconnect.assert_called_once()

@@ -14,22 +14,30 @@ cat        Print the contents of a remote file via the IRI filesystem API.
 Secrets are baked into the job script at submit time (from your local .env) and
 the script is uploaded chmod 400.  No separate secrets setup step is needed.
 
-Submit a batch job::
+Default input/output paths are read from the environment:
+
+    EMBLASE_TILED_INPUT_CONTAINER  — base path for --run (e.g. proposal/pi/project/_inputs)
+    EMBLASE_TILED_OUTPUT_CONTAINER — base path for --output (e.g. proposal/pi/project/results)
+
+Path resolution rules (same as pathlib):
+  --run run_1086139       → <EMBLASE_TILED_INPUT_CONTAINER>/run_1086139
+  --run ./run_1086139     → same as above
+  --run /full/tiled/path  → full/tiled/path  (absolute, overrides env var)
+
+Submit a batch job (paths resolved against env-var defaults)::
 
     python scripts/submit_nersc.py infer \\
-        --model   bnl-nsls2-smi-vit \\
-        --run     smi/sandbox/confab26_demo/inputs/run_1086139 \\
-        --output  smi/sandbox/confab26_demo/results/run_1086139_vit \\
+        --model      bnl-nsls2-smi-vit \\
+        --run        run_1086139 \\
         --batch-size 1 \\
         --thumb-mode logroi \\
-        --param temperature:primary/LinkamThermal_temperature_current:float:°C
+        --param      temperature:primary/LinkamThermal_temperature_current:float:°C
 
 Submit a streaming job::
 
     python scripts/submit_nersc.py stream \\
-        --model  bnl-nsls2-smi-vit \\
-        --run    smi/sandbox/confab26_demo/inputs_copy/run_xyz \\
-        --output smi/sandbox/confab26_demo/results/run_xyz \\
+        --model      bnl-nsls2-smi-vit \\
+        --run        run_xyz \\
         --thumb-mode logroi
 
 Check status of a submitted task::
@@ -72,6 +80,7 @@ except ImportError:
 from emblase.compute import parse_param_specs  # noqa: E402
 from emblase.compute.base import JobStatus  # noqa: E402
 from emblase.compute.nersc import _NERSC_STATE_MAP, NERSCBackend, NERSCClient  # noqa: E402
+from emblase.config import resolve_tiled_path, settings  # noqa: E402
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -134,10 +143,11 @@ def _build_parser() -> argparse.ArgumentParser:
             "--output",
             metavar="TILED_PATH",
             default="",
-            help="Tiled path for output.  If the path is an existing LatentSpaceEmbedding "
-            "it is appended to; if it doesn't exist an LSE is created there; if it "
-            "exists but is not an LSE a new LSE named {run_key}_{mode}_{timestamp} "
-            "is created inside it.",
+            help="Tiled path for output.  Absolute (starts with '/') overrides "
+            "EMBLASE_TILED_OUTPUT_CONTAINER; relative (or no prefix) is appended to it. "
+            "If the resolved path is an existing LatentSpaceEmbedding it is appended to; "
+            "if it doesn't exist an LSE is created there; if it exists but is not an LSE "
+            "a new LSE named {run_key}_{mode}_{timestamp} is created inside it.",
         )
         p.add_argument(
             "--thumb-mode",
@@ -173,7 +183,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "--run",
         metavar="TILED_PATH",
         default="",
-        help="Tiled path to a BlueskyRun container.",
+        help="Tiled path to a BlueskyRun container.  Absolute (starts with '/') overrides "
+        "EMBLASE_TILED_INPUT_CONTAINER; relative (or no prefix) is appended to it.",
     )
 
     # -- stream subcommand --
@@ -183,7 +194,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "--run",
         required=True,
         metavar="TILED_PATH",
-        help="Tiled path to the BlueskyRun to watch (inputs_copy container).",
+        help="Tiled path to the BlueskyRun to watch.  Absolute (starts with '/') overrides "
+        "EMBLASE_TILED_INPUT_CONTAINER; relative (or no prefix) is appended to it.",
     )
 
     # -- status subcommand --
@@ -212,12 +224,15 @@ async def _infer(args: argparse.Namespace) -> None:
     backend = NERSCBackend()
     param_specs = parse_param_specs(args.params)
 
+    run = resolve_tiled_path(args.run, settings.tiled_input_container)
+    output = resolve_tiled_path(args.output, settings.tiled_output_container)
+
     print("Backend         : NERSC")
     print(
         f"Model           : {args.model}  ver={args.mlflow_version or 'latest'}  batch_size={args.batch_size}  thumb_mode={args.thumb_mode}"
     )
-    print(f"Run             : {args.run or '(none)'}")
-    print(f"Output          : {args.output or '(none)'}")
+    print(f"Run             : {run or '(none)'}")
+    print(f"Output          : {output or '(none)'}")
     print(f"Image key       : {args.image_key}")
     if param_specs:
         print(f"Params          : {list(param_specs)}")
@@ -238,13 +253,13 @@ async def _infer(args: argparse.Namespace) -> None:
     task_id = await backend.submit(
         model_name=args.model,
         batch_size=args.batch_size,
-        output=args.output or "",
+        output=output,
         thumb_mode=args.thumb_mode,
         mlflow_version=args.mlflow_version,
         param_specs=param_specs,
         projector=args.projector,
         classifier=args.classifier,
-        run_path=args.run or "",
+        run_path=run,
         image_key=args.image_key,
     )
     print(f"Task submitted  : {task_id}")
@@ -261,12 +276,15 @@ async def _stream(args: argparse.Namespace) -> None:
     backend = NERSCBackend()
     param_specs = parse_param_specs(args.params)
 
+    run = resolve_tiled_path(args.run, settings.tiled_input_container)
+    output = resolve_tiled_path(args.output, settings.tiled_output_container)
+
     print("Backend         : NERSC")
     print(
         f"Model           : {args.model}  ver={args.mlflow_version or 'latest'}  batch_size={args.batch_size}  thumb_mode={args.thumb_mode}"
     )
-    print(f"Run             : {args.run}")
-    print(f"Output          : {args.output}")
+    print(f"Run             : {run}")
+    print(f"Output          : {output}")
     print(f"Image key       : {args.image_key}")
     if param_specs:
         print(f"Params          : {list(param_specs)}")
@@ -285,8 +303,8 @@ async def _stream(args: argparse.Namespace) -> None:
 
     print(f"\nSubmitting {args.model!r} streaming inference job to NERSC...")
     task_id = await backend.submit_streaming(
-        run_path=args.run,
-        output=args.output,
+        run_path=run,
+        output=output,
         model_name=args.model,
         batch_size=args.batch_size,
         mlflow_version=args.mlflow_version,

@@ -17,13 +17,21 @@ Backends
     Submits to NERSC Perlmutter via the IRI API + Shifter.
     Requires ``EMBLASE_NERSC_API_TOKEN``.
 
+Default input/output paths are read from the environment:
+
+    EMBLASE_TILED_INPUT_CONTAINER  — base path for --inputs (e.g. proposal/pi/project/_inputs)
+    EMBLASE_TILED_OUTPUT_CONTAINER — base path for --output (e.g. proposal/pi/project/results)
+
+Path resolution rules (same as pathlib):
+  --inputs subdir         → <EMBLASE_TILED_INPUT_CONTAINER>/subdir
+  --inputs /full/path     → full/path  (absolute, overrides env var)
+  (omitted)               → EMBLASE_TILED_INPUT_CONTAINER as-is
+
 Example — Terminal 1 (start the watcher)
 -----------------------------------------
 ::
 
     pixi run python scripts/start_watcher.py \\
-        --inputs     smi/sandbox/confab26_demo/inputs_copy \\
-        --output     smi/sandbox/confab26_demo/results \\
         --backend    orion \\
         --model      bnl-nsls2-smi-vit \\
         --image-key  primary/pil900KW_image \\
@@ -38,8 +46,6 @@ Example — Terminal 2 (simulate acquisition)
 ::
 
     pixi run python scripts/simulate_acquisition.py \\
-        --src         smi/sandbox/confab26_demo/inputs/run_1086139 \\
-        --dst         smi/sandbox/confab26_demo/inputs_copy \\
         --rename      run_live_1086139 \\
         --access-tags smi_sandbox \\
         --batch-delay 0.5
@@ -66,7 +72,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from emblase.compute import build_backend, parse_param_specs  # noqa: E402
-from emblase.config import settings  # noqa: E402
+from emblase.config import resolve_tiled_path, settings  # noqa: E402
 from emblase.pipeline.streaming import InputsWatcher  # noqa: E402
 
 try:
@@ -82,18 +88,22 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--inputs",
-        required=True,
+        default="",
         metavar="TILED_PATH",
-        help="Tiled path of the inputs container to watch.",
+        help="Tiled path of the inputs container to watch.  Absolute (starts with '/') "
+        "overrides EMBLASE_TILED_INPUT_CONTAINER; relative (or no prefix) is appended to it.  "
+        "Defaults to EMBLASE_TILED_INPUT_CONTAINER.",
     )
     p.add_argument(
         "--output",
-        required=True,
+        default="",
         metavar="TILED_PATH",
-        help="Tiled --output path passed to each streaming job.  If the path is an existing "
-        "LatentSpaceEmbedding it is appended to; if it doesn't exist an LSE is created "
-        "there; if it exists but is not an LSE a new LSE named "
-        "{run_key}_stream_{timestamp} is created inside it.",
+        help="Tiled path passed to each streaming job.  Absolute (starts with '/') overrides "
+        "EMBLASE_TILED_OUTPUT_CONTAINER; relative (or no prefix) is appended to it.  "
+        "If the resolved path is an existing LatentSpaceEmbedding it is appended to; "
+        "if it doesn't exist an LSE is created there; if it exists but is not an LSE "
+        "a new LSE named {run_key}_stream_{timestamp} is created inside it.  "
+        "Defaults to EMBLASE_TILED_OUTPUT_CONTAINER.",
     )
     p.add_argument(
         "--backend",
@@ -188,12 +198,26 @@ def main() -> None:
     if not settings.tiled_server_uri:
         sys.exit("EMBLASE_TILED_SERVER_URI is not set — check your .env file.")
 
+    inputs_path = resolve_tiled_path(args.inputs, settings.tiled_input_container)
+    output_path = resolve_tiled_path(args.output, settings.tiled_output_container)
+
+    if not inputs_path:
+        sys.exit(
+            "--inputs not specified and EMBLASE_TILED_INPUT_CONTAINER is not set — "
+            "check your .env file."
+        )
+    if not output_path:
+        sys.exit(
+            "--output not specified and EMBLASE_TILED_OUTPUT_CONTAINER is not set — "
+            "check your .env file."
+        )
+
     client = from_uri(settings.tiled_server_uri, api_key=settings.tiled_api_key or None)
-    segments = [s for s in args.inputs.split("/") if s]
+    segments = [s for s in inputs_path.split("/") if s]
     try:
         inputs_node = client[tuple(segments)]
     except KeyError:
-        sys.exit(f"Inputs container not found in Tiled: {args.inputs}")
+        sys.exit(f"Inputs container not found in Tiled: {inputs_path}")
 
     backend = build_backend(args.backend)
     access_tags = [t.strip() for t in args.access_tags.split(",") if t.strip()] or None
@@ -209,7 +233,7 @@ def main() -> None:
 
     watcher = InputsWatcher(
         inputs_node=inputs_node,
-        output_root=args.output,
+        output_root=output_path,
         backend=backend,
         model_name=args.model,
         batch_size=args.batch_size,
@@ -237,8 +261,8 @@ def main() -> None:
     print(
         f"Model           : {args.model}  ver={args.mlflow_version or 'latest'}  batch_size={args.batch_size}  thumb_mode={args.thumb_mode}"
     )
-    print(f"Watching        : {args.inputs}")
-    print(f"Output          : {args.output}")
+    print(f"Watching        : {inputs_path}")
+    print(f"Output          : {output_path}")
     print(f"Image key       : {args.image_key}")
     if param_specs:
         print(f"Params          : {list(param_specs)}")
