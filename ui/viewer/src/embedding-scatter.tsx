@@ -1420,6 +1420,37 @@ function EmbeddingScatter({
     } catch { /* ignore */ }
   }, [chatSessionKey]);
 
+  /** Strip service-only XML tags from LLM output before display.
+   *  Removes complete <tag>...</tag> blocks and incomplete trailing opening
+   *  tags still being streamed (e.g. <memory> with no closing tag yet). */
+  const stripServiceTags = React.useCallback((text: string): string => {
+    const SERVICE_TAGS = ["memory"];
+    let out = text;
+    for (const tag of SERVICE_TAGS) {
+      out = out.replace(new RegExp(`<${tag}>[\\s\\S]*?<\\/${tag}>`, "g"), "");
+      out = out.replace(new RegExp(`<${tag}>[\\s\\S]*$`), "");
+    }
+    return out.trim();
+  }, []);
+
+  /** Build the developer_prompt for the first message of a new session,
+   *  injecting current UI selection context so the model is grounded from turn 1.
+   *  The server already injects dataset metadata (model, dims, node path) — this
+   *  adds only what the server cannot know: which point/region the user has selected. */
+  const buildPrimingContext = React.useCallback((): string | undefined => {
+    const parts: string[] = [];
+    if (selected) {
+      parts.push(`Selected point index: ${selected.indx}`);
+      if (selected.label) parts.push(`Model label: ${selected.label}`);
+      if (selected.userLabel) parts.push(`User label: ${selected.userLabel}`);
+      if (selected.path) parts.push(`Source path: ${selected.path}`);
+    }
+    if (lassoSelected.size > 0) {
+      parts.push(`Lasso-selected point indices: ${Array.from(lassoSelected).join(", ")}`);
+    }
+    return parts.length > 0 ? parts.join("\n") : undefined;
+  }, [selected, lassoSelected]);
+
   const sendChatMessage = React.useCallback(async () => {
     const text = chatInput.trim();
     if (!text || chatSending) return;
@@ -1440,13 +1471,15 @@ function EmbeddingScatter({
 
     try {
       const sessionId = localStorage.getItem(chatSessionKey);
+      const isNewSession = !sessionId;
       const res = await fetch(`${CHAT_PROXY}/chat/stream`, {
         method: "POST",
         headers: authHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify({
           message: text,
           node_path: nodePath,
-          chat_session_id: sessionId ?? null,
+          developer_prompt: isNewSession ? buildPrimingContext() : undefined,
+          chat_session_id: sessionId ?? undefined,
         }),
       });
       if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
@@ -1459,25 +1492,42 @@ function EmbeddingScatter({
         const { done, value } = await reader.read();
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() ?? "";
-        for (const line of lines) {
-          if (!line.startsWith("data: ")) continue;
+        // SSE events are delimited by double newlines
+        const parts = buffer.split("\n\n");
+        buffer = parts.pop() ?? "";
+        for (const part of parts) {
+          if (!part.startsWith("data: ")) continue;
           try {
-            const evt = JSON.parse(line.slice(6));
+            const evt = JSON.parse(part.slice(6));
             if (evt.type === "chunk") {
               setChatMessages((prev) => prev.map((m) =>
-                m.id === assistantId ? { ...m, content: m.content + evt.text } : m,
+                m.id === assistantId
+                  ? { ...m, content: stripServiceTags(m.content + evt.text) }
+                  : m,
               ));
             } else if (evt.type === "done") {
               if (evt.chat_session_id) localStorage.setItem(chatSessionKey, evt.chat_session_id);
+              // Replace streamed content with the server-cleaned final text
+              if (evt.response_text != null) {
+                setChatMessages((prev) => prev.map((m) =>
+                  m.id === assistantId ? { ...m, content: stripServiceTags(evt.response_text) } : m,
+                ));
+              }
+            } else if (evt.type === "error") {
+              setChatMessages((prev) => prev.map((m) =>
+                m.id === assistantId ? { ...m, content: `⚠️ ${evt.message ?? "Unknown error"}` } : m,
+              ));
             }
           } catch { /* ignore malformed */ }
         }
       }
-    } catch { /* ignore network errors */ }
+    } catch (err) {
+      setChatMessages((prev) => prev.map((m) =>
+        m.id === assistantId ? { ...m, content: `⚠️ ${err instanceof Error ? err.message : "Network error"}` } : m,
+      ));
+    }
     setChatSending(false);
-  }, [chatInput, chatSending, chatSessionKey]);
+  }, [chatInput, chatSending, chatSessionKey, buildPrimingContext, stripServiceTags]);
 
   const clearChatHistory = React.useCallback(() => {
     localStorage.removeItem(chatSessionKey);
