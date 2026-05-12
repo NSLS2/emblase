@@ -362,6 +362,8 @@ All settings are read from `.env` (or environment variables), prefixed
 `EMBLASE_`. Copy [`.env.example`](.env.example) to `.env` and fill in your
 values.
 
+### Compute / pipeline variables
+
 | Variable | Description |
 |----------|-------------|
 | `EMBLASE_TILED_SERVER_URI` | Tiled server URL |
@@ -380,6 +382,51 @@ values.
 | `EMBLASE_NERSC_WORKING_DIR` | Absolute scratch path for scripts and logs (e.g. `/pscratch/sd/d/<user>/emblase/jobs`) |
 | `EMBLASE_NERSC_MODELS_DIR` | Absolute scratch path where MLflow models are cached on Perlmutter |
 | `EMBLASE_NERSC_TIME_LIMIT` | Wall-clock limit passed to Slurm (default `01:00:00`) |
+
+### Chat proxy variables (Tiled router plugin)
+
+The `emblase.tiled.router` plugin proxies browser chat requests to the AmSC
+chat service.  Authentication uses **per-user Entra OBO** (On-Behalf-Of) when
+all four `EMBLASE_ENTRA_*` variables are set, and falls back to a static
+service-account token otherwise.
+
+| Variable | Description |
+|----------|-------------|
+| `EMBLASE_CHATAPP_URL` | Base URL of the AmSC chat service (default: `https://chat-amsc-dev.nsls2.bnl.gov`) |
+| `EMBLASE_CHATAPP_MODEL` | LLM model name forwarded to AmSC (default: `openai/gpt-oss-20b`) |
+| `EMBLASE_ENTRA_TENANT_ID` | Azure AD tenant ID — required for OBO |
+| `EMBLASE_ENTRA_CLIENT_ID` | Tiled's own Entra app registration client ID — required for OBO |
+| `EMBLASE_ENTRA_CLIENT_SECRET` | Tiled's Entra client secret — required for OBO |
+| `EMBLASE_CHAT_APP_SCOPE` | AmSC scope, e.g. `api://<chat_app_client_id>/access_as_user` — required for OBO |
+| `EMBLASE_CHATAPP_TOKEN` | Fallback static bearer token (service account); used only when OBO vars are absent |
+
+#### How OBO works
+
+When a user opens the Latent Space Explorer, their browser holds a short-lived
+Tiled HMAC JWT (minted by Tiled after Entra OIDC login).  The Emblase router
+extracts the Entra `access_token` and `refresh_token` stored inside that JWT's
+`state` payload, and performs a Microsoft OBO exchange to obtain a fresh Entra
+token scoped to AmSC.  This token is forwarded to AmSC in `Authorization:
+Bearer`, giving AmSC the user's real Entra identity.
+
+When the Entra access token expires (~1 h), the router silently refreshes it
+using the stored refresh token and writes the new tokens back to the Tiled
+session DB — so the user never needs to log in again for the lifetime of their
+Tiled session.
+
+**Prerequisites on the Entra app registration:**
+
+1. The `offline_access` permission must be consented (enables refresh tokens).
+2. The Tiled client secret (`EMBLASE_ENTRA_CLIENT_SECRET`) must be from the
+   same app registration as `EMBLASE_ENTRA_CLIENT_ID`.
+3. AmSC's app registration must expose the `access_as_user` scope and the
+   Tiled app registration must be granted permission to request it.
+
+**Security note:** The Entra access token lives inside the Tiled HMAC JWT,
+which is base64-encoded (not encrypted) and sent to the browser.  The JWT is
+short-lived (default 15 min) and only transmitted over HTTPS.  This is a
+conscious design trade-off — the alternative would require an additional
+server-side token store.
 
 ---
 
@@ -410,7 +457,10 @@ src/emblase/
 │   ├── streaming.py        # InputsWatcher — subscribes to inputs_copy via WebSocket
 │   └── copy_tiled.py       # deepcopy() for BlueskyRuns; copy_embedding() for LSE containers
 ├── tiled/
-│   └── client.py           # read_images, write_output, LatentSpaceEmbedding, THUMB_MODES
+│   ├── client.py           # read_images, write_output, LatentSpaceEmbedding, THUMB_MODES
+│   ├── router.py           # FastAPI router plugin: static asset serving + chat OBO proxy
+│   └── static/
+│       └── main.js         # Compiled Latent Space Explorer UI (built from ui/embedding-view/)
 └── worker/
     ├── inference.py.tmpl           # batch inference node script (params + projector)
     └── streaming_inference.py.tmpl # streaming inference node script (params + projector)
@@ -427,6 +477,10 @@ models/
 ├── noop/                   # NoopEncoder (seeded random, for testing)
 ├── vit/                    # ViT weights + loader.py (optional local override)
 └── umap_approx/            # neural_dimred_wrapper.py, scaler.pkl, umap_approximator.pth (projector model layout)
+ui/
+└── embedding-view/         # React/TypeScript source for the Latent Space Explorer plugin
+    └── src/
+        └── embedding-scatter.tsx  # Main scatter plot component (build → static/main.js)
 tests/                      # pytest suite (mocked, no hardware required)
 ```
 
