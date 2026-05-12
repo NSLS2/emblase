@@ -65,10 +65,13 @@ async def mlflow_status() -> dict[str, Any]:
             "experiment": settings.mlflow_experiment,
             "model_prefix": settings.mlflow_model_prefix,
         }
-    except Exception as exc:
+    except Exception:
+        import logging as _logging
+
+        _logging.getLogger(__name__).exception("MLflow connectivity check failed")
         return {
             "status": "error",
-            "error": str(exc),
+            "error": "An internal error has occurred.",
             "tracking_uri": settings.mlflow_tracking_uri,
         }
 
@@ -197,14 +200,14 @@ async def openmetadata_status() -> dict[str, Any]:
             "projects": projects,
             "project_count": len(projects),
         }
-    except Exception as exc:
-        _log.warning("AmSC catalog connectivity check failed: %s", exc)
+    except Exception:
+        _log.exception("AmSC catalog connectivity check failed")
         return {
             "status": "error",
             "catalog_url": settings.amsc_openmetadata_catalog_url,
             "catalog_name": catalog_name,
             "root_fqn": root_fqn,
-            "error": str(exc),
+            "error": "An internal error has occurred.",
         }
 
 
