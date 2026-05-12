@@ -262,4 +262,8 @@ async def openmetadata_artifacts(
         }
     except Exception as exc:
         _log.warning("AmSC catalog search failed: %s", exc)
-        return {"artifacts": [], "total": 0, "error": str(exc)}
+        return {
+            "artifacts": [],
+            "total": 0,
+            "error": "Internal error while querying catalog",
+        }
