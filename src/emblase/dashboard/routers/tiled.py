@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any
 
 import httpx
@@ -11,6 +12,7 @@ from fastapi import APIRouter
 from ...config import settings
 
 router = APIRouter(prefix="/tiled", tags=["tiled"])
+logger = logging.getLogger(__name__)
 
 
 async def _tiled_get(path: str, timeout: float = 8.0) -> dict[str, Any]:
@@ -57,8 +59,13 @@ async def tiled_status() -> dict[str, Any]:
         }
     except httpx.TimeoutException:
         return {"status": "timeout", "server_uri": settings.tiled_server_uri}
-    except Exception as exc:
-        return {"status": "error", "error": str(exc), "server_uri": settings.tiled_server_uri}
+    except Exception:
+        logger.exception("Unexpected error while fetching Tiled status")
+        return {
+            "status": "error",
+            "error": "An internal error occurred while retrieving Tiled status.",
+            "server_uri": settings.tiled_server_uri,
+        }
 
 
 @router.get("/container")
@@ -79,8 +86,9 @@ async def tiled_container_info() -> dict[str, Any]:
                 "specs": [s.get("name") for s in attributes.get("specs", [])],
                 "metadata": attributes.get("metadata", {}),
             }
-        except Exception as exc:
-            return {"path": path, "error": str(exc)}
+        except Exception:
+            logger.exception("Unexpected error while fetching Tiled container info for path '%s'", path)
+            return {"path": path, "error": "An internal error occurred while retrieving container info."}
 
     input_info, output_info = await asyncio.gather(
         _container_info(settings.tiled_input_container),
