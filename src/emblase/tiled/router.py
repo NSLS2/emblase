@@ -20,7 +20,7 @@ When the browser authenticates to Tiled via Entra OIDC, Tiled's
 This router retrieves those tokens via ``get_session_state`` (which decodes
 the Tiled JWT without a DB hit) and performs a Microsoft OBO exchange to
 obtain a per-user Entra token scoped to the AmSC chat application (audience
-``api://<chat_app_client_id>``).  That derived token is forwarded to AmSC in
+``api://<chatapp_client_id>``).  That derived token is forwarded to AmSC in
 ``Authorization: Bearer`` — AmSC sees the user's real Entra identity via its
 ``bearer_obo`` auth path.
 
@@ -78,7 +78,7 @@ Required environment variables
   EMBLASE_ENTRA_CLIENT_ID      Tiled's own Entra app registration client ID
   EMBLASE_ENTRA_CLIENT_SECRET  Tiled's Entra client secret
   EMBLASE_CHATAPP_SCOPE        Scope for the AmSC app
-                               e.g. api://<chat_app_client_id>/access_as_user
+                               e.g. api://<chatapp_client_id>/access_as_user
   EMBLASE_CHATAPP_TOKEN        Fallback static bearer token (local dev only)
 """
 
