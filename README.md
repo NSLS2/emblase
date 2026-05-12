@@ -56,19 +56,22 @@ Use `submit_orion.py infer` to process a complete, already-acquired run in one
 shot. No watcher, no WebSocket — ideal for trying different models or
 hyperparameters on existing data.
 
+Set `EMBLASE_TILED_INPUT_CONTAINER` and `EMBLASE_TILED_OUTPUT_CONTAINER` in
+your `.env` file; then `--run` and `--output` accept bare relative keys.
+Absolute paths (starting with `/`) override the env-var base.
+
 ```bash
 python scripts/submit_orion.py infer \
     --model      bnl-nsls2-smi-vit \
-    --run        smi/sandbox/confab26_demo/inputs/run_1086139 \
-    --output     smi/sandbox/confab26_demo/results/run_1086139_vit \
+    --run        run_1086139 \
     --batch-size 1 \
     --thumb-mode logroi \
     --param      temperature:primary/LinkamThermal_temperature_current:float:°C \
     --param      piezo_x:primary/piezo_x:float:μm
 ```
 
-`--run` points at the BlueskyRun container; frames are read from
-`run/primary/<image_key>` (default `pil900KW_image`).
+`--run` points at the BlueskyRun container key within the input container;
+frames are read from `run/primary/<image_key>` (default `primary/pil900KW_image`).
 `--param` stores scalar streams from the same primary event stream alongside
 each embedding in the `_index` table.
 
@@ -111,11 +114,9 @@ arrives.  The backend is selected with `--backend` (default: `orion`).
 
 ```bash
 pixi run python scripts/start_watcher.py \
-  --inputs     smi/sandbox/confab26_demo/inputs_copy \
-  --output     smi/sandbox/confab26_demo/results \
   --backend    orion \
   --model      bnl-nsls2-smi-vit \
-  --image-key  pil900KW_image \
+  --image-key  primary/pil900KW_image \
   --batch-size 1 \
   --thumb-mode logroi \
   --param      temperature:primary/LinkamThermal_temperature_current:float:°C \
@@ -123,14 +124,16 @@ pixi run python scripts/start_watcher.py \
   --no-replay
 ```
 
+`--inputs` and `--output` default to `EMBLASE_TILED_INPUT_CONTAINER` and
+`EMBLASE_TILED_OUTPUT_CONTAINER` from your `.env`. Pass them explicitly
+(relative or absolute) to override.
+
 Wait until `Press Ctrl+C to stop` appears before proceeding.
 
 **Terminal 2 — simulate acquisition (after watcher is ready):**
 
 ```bash
 pixi run python scripts/simulate_acquisition.py \
-  --src         smi/sandbox/confab26_demo/inputs/run_1086139 \
-  --dst         smi/sandbox/confab26_demo/inputs_copy \
   --rename      run_live_1086139 \
   --access-tags smi_sandbox \
   --batch-delay 0.5
@@ -186,7 +189,7 @@ already-initialised Tiled node — no CLI required:
 ```python
 from emblase.projector import train_projector, apply_projector
 
-node = client["smi/sandbox/confab26_demo/results/run_xyz"]
+node = client["<your-output-container>/<run_key>"]
 
 # Fit a new approximator and write projections back to Tiled:
 train_projector(node, projector_dir="models/umap_approx")
@@ -200,11 +203,11 @@ Or via the CLI scripts (thin wrappers over the same functions):
 ```bash
 # apply existing approximator
 pixi run python scripts/compute_projector.py \
-  --dataset smi/sandbox/confab26_demo/results/run_live_1086139_<timestamp>
+  --dataset <your-output-container>/<run_key>
 
 # retrain approximator then write projections
 pixi run python scripts/train_projector.py \
-  --dataset smi/sandbox/confab26_demo/results/run_live_1086139_<timestamp>
+  --dataset <your-output-container>/<run_key>
 ```
 
 ---
@@ -212,10 +215,9 @@ pixi run python scripts/train_projector.py \
 ## Tiled Layout
 
 ```
-smi/sandbox/confab26_demo/
-├── inputs/             # original BlueskyRuns from the detector
-├── inputs_copy/        # runs watched by the streaming pipeline
-└── results/            # LatentSpaceEmbedding containers written by Orion
+<proposal>/<pi>/<project>/
+├── _inputs/            # original BlueskyRuns from the detector (EMBLASE_TILED_INPUT_CONTAINER)
+└── results/            # LatentSpaceEmbedding containers written by jobs (EMBLASE_TILED_OUTPUT_CONTAINER)
 ```
 
 Each `results/<run>/` container (`spec="LatentSpaceEmbedding"`) holds:
@@ -274,23 +276,22 @@ Jobs are submitted to Perlmutter via the [IRI Superfacility API](https://api.iri
    `JOB_DIR` and can be retrieved via `GET /filesystem/download/scratch`.
 
 ```bash
-# submit batch inference
+# submit batch inference (--run relative to EMBLASE_TILED_INPUT_CONTAINER)
 python scripts/submit_nersc.py infer --model bnl-nsls2-smi-vit \
-    --run smi/sandbox/.../inputs_copy/run_xyz --output smi/sandbox/.../results
+    --run run_xyz
 
 # submit streaming (listens for new frames in a Tiled run)
 python scripts/submit_nersc.py stream --model bnl-nsls2-smi-vit \
-    --run smi/sandbox/.../inputs_copy/run_xyz --output smi/sandbox/.../results
+    --run run_xyz
 
 # check status
-python scripts/submit_nersc.py status <job_id>
+python scripts/submit_nersc.py status <task_id>
 
 # cancel
-python scripts/submit_nersc.py cancel <job_id>
+python scripts/submit_nersc.py cancel <task_id>
 
 # tail job output log (path printed at submission time)
-python scripts/submit_nersc.py logs <job_id> \
-    --log-file /pscratch/sd/d/<user>/emblase/jobs/scripts/<ts>_<model>/job.out
+python scripts/submit_nersc.py logs <task_id>
 
 # list available Perlmutter resources
 python scripts/submit_nersc.py resources
@@ -460,7 +461,7 @@ src/emblase/
 │   ├── client.py           # read_images, write_output, LatentSpaceEmbedding, THUMB_MODES
 │   ├── router.py           # FastAPI router plugin: static asset serving + chat OBO proxy
 │   └── static/
-│       └── main.js         # Compiled Latent Space Explorer UI (built from ui/embedding-view/)
+│       └── main.js         # Compiled Latent Space Explorer UI (built from ui/viewer/)
 └── worker/
     ├── inference.py.tmpl           # batch inference node script (params + projector)
     └── streaming_inference.py.tmpl # streaming inference node script (params + projector)
@@ -478,9 +479,10 @@ models/
 ├── vit/                    # ViT weights + loader.py (optional local override)
 └── umap_approx/            # neural_dimred_wrapper.py, scaler.pkl, umap_approximator.pth (projector model layout)
 ui/
-└── embedding-view/         # React/TypeScript source for the Latent Space Explorer plugin
-    └── src/
-        └── embedding-scatter.tsx  # Main scatter plot component (build → static/main.js)
+├── viewer/                 # React/TypeScript source for the Latent Space Explorer plugin
+│   └── src/
+│       └── embedding-scatter.tsx  # Main scatter plot component (build → static/main.js)
+└── dashboard/              # Pre-built EMBLASE Dashboard SPA
 tests/                      # pytest suite (mocked, no hardware required)
 ```
 

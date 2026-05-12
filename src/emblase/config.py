@@ -5,6 +5,24 @@ from pydantic_settings import BaseSettings
 _REPO_MODELS = Path(__file__).resolve().parent.parent.parent / "models"
 
 
+def resolve_tiled_path(flag: str | None, env_default: str) -> str:
+    """Combine a CLI flag value with an env-var default, pathlib-style.
+
+    Rules (mirrors pathlib.Path / behaviour):
+    - flag is None or ""  → return env_default as-is
+    - flag starts with '/' → treat as absolute Tiled path; return flag (ignores env_default)
+    - flag starts with './'  → strip the './' prefix and append to env_default
+    - anything else (letter/digit/…) → append to env_default with '/'
+    """
+    if not flag:
+        return env_default
+    if flag.startswith("/"):
+        return flag.lstrip("/")  # strip leading slash — Tiled paths have no leading slash
+    base = env_default.rstrip("/")
+    relative = flag[2:] if flag.startswith("./") else flag
+    return f"{base}/{relative}" if base else relative
+
+
 class Settings(BaseSettings):
     """Application settings, loaded from environment / .env file."""
 
@@ -20,6 +38,10 @@ class Settings(BaseSettings):
     # Tiled
     tiled_server_uri: str = ""
     tiled_api_key: str = ""
+    # Default Tiled container paths — used as base when --inputs/--output CLI flags
+    # are relative (or omitted).  Override per-deployment in .env.
+    tiled_input_container: str = ""  # e.g. smi/sandbox/confab26_demo/_inputs
+    tiled_output_container: str = ""  # e.g. smi/sandbox/confab26_demo/output
     # Comma-separated Tiled access tags applied to every node written by write_output.
     # Example: "nsls2", "staff,nsls2"
     # If empty, no access_tags argument is passed and server defaults apply.
@@ -75,6 +97,26 @@ class Settings(BaseSettings):
 
     # Compute backend selection: "local", "orion", or "nersc"
     compute_backend: str = "local"
+
+    # AmSC OpenMetadata catalog
+    amsc_openmetadata_catalog_url: str = "https://api.american-science-cloud.org/api/current"
+    amsc_openmetadata_token: str = ""
+    amsc_openmetadata_catalog_name: str = ""  # e.g. "bnl-lse-demo-storage"
+    amsc_openmetadata_parent_fqn: str = ""  # FQN of the parent ScientificWork to publish under
+
+    # Chat app (AmSC LLM assistant)
+    chatapp_url: str = "https://chat-amsc-dev.nsls2.bnl.gov"
+    chatapp_token: str = ""
+    chatapp_model: str = "openai/gpt-oss-20b"
+
+    # Dashboard web server
+    # Port the dashboard FastAPI server listens on (default 8765).
+    # Override with EMBLASE_DASHBOARD_PORT in your .env file.
+    dashboard_port: int = 8765
+    # If true, the dashboard server auto-opens a browser tab on startup.
+    dashboard_open_browser: bool = True
+    # MLflow model name prefix shown in the Models section.
+    mlflow_model_prefix: str = "bnl-nsls2-"
 
     model_config = {
         "env_file": Path(__file__).resolve().parent.parent.parent / ".env",
