@@ -15,6 +15,7 @@ GET  /instrument/progress — SSE stream of progress events while running
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
 import time
 from typing import Any, AsyncGenerator
@@ -24,6 +25,8 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from ...config import settings
+
+_log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/instrument", tags=["instrument"])
 
@@ -158,9 +161,10 @@ def _run_copy(req: InstrumentStartRequest) -> None:
         with _state._lock:
             _state.status = "idle"
     except Exception as exc:
+        _log.error("Instrument copy failed: %s", exc)
         with _state._lock:
             _state.status = "error"
-            _state.error = str(exc)
+            _state.error = "Copy failed — see server logs for details"
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────

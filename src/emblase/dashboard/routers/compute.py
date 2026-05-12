@@ -68,7 +68,8 @@ async def orion_jobs() -> dict[str, Any]:
         jobs = data if isinstance(data, list) else data.get("jobs", [])
         return {"jobs": jobs[:20]}
     except Exception as exc:
-        return {"jobs": [], "error": str(exc)}
+        _log.error("Failed to fetch Orion jobs: %s", exc)
+        return {"jobs": [], "error": "Failed to fetch Orion jobs"}
 
 
 @router.get("/orion/jobs/{job_id}/status")
@@ -92,10 +93,13 @@ async def orion_job_status(job_id: str) -> dict[str, Any]:
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code == 404:
             # Job no longer exists in the Orion API — treat as completed/purged
+            _log.warning("Orion job %s not found (404), treating as completed", job_id)
             return {"job_id": job_id, "state": "COMPLETED", "node": None, "not_found": True}
-        return {"error": str(exc)}
+        _log.error("HTTP error fetching Orion job %s status: %s", job_id, exc)
+        return {"error": "Failed to fetch job status"}
     except Exception as exc:
-        return {"error": str(exc)}
+        _log.error("Error fetching Orion job %s status: %s", job_id, exc)
+        return {"error": "Failed to fetch job status"}
 
 
 @router.delete("/orion/jobs/{job_id}")
@@ -116,7 +120,7 @@ async def orion_cancel_job(job_id: str) -> dict[str, Any]:
         _log.error("Failed to cancel Orion job %s: %s", job_id, exc)
         from fastapi import HTTPException
 
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise HTTPException(status_code=500, detail="Failed to cancel job")
 
 
 # ── NERSC ─────────────────────────────────────────────────────────────────────
@@ -232,7 +236,8 @@ async def nersc_status() -> dict[str, Any]:
     except httpx.TimeoutException:
         return {"status": "timeout", "api_uri": settings.nersc_api_uri}
     except Exception as exc:
-        return {"status": "error", "error": str(exc), "api_uri": settings.nersc_api_uri}
+        _log.error("Error fetching NERSC status: %s", exc)
+        return {"status": "error", "error": "Failed to fetch NERSC status", "api_uri": settings.nersc_api_uri}
 
 
 @router.get("/nersc/jobs/{job_id}/status")
@@ -249,7 +254,8 @@ async def nersc_job_status(job_id: str) -> dict[str, Any]:
             "raw": job.raw,
         }
     except Exception as exc:
-        return {"error": str(exc)}
+        _log.error("Error fetching NERSC job %s status: %s", job_id, exc)
+        return {"error": "Failed to fetch job status"}
 
 
 @router.delete("/nersc/jobs/{job_id}")
@@ -266,7 +272,7 @@ async def nersc_cancel_job(job_id: str) -> dict[str, Any]:
         _log.error("Failed to cancel NERSC job %s: %s", job_id, exc)
         from fastapi import HTTPException
 
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise HTTPException(status_code=500, detail="Failed to cancel job")
 
 
 async def _nersc_log_generator(
@@ -305,7 +311,8 @@ async def _nersc_log_generator(
                         for line in new_lines:
                             yield f"data: {line}\n\n"
                     except Exception as log_exc:
-                        yield f"data: [log not yet available: {log_exc}]\n\n"
+                        _log.warning("Log not yet available for job %s: %s", job_id, log_exc)
+                        yield f"data: [log not yet available]\n\n"
                 else:
                     yield f"data: [locating log file… state={state}]\n\n"
 
@@ -316,7 +323,8 @@ async def _nersc_log_generator(
                     yield f"event: state\ndata: {state}\n\n"
 
         except Exception as exc:
-            yield f"data: [error polling logs: {exc}]\n\n"
+            _log.error("Error polling logs for job %s: %s", job_id, exc)
+            yield f"data: [error polling logs]\n\n"
 
         await asyncio.sleep(interval)
 

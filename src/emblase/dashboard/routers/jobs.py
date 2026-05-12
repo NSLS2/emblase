@@ -7,6 +7,7 @@ Supports:
 
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any, Literal
 
@@ -14,6 +15,8 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from ...config import resolve_tiled_path, settings
+
+_log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
@@ -196,7 +199,8 @@ async def submit_batch(req: BatchJobRequest) -> dict[str, Any]:
             "submitted_at": time.time(),
         }
     except Exception as exc:
-        raise HTTPException(500, str(exc))
+        _log.error("Failed to submit batch job: %s", exc)
+        raise HTTPException(500, "Failed to submit job")
 
 
 @router.post("/stream")
@@ -214,4 +218,5 @@ async def submit_stream(req: StreamJobRequest) -> dict[str, Any]:
             "submitted_at": time.time(),
         }
     except Exception as exc:
-        raise HTTPException(500, str(exc))
+        _log.error("Failed to submit stream job: %s", exc)
+        raise HTTPException(500, "Failed to submit job")

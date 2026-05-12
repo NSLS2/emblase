@@ -15,6 +15,7 @@ GET  /watcher/jobs    — list of all job IDs submitted by the watcher this sess
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
 import time
 from typing import Any
@@ -23,6 +24,8 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from ...config import resolve_tiled_path, settings
+
+_log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/watcher", tags=["watcher"])
 
@@ -233,9 +236,10 @@ def _run_watcher(req: WatcherStartRequest) -> None:
             loop.call_soon_threadsafe(loop.stop)
 
     except Exception as exc:
+        _log.error("Watcher thread failed: %s", exc)
         with _ws._lock:
             _ws.status = "error"
-            _ws.error = str(exc)
+            _ws.error = "Watcher failed — see server logs for details"
             _ws._watcher = None
 
 
