@@ -230,7 +230,9 @@ async def openmetadata_artifacts(
         return {"artifacts": [], "total": 0, "error": "EMBLASE_AMSC_OPENMETADATA_TOKEN not set"}
 
     limit = min(max(1, limit), 100)
-    effective_parent = parent_fqn or settings.amsc_openmetadata_parent_fqn or ""
+    raw_catalog = settings.amsc_openmetadata_catalog_name or ""
+    root_fqn = raw_catalog if raw_catalog else (settings.amsc_openmetadata_parent_fqn or "")
+    effective_parent = parent_fqn or root_fqn or None
 
     from ...catalog.amsc import AmscClient
 
@@ -238,7 +240,7 @@ async def openmetadata_artifacts(
         async with AmscClient() as client:
             results = await client.search(
                 query=query,
-                parent_fqn=effective_parent or None,
+                parent_fqn=effective_parent,
                 limit=limit,
             )
         return {
@@ -256,7 +258,7 @@ async def openmetadata_artifacts(
             ],
             "total": len(results),
             "query": query,
-            "parent_fqn": effective_parent or None,
+            "parent_fqn": effective_parent,
         }
     except Exception as exc:
         _log.warning("AmSC catalog search failed: %s", exc)

@@ -43,11 +43,11 @@ class CatalogArtifact:
         return cls(
             fqn=d.get("fqn") or d.get("fullyQualifiedName") or "",
             name=d.get("name") or "",
-            display_name=d.get("display_name") or d.get("displayName"),
+            display_name=d.get("displayName") or d.get("display_name"),
             entity_type=d.get("type") or d.get("entityType") or "unknown",
             description=d.get("description"),
             location=d.get("location"),
-            parent_fqn=d.get("parent_fqn") or d.get("parentFqn"),
+            parent_fqn=d.get("parentFqn") or d.get("parent_fqn"),
             raw=d,
         )
 
@@ -126,17 +126,18 @@ class AmscClient:
         """Search the catalog.  Returns up to *limit* results.
 
         Args:
-            query:        Free-text search term.  Pass "" for wildcard.
+            query:        Free-text search term.  Pass "" for wildcard (uses ``*``).
             entity_types: Filter by type, e.g. ["artifact", "artifactCollection"].
             parent_fqn:   Restrict to children of this FQN.
             limit:        Max results to return.
             offset:       Pagination offset.
         """
-        params: dict[str, Any] = {"limit": limit, "offset": offset}
-        if query:
-            params["q"] = query
+        params: dict[str, Any] = {
+            "q": query or "*",  # q is required; "*" returns all
+            "limit": limit,
+            "offset": offset,
+        }
         if entity_types:
-            # API accepts repeated param or comma-separated — use repeated
             params["entity_types"] = entity_types
         if parent_fqn:
             params["parent_fqn"] = parent_fqn
@@ -145,12 +146,12 @@ class AmscClient:
         resp.raise_for_status()
         data = resp.json()
 
-        # Response shape: list of entity dicts, or {"items": [...], "total": N}
+        # Response shape: {"total_num_results": N, "results": [...], "next_cursor": "..."}
         items: list[dict[str, Any]] = []
         if isinstance(data, list):
             items = data
         elif isinstance(data, dict):
-            items = data.get("items") or data.get("results") or data.get("data") or []
+            items = data.get("results") or data.get("items") or data.get("data") or []
 
         return [CatalogArtifact.from_dict(item) for item in items]
 
