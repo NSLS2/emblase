@@ -332,8 +332,7 @@ def copy_embedding(
     model_name = src_meta.get("model_name", "")
     model_version = src_meta.get("model_version", "")
 
-    base_name = rename or src.item["id"]
-    dst_key = f"{base_name}_{int(time.time())}"
+    dst_key = rename or f"{src.item['id']}_{int(time.time())}"
 
     # Read all source data up front
     embeddings = src["embeddings"].read()  # (N, D)
