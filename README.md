@@ -397,7 +397,7 @@ service-account token otherwise.
 | `EMBLASE_ENTRA_TENANT_ID` | Azure AD tenant ID — required for OBO |
 | `EMBLASE_ENTRA_CLIENT_ID` | Tiled's own Entra app registration client ID — required for OBO |
 | `EMBLASE_ENTRA_CLIENT_SECRET` | Tiled's Entra client secret — required for OBO |
-| `EMBLASE_CHAT_APP_SCOPE` | AmSC scope, e.g. `api://<chat_app_client_id>/access_as_user` — required for OBO |
+| `EMBLASE_CHATAPP_SCOPE` | AmSC scope, e.g. `api://<chatapp_client_id>/access_as_user` — required for OBO |
 | `EMBLASE_CHATAPP_TOKEN` | Fallback static bearer token (service account); used only when OBO vars are absent |
 
 #### How OBO works
