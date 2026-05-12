@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any, AsyncGenerator
 
 import httpx
@@ -10,6 +11,8 @@ from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
 from ...config import settings
+
+_log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/compute", tags=["compute"])
 
@@ -46,8 +49,9 @@ async def orion_status() -> dict[str, Any]:
         }
     except httpx.TimeoutException:
         return {"status": "timeout", "api_url": settings.orion_api_url}
-    except Exception as exc:
-        return {"status": "error", "error": str(exc), "api_url": settings.orion_api_url}
+    except Exception:
+        _log.exception("Failed to fetch Orion status")
+        return {"status": "error", "error": "Internal server error", "api_url": settings.orion_api_url}
 
 
 @router.get("/orion/jobs")
