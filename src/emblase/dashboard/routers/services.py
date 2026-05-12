@@ -68,9 +68,7 @@ async def mlflow_status() -> dict[str, Any]:
             "model_prefix": settings.mlflow_model_prefix,
         }
     except Exception:
-        import logging as _logging
-
-        _logging.getLogger(__name__).exception("MLflow connectivity check failed")
+        logger.exception("MLflow connectivity check failed")
         return {
             "status": "error",
             "error": "An internal error has occurred.",
@@ -170,10 +168,6 @@ async def chatbot_status() -> dict[str, Any]:
 @router.get("/openmetadata/status")
 async def openmetadata_status() -> dict[str, Any]:
     """Check connectivity to the AmSC OpenMetadata catalog API."""
-    import logging as _logging
-
-    _log = _logging.getLogger(__name__)
-
     raw_catalog = settings.amsc_openmetadata_catalog_name or ""
     # "bnl-lse-demo-storage.bnl-lse-demo-data-catalog"
     #  └─ catalog_name (POST path segment) ──┘  └─ full root FQN ──────────────┘
@@ -204,7 +198,7 @@ async def openmetadata_status() -> dict[str, Any]:
             "project_count": len(projects),
         }
     except Exception:
-        _log.exception("AmSC catalog connectivity check failed")
+        logger.exception("AmSC catalog connectivity check failed")
         return {
             "status": "error",
             "catalog_url": settings.amsc_openmetadata_catalog_url,
@@ -228,10 +222,6 @@ async def openmetadata_artifacts(
                     ``EMBLASE_AMSC_OPENMETADATA_PARENT_FQN`` if not provided.
         limit:      Max results (default 20, max 100).
     """
-    import logging as _logging
-
-    _log = _logging.getLogger(__name__)
-
     if not settings.amsc_openmetadata_token:
         return {"artifacts": [], "total": 0, "error": "EMBLASE_AMSC_OPENMETADATA_TOKEN not set"}
 
@@ -267,7 +257,7 @@ async def openmetadata_artifacts(
             "parent_fqn": effective_parent,
         }
     except Exception as exc:
-        _log.warning("AmSC catalog search failed: %s", exc)
+        logger.warning("AmSC catalog search failed: %s", exc)
         return {
             "artifacts": [],
             "total": 0,

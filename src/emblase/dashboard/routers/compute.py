@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import logging
 from typing import Any, AsyncGenerator
 
 import httpx
@@ -13,7 +12,6 @@ from fastapi.responses import StreamingResponse
 
 from ...config import settings
 
-_log = logging.getLogger(__name__)
 _log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/compute", tags=["compute"])
@@ -61,9 +59,8 @@ async def orion_jobs() -> dict[str, Any]:
     """List recent Orion jobs."""
     if not settings.orion_api_key:
         return {"jobs": [], "error": "EMBLASE_ORION_API_KEY not set"}
-    except Exception:
-        _log.exception("Failed to fetch Orion jobs from Orion API")
-        return {"jobs": [], "error": "Failed to fetch Orion jobs"}
+    try:
+        data = await _orion_get(f"/api/v1/compute/{settings.orion_cluster}/jobs")
         jobs = data if isinstance(data, list) else data.get("jobs", [])
         return {"jobs": jobs[:20]}
     except Exception as exc:
@@ -100,9 +97,6 @@ async def orion_job_status(job_id: str) -> dict[str, Any]:
 @router.delete("/orion/jobs/{job_id}")
 async def orion_cancel_job(job_id: str) -> dict[str, Any]:
     """Cancel an Orion job."""
-    import logging as _logging
-
-    _log = _logging.getLogger(__name__)
     try:
         async with httpx.AsyncClient(
             timeout=15.0,
@@ -257,9 +251,6 @@ async def nersc_job_status(job_id: str) -> dict[str, Any]:
 @router.delete("/nersc/jobs/{job_id}")
 async def nersc_cancel_job(job_id: str) -> dict[str, Any]:
     """Cancel a NERSC job."""
-    import logging as _logging
-
-    _log = _logging.getLogger(__name__)
     try:
         from ...compute.nersc import NERSCClient
 
