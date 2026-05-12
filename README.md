@@ -461,7 +461,7 @@ src/emblase/
 │   ├── client.py           # read_images, write_output, LatentSpaceEmbedding, THUMB_MODES
 │   ├── router.py           # FastAPI router plugin: static asset serving + chat OBO proxy
 │   └── static/
-│       └── main.js         # Compiled Latent Space Explorer UI (built from ui/embedding-view/)
+│       └── main.js         # Compiled Latent Space Explorer UI (built from ui/viewer/)
 └── worker/
     ├── inference.py.tmpl           # batch inference node script (params + projector)
     └── streaming_inference.py.tmpl # streaming inference node script (params + projector)
@@ -479,9 +479,10 @@ models/
 ├── vit/                    # ViT weights + loader.py (optional local override)
 └── umap_approx/            # neural_dimred_wrapper.py, scaler.pkl, umap_approximator.pth (projector model layout)
 ui/
-└── embedding-view/         # React/TypeScript source for the Latent Space Explorer plugin
-    └── src/
-        └── embedding-scatter.tsx  # Main scatter plot component (build → static/main.js)
+├── viewer/                 # React/TypeScript source for the Latent Space Explorer plugin
+│   └── src/
+│       └── embedding-scatter.tsx  # Main scatter plot component (build → static/main.js)
+└── dashboard/              # Pre-built EMBLASE Dashboard SPA
 tests/                      # pytest suite (mocked, no hardware required)
 ```
 

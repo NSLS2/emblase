@@ -1,4 +1,5 @@
 import { defineConfig } from "vite";
+import { resolve } from "path";
 
 export default defineConfig({
   build: {
@@ -6,7 +7,7 @@ export default defineConfig({
       entry: "src/index.tsx",
       name: "EmblaseViewer",
       formats: ["iife"],
-      fileName: () => "viewer.js",
+      fileName: () => "main.js",
     },
     rollupOptions: {
       external: ["react", "react-dom"],
@@ -17,8 +18,8 @@ export default defineConfig({
         },
       },
     },
-    outDir: "dist",
-    emptyOutDir: true,
+    outDir: resolve(__dirname, "../../src/emblase/tiled/static"),
+    emptyOutDir: false,
     minify: true,
   },
   esbuild: {
