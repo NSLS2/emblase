@@ -237,7 +237,11 @@ async def nersc_status() -> dict[str, Any]:
         return {"status": "timeout", "api_uri": settings.nersc_api_uri}
     except Exception as exc:
         logger.error("Error fetching NERSC status: %s", exc)
-        return {"status": "error", "error": "Failed to fetch NERSC status", "api_uri": settings.nersc_api_uri}
+        return {
+            "status": "error",
+            "error": "Failed to fetch NERSC status",
+            "api_uri": settings.nersc_api_uri,
+        }
 
 
 @router.get("/nersc/jobs/{job_id}/status")
@@ -312,7 +316,7 @@ async def _nersclogger_generator(
                             yield f"data: {line}\n\n"
                     except Exception as log_exc:
                         logger.warning("Log not yet available for job %s: %s", job_id, log_exc)
-                        yield f"data: [log not yet available]\n\n"
+                        yield "data: [log not yet available]\n\n"
                 else:
                     yield f"data: [locating log file… state={state}]\n\n"
 
@@ -324,7 +328,7 @@ async def _nersclogger_generator(
 
         except Exception as exc:
             logger.error("Error polling logs for job %s: %s", job_id, exc)
-            yield f"data: [error polling logs]\n\n"
+            yield "data: [error polling logs]\n\n"
 
         await asyncio.sleep(interval)
 
