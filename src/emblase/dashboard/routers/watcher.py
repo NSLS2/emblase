@@ -25,7 +25,7 @@ from pydantic import BaseModel, Field
 
 from ...config import resolve_tiled_path, settings
 
-_log = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/watcher", tags=["watcher"])
 
@@ -236,7 +236,7 @@ def _run_watcher(req: WatcherStartRequest) -> None:
             loop.call_soon_threadsafe(loop.stop)
 
     except Exception as exc:
-        _log.error("Watcher thread failed: %s", exc)
+        logger.error("Watcher thread failed: %s", exc)
         with _ws._lock:
             _ws.status = "error"
             _ws.error = "Watcher failed — see server logs for details"
