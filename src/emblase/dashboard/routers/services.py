@@ -128,8 +128,8 @@ async def mlflow_models() -> dict[str, Any]:
 
         models.sort(key=lambda m: m["name"])
         return {"models": models, "total": len(models), "prefix_filter": prefix}
-    except Exception as exc:
-        return {"models": [], "error": str(exc)}
+    except Exception:
+        return {"models": [], "error": "Unable to fetch MLflow models at this time"}
 
 
 # ── Chatbot ───────────────────────────────────────────────────────────────────
