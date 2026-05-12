@@ -586,8 +586,7 @@ async def _send_priming_message(
         # Chatapp did not return a session ID — this should not happen in
         # normal operation, but guard against it to avoid propagating None.
         logger.error(
-            "_send_priming_message: upstream returned no chat_session_id — "
-            "response body: %s",
+            "_send_priming_message: upstream returned no chat_session_id — response body: %s",
             data,
         )
         raise HTTPException(
