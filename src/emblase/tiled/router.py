@@ -20,7 +20,7 @@ When the browser authenticates to Tiled via Entra OIDC, Tiled's
 This router retrieves those tokens via ``get_session_state`` (which decodes
 the Tiled JWT without a DB hit) and performs a Microsoft OBO exchange to
 obtain a per-user Entra token scoped to the AmSC chat application (audience
-``api://<chat_app_client_id>``).  That derived token is forwarded to AmSC in
+``api://<chatapp_client_id>``).  That derived token is forwarded to AmSC in
 ``Authorization: Bearer`` — AmSC sees the user's real Entra identity via its
 ``bearer_obo`` auth path.
 
@@ -68,8 +68,8 @@ Required environment variables
   EMBLASE_ENTRA_TENANT_ID      Azure AD tenant ID
   EMBLASE_ENTRA_CLIENT_ID      Tiled's own Entra app registration client ID
   EMBLASE_ENTRA_CLIENT_SECRET  Tiled's Entra client secret
-  EMBLASE_CHAT_APP_SCOPE       Scope for the AmSC app
-                               e.g. api://<chat_app_client_id>/access_as_user
+  EMBLASE_CHATAPP_SCOPE       Scope for the AmSC app
+                               e.g. api://<chatapp_client_id>/access_as_user
   EMBLASE_CHATAPP_TOKEN        Fallback static bearer token (local dev only)
 """
 
@@ -101,19 +101,19 @@ _CHAT_MODEL = os.environ.get("EMBLASE_CHATAPP_MODEL", "openai/gpt-oss-20b")
 _TENANT_ID = os.environ.get("EMBLASE_ENTRA_TENANT_ID", "")
 _CLIENT_ID = os.environ.get("EMBLASE_ENTRA_CLIENT_ID", "")
 _CLIENT_SECRET = os.environ.get("EMBLASE_ENTRA_CLIENT_SECRET", "")
-_CHAT_APP_SCOPE = os.environ.get("EMBLASE_CHAT_APP_SCOPE", "")
+_CHATAPP_SCOPE = os.environ.get("EMBLASE_CHATAPP_SCOPE", "")
 
 # Fallback static token for local dev (no Entra configured).
 _FALLBACK_TOKEN = os.environ.get("EMBLASE_CHATAPP_TOKEN", "")
 
-_OBO_ENABLED = bool(_TENANT_ID and _CLIENT_ID and _CLIENT_SECRET and _CHAT_APP_SCOPE)
+_OBO_ENABLED = bool(_TENANT_ID and _CLIENT_ID and _CLIENT_SECRET and _CHATAPP_SCOPE)
 
 if not _OBO_ENABLED:
     import warnings
 
     warnings.warn(
         "EMBLASE_ENTRA_TENANT_ID / EMBLASE_ENTRA_CLIENT_ID / "
-        "EMBLASE_ENTRA_CLIENT_SECRET / EMBLASE_CHAT_APP_SCOPE are not all set. "
+        "EMBLASE_ENTRA_CLIENT_SECRET / EMBLASE_CHATAPP_SCOPE are not all set. "
         "Chat proxy will fall back to EMBLASE_CHATAPP_TOKEN (service account). "
         "Set all four variables to enable true per-user OBO authentication.",
         stacklevel=1,
@@ -166,7 +166,7 @@ async def _exchange_obo(entra_access_token: str) -> str:
                 "client_secret": _CLIENT_SECRET,
                 "assertion": entra_access_token,
                 "requested_token_use": "on_behalf_of",
-                "scope": _CHAT_APP_SCOPE,
+                "scope": _CHATAPP_SCOPE,
             },
         )
     body = resp.json()
@@ -194,7 +194,7 @@ async def _refresh_entra_tokens(refresh_token: str) -> dict:
                 # openid + offline_access ensure we get a fresh refresh_token
                 # back; the chat app scope makes the new access_token usable
                 # for OBO without a second round-trip.
-                "scope": f"openid offline_access {_CHAT_APP_SCOPE}",
+                "scope": f"openid offline_access {_CHATAPP_SCOPE}",
             },
         )
     body = resp.json()
