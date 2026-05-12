@@ -3,7 +3,7 @@
 Covers:
 - MLflow model registry (status + model list)
 - AmSC LLM chat app (status)
-- OpenMetadata catalog (placeholder)
+- AmSC OpenMetadata catalog (status + recent artifacts)
 """
 
 from __future__ import annotations
@@ -158,22 +158,108 @@ async def chatbot_status() -> dict[str, Any]:
         return {"status": "error", "error": str(exc), "url": url}
 
 
-# ── OpenMetadata (placeholder) ────────────────────────────────────────────────
+# ── AmSC OpenMetadata catalog ─────────────────────────────────────────────────
 
 
 @router.get("/openmetadata/status")
 async def openmetadata_status() -> dict[str, Any]:
-    """Placeholder for the OpenMetadata catalog status (not yet implemented)."""
-    return {
-        "status": "placeholder",
-        "message": (
-            "OpenMetadata catalog integration is not yet configured. "
-            "This service will receive metadata updates from Tiled via webhooks."
-        ),
-        "planned_features": [
-            "Automatic dataset registration from Tiled write events",
-            "Lineage tracking: input runs → embeddings → model versions",
-            "Searchable catalog of all EMBLASE experiments",
-            "Integration with AmSC data governance policies",
-        ],
-    }
+    """Check connectivity to the AmSC OpenMetadata catalog API."""
+    import logging as _logging
+
+    _log = _logging.getLogger(__name__)
+
+    raw_catalog = settings.amsc_openmetadata_catalog_name or ""
+    # "bnl-lse-demo-storage.bnl-lse-demo-data-catalog"
+    #  └─ catalog_name (POST path segment) ──┘  └─ full root FQN ──────────────┘
+    catalog_name = raw_catalog.split(".")[0] if raw_catalog else None
+    root_fqn = raw_catalog if raw_catalog else (settings.amsc_openmetadata_parent_fqn or None)
+
+    if not settings.amsc_openmetadata_token:
+        return {
+            "status": "unconfigured",
+            "message": "EMBLASE_AMSC_OPENMETADATA_TOKEN is not set",
+            "catalog_url": settings.amsc_openmetadata_catalog_url,
+            "catalog_name": catalog_name,
+            "root_fqn": root_fqn,
+        }
+
+    from ...catalog.amsc import AmscClient
+
+    try:
+        async with AmscClient() as client:
+            projects = await client.list_projects()
+        return {
+            "status": "online",
+            "catalog_url": settings.amsc_openmetadata_catalog_url,
+            "catalog_name": catalog_name,
+            "root_fqn": root_fqn,
+            "parent_fqn": settings.amsc_openmetadata_parent_fqn or None,
+            "projects": projects,
+            "project_count": len(projects),
+        }
+    except Exception as exc:
+        _log.warning("AmSC catalog connectivity check failed: %s", exc)
+        return {
+            "status": "error",
+            "catalog_url": settings.amsc_openmetadata_catalog_url,
+            "catalog_name": catalog_name,
+            "root_fqn": root_fqn,
+            "error": str(exc),
+        }
+
+
+@router.get("/openmetadata/artifacts")
+async def openmetadata_artifacts(
+    query: str = "",
+    parent_fqn: str = "",
+    limit: int = 20,
+) -> dict[str, Any]:
+    """Search the AmSC catalog and return recent artifacts.
+
+    Args:
+        query:      Free-text search term (empty = all).
+        parent_fqn: Restrict to children of this FQN.  Falls back to
+                    ``EMBLASE_AMSC_OPENMETADATA_PARENT_FQN`` if not provided.
+        limit:      Max results (default 20, max 100).
+    """
+    import logging as _logging
+
+    _log = _logging.getLogger(__name__)
+
+    if not settings.amsc_openmetadata_token:
+        return {"artifacts": [], "total": 0, "error": "EMBLASE_AMSC_OPENMETADATA_TOKEN not set"}
+
+    limit = min(max(1, limit), 100)
+    raw_catalog = settings.amsc_openmetadata_catalog_name or ""
+    root_fqn = raw_catalog if raw_catalog else (settings.amsc_openmetadata_parent_fqn or "")
+    effective_parent = parent_fqn or root_fqn or None
+
+    from ...catalog.amsc import AmscClient
+
+    try:
+        async with AmscClient() as client:
+            results = await client.search(
+                query=query,
+                parent_fqn=effective_parent,
+                limit=limit,
+            )
+        return {
+            "artifacts": [
+                {
+                    "fqn": a.fqn,
+                    "name": a.name,
+                    "display_name": a.display_name,
+                    "entity_type": a.entity_type,
+                    "description": a.description,
+                    "location": a.location,
+                    "parent_fqn": a.parent_fqn,
+                }
+                for a in results
+            ],
+            "total": len(results),
+            "query": query,
+            "parent_fqn": effective_parent,
+        }
+    except Exception as exc:
+        _log.warning("AmSC catalog search failed: %s", exc)
+        return {"artifacts": [], "total": 0, "error": str(exc)}

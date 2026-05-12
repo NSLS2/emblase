@@ -62,10 +62,34 @@ export interface ChatbotStatus {
   message?: string
 }
 
+export interface CatalogArtifact {
+  fqn: string
+  name: string
+  display_name: string | null
+  entity_type: string
+  description: string | null
+  location: string | null
+  parent_fqn: string | null
+}
+
 export interface OpenMetadataStatus {
-  status: 'placeholder'
-  message: string
-  planned_features: string[]
+  status: ServiceStatus
+  catalog_url?: string
+  catalog_name?: string | null
+  root_fqn?: string | null
+  parent_fqn?: string | null
+  projects?: Record<string, unknown>[]
+  project_count?: number
+  error?: string
+  message?: string
+}
+
+export interface OpenMetadataArtifacts {
+  artifacts: CatalogArtifact[]
+  total: number
+  query?: string
+  parent_fqn?: string | null
+  error?: string
 }
 
 export interface AppConfig {
