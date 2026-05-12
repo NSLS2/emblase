@@ -24,6 +24,14 @@ obtain a per-user Entra token scoped to the AmSC chat application (audience
 ``Authorization: Bearer`` — AmSC sees the user's real Entra identity via its
 ``bearer_obo`` auth path.
 
+OBO token caching
+~~~~~~~~~~~~~~~~~
+OBO tokens are valid for ~1 hour.  To avoid hitting the Entra token endpoint
+on every request (and risk rate-limiting), results are cached in a
+process-local ``TTLCache`` keyed on ``SHA-256(entra_access_token)`` with a
+45-minute TTL.  The user's raw Entra access token is never stored in the
+cache — only its hash is used as the key.
+
 Automatic token refresh
 ~~~~~~~~~~~~~~~~~~~~~~~
 Entra access tokens expire in ~1 hour.  When the OBO exchange fails with
@@ -45,12 +53,13 @@ DB write design
 ``_update_session_state`` receives a live ``db`` session via FastAPI
 dependency injection (``get_database_session_factory``), the same mechanism
 Tiled uses internally.  The function looks up the session by *principal UUID*
-(the ``sub`` claim of the Tiled access token), not by session UUID — the
-``sub`` claim (principal UUID) is present in access tokens, whereas ``sid``
-(session UUID) only appears in refresh tokens.  Because a principal may have
-multiple concurrent sessions, the state update is applied to **all** valid
-non-revoked sessions for that principal.  In practice a user has at most one
-active browser session, so this is equivalent to a targeted update.
+(the ``sub`` claim of the Tiled access token, available on every request),
+not by session UUID — the ``sub`` claim (principal UUID) is present in access
+tokens, whereas ``sid`` (session UUID) only appears in refresh tokens.
+Because a principal may have multiple concurrent sessions, the state update is
+applied to **all** valid non-revoked sessions for that principal.  In practice
+a user has at most one active browser session, so this is equivalent to a
+targeted update.
 
 Fallback (local dev without Entra)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -68,17 +77,20 @@ Required environment variables
   EMBLASE_ENTRA_TENANT_ID      Azure AD tenant ID
   EMBLASE_ENTRA_CLIENT_ID      Tiled's own Entra app registration client ID
   EMBLASE_ENTRA_CLIENT_SECRET  Tiled's Entra client secret
-  EMBLASE_CHATAPP_SCOPE       Scope for the AmSC app
+  EMBLASE_CHATAPP_SCOPE        Scope for the AmSC app
                                e.g. api://<chatapp_client_id>/access_as_user
   EMBLASE_CHATAPP_TOKEN        Fallback static bearer token (local dev only)
 """
 
+import hashlib
 import logging
 import os
+import threading
 from pathlib import Path
 from typing import Callable, Optional
 
 import httpx
+from cachetools import TTLCache
 from dotenv import load_dotenv
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
@@ -131,8 +143,19 @@ _TOKEN_ENDPOINT = (
 # Common JSON content-type header added to every AmSC request.
 _JSON_CT = {"Content-Type": "application/json"}
 
+# ---------------------------------------------------------------------------
+# OBO token cache
+# TTL = 45 min (OBO tokens are valid for ~1 h; 15 min margin before expiry).
+# Key = SHA-256(entra_access_token) — the raw token is never stored.
+# maxsize = 1024 covers ~1000 concurrent users with negligible memory cost.
+# ---------------------------------------------------------------------------
+_obo_cache: TTLCache = TTLCache(maxsize=1024, ttl=45 * 60)
+_obo_cache_lock = threading.Lock()
+
 # In-memory store mapping chat_session_id → message_id of the hidden priming
 # message. Used to filter it out when returning history to the browser.
+# NOTE: this is per-process; multi-worker deployments fall back to the
+# content-marker filter for sessions created on a different worker.
 _priming_message_ids: dict[str, int] = {}
 
 
@@ -153,10 +176,18 @@ class _OBOError(Exception):
 async def _exchange_obo(entra_access_token: str) -> str:
     """Exchange an Entra access token for a chat-app-scoped token via OBO.
 
-    Returns the raw access token string for the chat app.
+    Results are cached by SHA-256(entra_access_token) with a 45-minute TTL so
+    that the Entra token endpoint is not hammered on every request.
+
     Raises ``_OBOError`` on failure so the caller can inspect the error code
     and decide whether to retry after refreshing the underlying token.
     """
+    cache_key = hashlib.sha256(entra_access_token.encode()).hexdigest()
+    with _obo_cache_lock:
+        cached = _obo_cache.get(cache_key)
+    if cached:
+        return cached
+
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.post(
             _TOKEN_ENDPOINT,
@@ -172,7 +203,11 @@ async def _exchange_obo(entra_access_token: str) -> str:
     body = resp.json()
     if resp.is_error:
         raise _OBOError(body.get("error", "unknown"), body)
-    return body["access_token"]
+
+    obo_token = body["access_token"]
+    with _obo_cache_lock:
+        _obo_cache[cache_key] = obo_token
+    return obo_token
 
 
 async def _refresh_entra_tokens(refresh_token: str) -> dict:
@@ -235,7 +270,6 @@ async def _update_session_state(
         from tiled.authn_database import orm
 
         async with db_factory() as db:
-            # Resolve principal by UUID.
             principal = (
                 await db.execute(
                     select(orm.Principal)
@@ -288,7 +322,7 @@ async def _get_chat_auth_header(
     """Return an ``Authorization`` + ``Content-Type`` header dict for AmSC.
 
     Performs the full OBO flow when configured:
-      1. Try OBO with the stored Entra access token.
+      1. Try OBO with the stored Entra access token (cache hit → no network).
       2. On ``invalid_grant``, refresh the Entra tokens and retry OBO once.
       3. Write fresh tokens back to the Tiled DB after a successful refresh.
 
@@ -322,7 +356,18 @@ async def _get_chat_auth_header(
                         await _update_session_state(principal_uuid_hex, new_tokens, db_factory)
 
                     # Retry OBO with the fresh access token.
-                    chat_token = await _exchange_obo(new_access)
+                    try:
+                        chat_token = await _exchange_obo(new_access)
+                    except _OBOError as retry_exc:
+                        logger.error(
+                            "OBO exchange failed after token refresh for principal=%s: %s",
+                            principal_uuid_hex,
+                            retry_exc.body,
+                        )
+                        raise HTTPException(
+                            status_code=401,
+                            detail="Could not obtain a chat service token after refreshing your session. Please log in again.",
+                        )
                     return {"Authorization": f"Bearer {chat_token}", **_JSON_CT}
                 else:
                     logger.error(
@@ -417,6 +462,16 @@ _session_state_dep = _get_session_state_dependency()
 _decoded_token_dep = _get_decoded_token_dependency()
 _db_factory_dep = _get_db_factory_dependency()
 
+# If OBO is configured but session state injection is unavailable, raise at
+# startup so the misconfiguration is immediately visible rather than silently
+# degrading to the fallback token.
+if _OBO_ENABLED and _session_state_dep is None:
+    raise RuntimeError(
+        "EMBLASE OBO auth is configured (EMBLASE_ENTRA_* vars are set) but "
+        "tiled.server.authentication.get_session_state could not be imported. "
+        "Ensure the emblase router is loaded inside a running Tiled server."
+    )
+
 
 # ---------------------------------------------------------------------------
 # Priming message helpers
@@ -469,7 +524,11 @@ def _build_priming_message(node_path: str, metadata: dict) -> str:
 
 
 async def _fetch_tiled_metadata(request: Request, node_path: str) -> dict:
-    """Fetch metadata for a Tiled node, reusing the browser's auth token."""
+    """Fetch metadata for a Tiled node, reusing the browser's auth token.
+
+    Returns an empty dict on failure and logs a warning — priming will still
+    proceed but with unknown metadata fields.
+    """
     auth = request.headers.get("Authorization", "")
     tiled_base = str(request.base_url).rstrip("/")
     url = f"{tiled_base}/api/v1/metadata/{node_path}"
@@ -477,6 +536,11 @@ async def _fetch_tiled_metadata(request: Request, node_path: str) -> dict:
         res = await client.get(url, headers={"Authorization": auth})
     if res.status_code == 200:
         return res.json().get("data", {}).get("attributes", {})
+    logger.warning(
+        "_fetch_tiled_metadata: got %s for path %r — priming will use empty metadata",
+        res.status_code,
+        node_path,
+    )
     return {}
 
 
@@ -485,8 +549,13 @@ async def _send_priming_message(
     priming_text: str,
     username: Optional[str],
     auth_header: dict,
-) -> Optional[str]:
-    """Send the hidden context message to AmSC and return the resulting session_id."""
+) -> str:
+    """Send the hidden context message to AmSC and return the resulting session_id.
+
+    Raises ``HTTPException(502)`` if the upstream chat service rejects the
+    priming message, so the caller does not silently start a context-free
+    session.
+    """
     payload: dict = {
         "message": priming_text,
         "model_name": _CHAT_MODEL,
@@ -501,17 +570,35 @@ async def _send_priming_message(
             json=payload,
             headers=auth_header,
         )
-    if res.status_code == 200:
-        data = res.json()
-        new_session_id = data.get("chat_session_id")
-        if new_session_id:
-            msg_id = data.get("message_id")
-            if msg_id is not None:
-                # Store assistant reply id; user turn will be msg_id - 1.
-                # Both are filtered from the history returned to the browser.
-                _priming_message_ids[new_session_id] = msg_id
-        return new_session_id
-    return session_id
+    if res.status_code != 200:
+        logger.error(
+            "_send_priming_message: upstream returned %s — %s",
+            res.status_code,
+            res.text,
+        )
+        raise HTTPException(
+            status_code=502,
+            detail=f"Chat service rejected priming message ({res.status_code}). Cannot start session.",
+        )
+    data = res.json()
+    new_session_id = data.get("chat_session_id")
+    if not new_session_id:
+        # Chatapp did not return a session ID — this should not happen in
+        # normal operation, but guard against it to avoid propagating None.
+        logger.error(
+            "_send_priming_message: upstream returned no chat_session_id — response body: %s",
+            data,
+        )
+        raise HTTPException(
+            status_code=502,
+            detail="Chat service did not return a session ID. Cannot start session.",
+        )
+    msg_id = data.get("message_id")
+    if new_session_id and msg_id is not None:
+        # Store assistant reply id; user turn will be msg_id - 1.
+        # Both are filtered from the history returned to the browser.
+        _priming_message_ids[new_session_id] = msg_id
+    return new_session_id
 
 
 # ---------------------------------------------------------------------------
@@ -660,12 +747,14 @@ async def chat_history(
 
     messages = res.json()
 
+    # Filter out the hidden priming exchange (user context msg + assistant ack).
+    # Primary filter: by stored message_id (works when server hasn't restarted).
+    # Fallback filter: by content marker (works across restarts / workers).
     priming_id = _priming_message_ids.get(session_id)
     if priming_id is not None:
         hidden_ids = {priming_id, priming_id - 1}
         messages = [m for m in messages if m.get("message_id") not in hidden_ids]
     else:
-        # Fallback: strip any user message that starts with the priming marker.
         messages = [
             m
             for m in messages
