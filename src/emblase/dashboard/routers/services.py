@@ -9,6 +9,7 @@ Covers:
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import logging
 from typing import Any
 
 import httpx
@@ -17,6 +18,7 @@ from fastapi import APIRouter
 from ...config import settings
 
 router = APIRouter(tags=["services"])
+logger = logging.getLogger(__name__)
 
 
 # ── MLflow helpers ────────────────────────────────────────────────────────────
@@ -157,8 +159,9 @@ async def chatbot_status() -> dict[str, Any]:
         }
     except httpx.TimeoutException:
         return {"status": "timeout", "url": url}
-    except Exception as exc:
-        return {"status": "error", "error": str(exc), "url": url}
+    except Exception:
+        logger.exception("Unexpected error while checking chatbot status")
+        return {"status": "error", "message": "Unable to reach chat service", "url": url}
 
 
 # ── AmSC OpenMetadata catalog ─────────────────────────────────────────────────
