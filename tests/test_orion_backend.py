@@ -21,27 +21,15 @@ def test_render_inference_script_substitutes_all_placeholders():
         model_name="vae",
         models_dir="/models",
         inputs=[],
-        output="",
+        output="results/job1",
     )
     assert "/models" in script
     assert '"vae"' in script
-    assert "inputs          = []" in script
-    assert 'output          = ""' in script
+    assert "results/job1" in script
     assert 'os.environ["JOB_DIR"]' in script
     assert "param_specs     = " in script
     assert "projector_mode  = " in script
     assert "projector_name  = " in script
-
-
-def test_render_inference_script_with_output():
-    script = _render_inference_script(
-        model_name="vit",
-        models_dir="/models",
-        inputs=[],
-        output="results/job1",
-    )
-    assert "vit" in script
-    assert "results/job1" in script
 
 
 def test_build_sbatch_script_structure():
@@ -152,8 +140,15 @@ async def test_orion_backend_submit_npy_path():
 
 
 @pytest.mark.asyncio
-async def test_orion_backend_output_injects_tiled_env(monkeypatch):
-    """output being set should add EMBLASE_TILED_SERVER_URI to the job environment."""
+@pytest.mark.parametrize(
+    "submit_kwargs, label",
+    [
+        ({"images": DUMMY_IMAGES, "output": "results/scan1"}, "output"),
+        ({"inputs": ["proposal/scan"]}, "inputs"),
+    ],
+)
+async def test_orion_backend_injects_tiled_env(monkeypatch, submit_kwargs, label):
+    """output or inputs alone should add EMBLASE_TILED_* to the job environment."""
     submitted = {}
 
     class FakeClient:
@@ -169,39 +164,7 @@ async def test_orion_backend_output_injects_tiled_env(monkeypatch):
     backend = OrionBackend(
         client=FakeClient(), working_dir="/jobs", models_dir="/models", account="staff"
     )
-    await backend.submit(
-        model_name="vae",
-        images=DUMMY_IMAGES,
-        output="results/scan1",
-    )
-
-    env = submitted["environment"]
-    assert any("EMBLASE_TILED_SERVER_URI=http://tiled" in e for e in env)
-    assert any("EMBLASE_TILED_API_KEY=key123" in e for e in env)
-
-
-@pytest.mark.asyncio
-async def test_orion_backend_inputs_injects_tiled_env(monkeypatch):
-    """inputs alone should still inject Tiled env vars."""
-    submitted = {}
-
-    class FakeClient:
-        async def submit_job(self, script, working_dir, overrides=None, environment=None):
-            submitted["environment"] = environment
-            return 9
-
-    import emblase.compute.orion as orion_module
-
-    monkeypatch.setattr(orion_module.settings, "tiled_server_uri", "http://tiled")
-    monkeypatch.setattr(orion_module.settings, "tiled_api_key", "key123")
-
-    backend = OrionBackend(
-        client=FakeClient(), working_dir="/jobs", models_dir="/models", account="staff"
-    )
-    await backend.submit(
-        model_name="vae",
-        inputs=["proposal/scan"],
-    )
+    await backend.submit(model_name="vae", **submit_kwargs)
 
     env = submitted["environment"]
     assert any("EMBLASE_TILED_SERVER_URI=http://tiled" in e for e in env)

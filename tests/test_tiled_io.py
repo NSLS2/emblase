@@ -195,6 +195,9 @@ def test_write_output_appends_to_existing_container(mock_create):
 @patch("emblase.tiled.client.LatentSpaceEmbedding")
 def test_write_output_passes_provenance(mock_lse_cls, mock_create):
     """tiled_entries are split into paths and slices in the append call."""
+    from emblase.tiled.client import _clear_embedding_container_cache
+
+    _clear_embedding_container_cache()
     embeddings = np.zeros((2, 4), dtype=np.float32)
     container = MagicMock()
     container.metadata = {"embedding_dim": 4, "thumb_shape": [64, 64]}
@@ -421,6 +424,39 @@ def test_write_output_returns_resolved_path(mock_lse_cls, mock_create):
     _clear_embedding_container_cache()
     result = write_output(root, "a/b", embeddings)
     assert result == "a/b"
+
+
+@patch("emblase.tiled.client.create_embedding_container")
+def test_write_output_returns_child_path_for_non_lse_parent(mock_create):
+    """write_output returns the created child path when output points to a non-LSE parent."""
+    from emblase.tiled.client import _clear_embedding_container_cache
+
+    embeddings = np.zeros((2, 4), dtype=np.float32)
+    container = MagicMock()
+    container.metadata = {"embedding_dim": 4, "thumb_shape": [64, 64]}
+    mock_create.return_value = container
+
+    # The terminal node at "results" exists but is NOT an LSE.
+    class _FakeNonLSE:
+        pass
+
+    non_lse = _FakeNonLSE()
+
+    # parent["results"] → non_lse  (exists but not LSE → child is created)
+    # parent[<child_key>] → KeyError  (child doesn't exist yet)
+    parent = MagicMock()
+    parent.__getitem__ = MagicMock(
+        side_effect=lambda k: non_lse if k == "results" else (_ for _ in ()).throw(KeyError(k))
+    )
+
+    root = MagicMock()
+    root.context.base_url = "http://test"
+    # root[""] returns root itself; root["results"] returns parent; root[child_path] → parent
+    root.__getitem__ = MagicMock(return_value=parent)
+
+    _clear_embedding_container_cache()
+    result = write_output(root, "results", embeddings, run_key="run_abc", mode="batch")
+    assert result.startswith("results/run_abc_batch_")
 
 
 # ---------------------------------------------------------------------------

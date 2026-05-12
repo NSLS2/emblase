@@ -6,7 +6,8 @@ Architecture
 InputsWatcher (runs locally)
   └─ inputs_node.subscribe()
        on child_created(run_key) →
-           backend.submit_streaming(run_path, output_path)  ← one job per run
+           enqueue run → serialising job queue (one active HPC job at a time)
+               backend.submit_streaming(run_path, output_path)  ← one job per run
 
 The compute job (streaming_inference.py.tmpl) does everything else:
   - subscribes to primary → image array via WebSocket on the compute node
@@ -20,6 +21,9 @@ Key rules
 - The watcher never touches the data; it only reacts to container-level events.
 - Any backend implementing ``ComputeBackend.submit_streaming`` is supported
   (Orion, local, NERSC, …).
+- At most one HPC job runs at a time.  If a new run arrives while a job is
+  active (pending or running), the submission is held in a queue and dispatched
+  as soon as the current job reaches a terminal state.
 """
 
 from __future__ import annotations
@@ -28,6 +32,7 @@ import asyncio
 import logging
 import os
 import threading
+import time
 import urllib.parse
 from typing import Any
 
@@ -108,6 +113,7 @@ class InputsWatcher:
         projector: str | None = None,
         classifier: str | None = None,
         loop: asyncio.AbstractEventLoop | None = None,
+        on_queued: Any | None = None,
     ) -> None:
         self.inputs_node = inputs_node
         self.output_root = output_root
@@ -122,9 +128,14 @@ class InputsWatcher:
         self.projector = projector
         self.classifier = classifier
         self.loop = loop
+        self.on_queued = on_queued  # callback(run_key) when a run is queued
         self._seen_runs: set[str] = set()
         self._seen_runs_lock = threading.Lock()
         self._sub: Any = None
+        # Serialising submission queue — (run_path, output_path) tuples
+        self._pending_queue: list[tuple[str, str]] = []
+        self._queue_lock = threading.Lock()
+        self._active_job_id: str | None = None  # currently running HPC job
 
     def _subscribe(self, replay_existing: bool):
         """Create subscription and attach callback; return (sub, start_seq)."""
@@ -165,8 +176,27 @@ class InputsWatcher:
 
         run_path = _tiled_path(self.inputs_node) + f"/{run_key}"
         output_path = self.output_root
-        logger.info("New run: %s  →  submitting streaming job", run_key)
 
+        with self._queue_lock:
+            if self._active_job_id is not None:
+                logger.info(
+                    "New run %s queued — waiting for job %s to finish",
+                    run_key,
+                    self._active_job_id,
+                )
+                self._pending_queue.append((run_path, output_path))
+                if self.on_queued is not None:
+                    try:
+                        self.on_queued(run_key)
+                    except Exception:
+                        logger.debug("on_queued callback failed for %s", run_key)
+                return
+
+        logger.info("New run: %s  →  submitting streaming job", run_key)
+        self._dispatch(run_path, output_path)
+
+    def _dispatch(self, run_path: str, output_path: str) -> None:
+        """Schedule _submit as a coroutine on the watcher's event loop."""
         coro = self._submit(run_path, output_path)
         if self.loop is not None and self.loop.is_running():
             asyncio.run_coroutine_threadsafe(coro, self.loop)
@@ -175,7 +205,7 @@ class InputsWatcher:
                 target=asyncio.run,
                 args=(coro,),
                 daemon=True,
-                name=f"emblase-submit-{run_key}",
+                name=f"emblase-submit-{run_path.rsplit('/', 1)[-1]}",
             ).start()
 
     async def _submit(self, run_path: str, output_path: str) -> None:
@@ -195,20 +225,57 @@ class InputsWatcher:
             )
             run_key = run_path.rsplit("/", 1)[-1]
             logger.info("Submitted streaming job %s for run %s", job_id, run_path)
-            self._start_job_monitor(job_id, run_key)
+            with self._queue_lock:
+                self._active_job_id = str(job_id)
+            self._start_job_monitor(str(job_id), run_key)
         except Exception:
             logger.exception("Failed to submit streaming job for run %s", run_path)
+            self._on_job_finished()
+
+    def _on_job_finished(self) -> None:
+        """Called when the active job reaches a terminal state. Drains the queue."""
+        with self._queue_lock:
+            self._active_job_id = None
+            if not self._pending_queue:
+                return
+            next_run, next_output = self._pending_queue.pop(0)
+
+        run_key = next_run.rsplit("/", 1)[-1]
+        logger.info(
+            "Previous job finished — dispatching queued run: %s (%d remaining)",
+            run_key,
+            len(self._pending_queue),
+        )
+        self._dispatch(next_run, next_output)
 
     def _start_job_monitor(self, job_id: str, run_key: str) -> None:
-        """If the backend supports job monitoring, start it in a daemon thread."""
+        """Monitor the active job; call _on_job_finished when it reaches terminal state."""
         monitor = getattr(self.backend, "monitor_job", None)
-        if monitor is None:
-            return
+        status_fn = getattr(self.backend, "status", None)
 
         def _run() -> None:
             try:
-                monitor(job_id, log_prefix=f"[job {job_id} / {run_key}]")
+                if monitor is not None:
+                    monitor(job_id, log_prefix=f"[job {job_id} / {run_key}]")
+                    # monitor_job blocks until terminal — job is done when it returns
+                elif status_fn is not None:
+                    # Fallback: poll status every 30 s until terminal
+                    from ..compute.base import JobStatus
+
+                    _terminal = {JobStatus.completed, JobStatus.failed}
+                    while True:
+                        try:
+                            st = asyncio.run(status_fn(job_id))
+                            if st in _terminal:
+                                break
+                        except Exception as exc:
+                            logger.debug("[job %s] status poll error: %s", job_id, exc)
+                        time.sleep(30)
+                else:
+                    return  # no way to know when job finishes; don't block queue
             except Exception as exc:
                 logger.debug("[job %s] monitor stopped: %s", job_id, exc)
+            finally:
+                self._on_job_finished()
 
         threading.Thread(target=_run, daemon=True, name=f"emblase-monitor-{job_id}").start()

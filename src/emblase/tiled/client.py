@@ -284,7 +284,7 @@ def write_output(
     labels: Optional[list[str]] = None,
     metadata: Optional[dict] = None,
     access_tags: Optional[list[str]] = None,
-) -> None:
+) -> str:
     """Write embeddings into a LatentSpaceEmbedding container at ``path``.
 
     The ``path`` argument is resolved according to these rules:
@@ -347,6 +347,12 @@ def write_output(
         Extra key/value pairs merged into container metadata on creation.
     access_tags:
         Tiled access tags applied to every node written.
+
+    Returns
+    -------
+    str
+        The resolved Tiled path of the container that was written to (may differ
+        from ``path`` when a child was created inside a non-LSE parent).
     """
     # ------------------------------------------------------------------
     # Resolve path: append / create-in-place / create-as-child

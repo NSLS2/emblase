@@ -204,8 +204,9 @@ class NERSCClient:
         self.resource_id = resource_id or settings.nersc_resource_id
         self.base_url = (base_url or _iri_base()).rstrip("/")
         self._client: httpx.AsyncClient | None = None
+        self._client_loop: asyncio.AbstractEventLoop | None = None
 
-    async def __aenter__(self) -> NERSCClient:
+    async def __aenter__(self) -> "NERSCClient":
         await self._ensure_client()
         return self
 
@@ -213,8 +214,15 @@ class NERSCClient:
         if self._client:
             await self._client.aclose()
             self._client = None
+            self._client_loop = None
 
     async def _ensure_client(self) -> httpx.AsyncClient:
+        loop = asyncio.get_event_loop()
+        if self._client is not None and (self._client_loop is not loop or loop.is_closed()):
+            # Stale client from a previous event loop — discard it without closing
+            # (closing would fail on the old closed loop).
+            self._client = None
+            self._client_loop = None
         if self._client is None:
             if not self.api_token:
                 raise ValueError(
@@ -227,6 +235,7 @@ class NERSCClient:
                     "Accept": "application/json",
                 },
             )
+            self._client_loop = loop
         return self._client
 
     # ------------------------------------------------------------------

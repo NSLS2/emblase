@@ -105,7 +105,7 @@ const CHAT_PROXY = `${window.location.origin}/custom/emblase`;
 // Genesis Mission logo (150×42px) baked in as base64 so no extra HTTP request
 // is needed. To update: resize the new PNG to ~42px tall, base64-encode it,
 // and replace the string below. The source file is at
-// ui/embedding-view/assets/genesis-logo.png in the emblase repo.
+// ui/assets/genesis-logo.png in the emblase repo.
 const GENESIS_LOGO_SRC = "data:image/png;base64,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";
 
 function GenesisLogo() {
@@ -605,6 +605,12 @@ function EmbeddingScatter({
   const apiUrl = `${window.location.origin}/api/v1`;
   const nodePath = segments.join("/");
 
+  // True only when the item prop has caught up with the current URL segments.
+  // On navigation, Tiled re-renders the spec view with new segments before
+  // updating item; this flag lets us suppress all data fetches until consistent.
+  const expectedId = segments[segments.length - 1] ?? "";
+  const itemReady = item?.data?.id === expectedId;
+
   // Coloring state — paramSpecs fetched from the metadata API so they are
   // available regardless of which fields the host Tiled UI requested for `item`.
   const [paramSpecs, setParamSpecs] = React.useState<Record<string, ParamSpec>>(
@@ -617,6 +623,7 @@ function EmbeddingScatter({
   // Fetch metadata from the API in case `item` didn't include it (some Tiled
   // UI builds only request structure_family/structure/specs for the spec view).
   React.useEffect(() => {
+    if (!itemReady) return;
     // If item already has param_specs no fetch needed
     if (item?.data?.attributes?.metadata?.param_specs) return;
     fetch(`${apiUrl}/metadata/${nodePath}`, { headers: authHeaders() })
@@ -626,13 +633,27 @@ function EmbeddingScatter({
         if (specs && Object.keys(specs).length > 0) setParamSpecs(specs);
       })
       .catch(() => {});
-  }, [apiUrl, nodePath, item]);
+  }, [apiUrl, nodePath, item, itemReady]);
 
   const [colorBy, setColorBy] = React.useState<string>("label");
   // Categorical filter: set of labels hidden from view
   const [hiddenLabels, setHiddenLabels] = React.useState<Set<string>>(new Set());
   // Continuous filter: [lo, hi] in data units (null = full range)
   const [paramRange, setParamRange] = React.useState<[number, number] | null>(null);
+
+  // Reset all filter/coloring state when navigating to a different node
+  React.useEffect(() => {
+    setColorBy("label");
+    setHiddenLabels(new Set());
+    setParamRange(null);
+    setParamSpecs({});
+    setPoints([]);
+    setSelected(null);
+    setLassoSelected(new Set());
+    setLassoPath([]);
+    pointCountRef.current = 0;
+    skipCatchupRef.current = false;
+  }, [nodePath]);
 
   // Reset filters when color dimension changes
   React.useEffect(() => {
@@ -675,11 +696,18 @@ function EmbeddingScatter({
       const labels: string[] = indexData.label || [];
       const paths: string[] = indexData.path || [];
 
+      // Derive param column names directly from _index response keys — this
+      // means we don't depend on paramNames (from the async metadata fetch)
+      // and params are populated correctly even on first load.
+      const indexParamNames = Object.keys(indexData).filter((k) =>
+        k.startsWith("param_"),
+      ).map((k) => k.slice("param_".length));
+
       const pts: EmbeddingPoint[] = projData.map(
         (coords: number[], rowIdx: number) => {
           const src = order[rowIdx] ?? rowIdx; // sorted row → original column position
           const params: Record<string, number | null> = {};
-          for (const name of paramNames) {
+          for (const name of indexParamNames) {
             const col: (number | null)[] = indexData[`param_${name}`] || [];
             params[name] = col[src] ?? null;
           }
@@ -700,7 +728,7 @@ function EmbeddingScatter({
     } catch {
       return undefined;
     }
-  }, [apiUrl, nodePath, paramNames]);
+  }, [apiUrl, nodePath]);
 
   const fitView = React.useCallback(() => {
     if (points.length === 0) return;
@@ -713,11 +741,16 @@ function EmbeddingScatter({
   const refreshAllRef = React.useRef(refreshAll);
   refreshAllRef.current = refreshAll;
   React.useEffect(() => {
+    // Don't fetch until item prop is consistent with the current URL segments.
+    if (!itemReady) return;
+
     let cancelled = false;
 
     async function fetchData() {
       try {
         setLoading(true);
+        setPoints([]);
+        pointCountRef.current = 0;
         const pts = await refreshAllRef.current();
         if (cancelled) return;
         setError(null);
@@ -737,8 +770,8 @@ function EmbeddingScatter({
 
     fetchData();
     return () => { cancelled = true; };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // intentionally empty — runs once on mount; refreshAllRef stays current
+  // Re-run when the node path changes or when item finally catches up.
+  }, [nodePath, itemReady]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto-refit view when new points arrive via live updates,
   // unless the user has already panned or zoomed manually.
@@ -759,7 +792,7 @@ function EmbeddingScatter({
   // On (re-)connect and on live re-enable we do a full refreshAll() to
   // catch any updates that arrived while disconnected or paused.
   React.useEffect(() => {
-    if (loading || !liveEnabled) return;
+    if (loading || !liveEnabled || !itemReady) return;
 
     const wsScheme = window.location.protocol === "https:" ? "wss:" : "ws:";
     const wsBase = `${wsScheme}//${window.location.host}/api/v1/stream/single/${nodePath}`;
@@ -890,10 +923,13 @@ function EmbeddingScatter({
       const count = labels.length;
       if (count === 0) return;
 
-      // Extract param columns from payload
+      // Extract param columns from payload — derive names from payload keys
+      // directly so we don't depend on the async paramNames state.
       const params: Record<string, (number | null)[]> = {};
-      for (const name of paramNames) {
-        params[name] = payload[`param_${name}`] || [];
+      for (const key of Object.keys(payload)) {
+        if (key.startsWith("param_")) {
+          params[key.slice("param_".length)] = payload[key] || [];
+        }
       }
 
       // Determine which indices these rows correspond to.
@@ -943,7 +979,7 @@ function EmbeddingScatter({
       }
       setWsStatus("disconnected");
     };
-  }, [loading, liveEnabled, nodePath, apiUrl, refreshAll]);
+  }, [loading, liveEnabled, nodePath, apiUrl, refreshAll, itemReady]);
 
   // Resize observer — tracks container width
   React.useEffect(() => {
@@ -969,7 +1005,7 @@ function EmbeddingScatter({
   }, [points]);
 
   const { paramMin, paramMax } = React.useMemo(() => {
-    if (colorBy === "label" || !paramNames.includes(colorBy)) return { paramMin: 0, paramMax: 1 };
+    if (colorBy === "label") return { paramMin: 0, paramMax: 1 };
     let mn = Infinity, mx = -Infinity;
     for (const p of points) {
       const v = p.params?.[colorBy];
@@ -981,7 +1017,7 @@ function EmbeddingScatter({
     if (!isFinite(mn)) { mn = 0; mx = 1; }
     if (mn === mx) { mn -= 0.5; mx += 0.5; }
     return { paramMin: mn, paramMax: mx };
-  }, [points, colorBy, paramNames]);
+  }, [points, colorBy]);
 
   // When new live data extends the param range past the current filter, clear it.
   React.useEffect(() => {
@@ -1551,11 +1587,8 @@ function EmbeddingScatter({
     (selected.note !== selected.originalNote ||
       selected.userLabel !== selected.originalUserLabel);
 
-  // Stale-item guard: if the host Tiled UI hasn't updated `item` yet to match
-  // the current URL segments (race during navigation), render nothing to avoid
-  // firing WebSocket/fetch requests against the wrong node path.
-  const expectedId = segments[segments.length - 1] ?? "";
-  if (item?.data?.id !== undefined && item.data.id !== expectedId) {
+  // Stale-item guard: render a placeholder until item is consistent with segments.
+  if (!itemReady) {
     return React.createElement("div", { style: { padding: 24, color: "#888" } }, "Loading…");
   }
 

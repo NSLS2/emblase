@@ -146,7 +146,7 @@ if classifier_name:
 # Tiled
 # ---------------------------------------------------------------------------
 from tiled.client import from_uri  # noqa: E402
-from emblase.tiled.client import write_output  # noqa: E402
+from emblase.tiled.client import resolve_output_path, write_output  # noqa: E402
 
 tiled_server = os.environ["EMBLASE_TILED_SERVER_URI"]
 log.info("Connecting to Tiled: %s", tiled_server)
@@ -155,6 +155,13 @@ tiled_client = from_uri(tiled_server, api_key=os.environ.get("EMBLASE_TILED_API_
 run_segments = [s for s in run_path.split("/") if s]
 run_node = tiled_client[tuple(run_segments)]
 run_key = run_segments[-1] if run_segments else ""
+
+# Resolve the output path ONCE at startup so all batches in this job append to
+# the same container.  resolve_output_path checks whether `output` is an existing
+# LSE (append), a non-existent path (create there), or a non-LSE parent (create
+# a new child named {{run_key}}_stream_{{ts}} inside it).
+resolved_output = resolve_output_path(tiled_client, output, run_key=run_key, mode="stream")
+log.info("Resolved output : %s", resolved_output)
 
 # ---------------------------------------------------------------------------
 # Param arrays — loaded lazily once the image array appears.
@@ -196,7 +203,6 @@ _all_embeddings_lock = threading.Lock()
 _write_queue: queue.Queue = queue.Queue()
 _done = threading.Event()
 _writer_error: BaseException | None = None
-_resolved_output: list[str] = []  # set on first write; list used for thread-safe assignment
 
 
 def _writer_loop() -> None:
@@ -243,20 +249,16 @@ def _writer_loop() -> None:
                             for name in param_specs
                         }}
 
-                resolved = write_output(
-                    tiled_client, output, embeddings,
+                write_output(
+                    tiled_client, resolved_output, embeddings,
                     images=frames, source_entries=entries,
-                    run_key=run_key, mode="stream",
                     model_name=model_name, thumb_mode=thumb_mode, access_tags=access_tags,
                     params=batch_params,
                     param_specs=param_specs if batch_params is not None else None,
                     projections=projections,
                     labels=batch_labels,
                 )
-                if not _resolved_output:
-                    _resolved_output.append(resolved)
-                    log.info("Output container: %s", resolved)
-                log.info("Written to Tiled: %s", resolved)
+                log.info("Written to Tiled: %s", resolved_output)
             finally:
                 _write_queue.task_done()
     except Exception as exc:
@@ -276,6 +278,9 @@ _queued_frames: list[np.ndarray] = []
 _queued_entries: list[tuple] = []
 _queued_indices: list[int] = []
 _next_frame_idx = 0
+# Set when the image-array WebSocket subscription has been started, so that
+# _on_stop_doc knows it is safe to begin the stability countdown.
+_image_sub_ready = threading.Event()
 
 
 def _maybe_flush_batch() -> None:
@@ -311,6 +316,8 @@ def _on_image_child_created(event) -> None:
         sub.new_data.add_callback(_on_new_image_data)
         _all_subs.append(sub)
         sub.start_in_thread(start=1, max_size=ws_max_size)
+        # Signal that the image WS is up — _on_stop_doc may now begin its countdown.
+        _image_sub_ready.set()
 
 
 def _on_run_child_created(event) -> None:
@@ -327,6 +334,11 @@ def _on_stop_doc(event) -> None:
         return
     log.info("Stop doc received — waiting for image WS to settle")
     _STABLE_SECS, _MAX_WAIT_SECS = 2.0, 120.0
+    # Wait until the image-array subscription is active before counting stability.
+    # This prevents early exit when the stop doc arrives before the WS is opened
+    # (common for short/already-complete runs).
+    if not _image_sub_ready.wait(timeout=_MAX_WAIT_SECS):
+        log.warning("Image WS subscription never appeared — flushing whatever was received")
     deadline = time.monotonic() + _MAX_WAIT_SECS
     last_idx, stable_since = -1, time.monotonic()
     while time.monotonic() < deadline:
@@ -402,7 +414,7 @@ if projector_mode == "scratch" and not _writer_error:
                 _all_emb.astype("float32")
             ).astype("float32")
             log.info("Scratch UMAP done: %s", _proj.shape)
-            _out_path = _resolved_output[0] if _resolved_output else output
+            _out_path = resolved_output
             _out_segs = [s for s in _out_path.split("/") if s]
             tiled_client[tuple(_out_segs)]["projections"].write(_proj)
             log.info("Projections written to %s/projections", _out_path)
