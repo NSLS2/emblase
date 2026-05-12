@@ -9,6 +9,7 @@ Covers:
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import logging
 from typing import Any
 
 import httpx
@@ -17,6 +18,7 @@ from fastapi import APIRouter
 from ...config import settings
 
 router = APIRouter(tags=["services"])
+logger = logging.getLogger(__name__)
 
 
 # ── MLflow helpers ────────────────────────────────────────────────────────────
@@ -65,10 +67,13 @@ async def mlflow_status() -> dict[str, Any]:
             "experiment": settings.mlflow_experiment,
             "model_prefix": settings.mlflow_model_prefix,
         }
-    except Exception as exc:
+    except Exception:
+        import logging as _logging
+
+        _logging.getLogger(__name__).exception("MLflow connectivity check failed")
         return {
             "status": "error",
-            "error": str(exc),
+            "error": "An internal error has occurred.",
             "tracking_uri": settings.mlflow_tracking_uri,
         }
 
@@ -125,8 +130,8 @@ async def mlflow_models() -> dict[str, Any]:
 
         models.sort(key=lambda m: m["name"])
         return {"models": models, "total": len(models), "prefix_filter": prefix}
-    except Exception as exc:
-        return {"models": [], "error": str(exc)}
+    except Exception:
+        return {"models": [], "error": "Unable to fetch MLflow models at this time"}
 
 
 # ── Chatbot ───────────────────────────────────────────────────────────────────
@@ -154,8 +159,9 @@ async def chatbot_status() -> dict[str, Any]:
         }
     except httpx.TimeoutException:
         return {"status": "timeout", "url": url}
-    except Exception as exc:
-        return {"status": "error", "error": str(exc), "url": url}
+    except Exception:
+        logger.exception("Unexpected error while checking chatbot status")
+        return {"status": "error", "message": "Unable to reach chat service", "url": url}
 
 
 # ── AmSC OpenMetadata catalog ─────────────────────────────────────────────────
@@ -197,14 +203,14 @@ async def openmetadata_status() -> dict[str, Any]:
             "projects": projects,
             "project_count": len(projects),
         }
-    except Exception as exc:
-        _log.warning("AmSC catalog connectivity check failed: %s", exc)
+    except Exception:
+        _log.exception("AmSC catalog connectivity check failed")
         return {
             "status": "error",
             "catalog_url": settings.amsc_openmetadata_catalog_url,
             "catalog_name": catalog_name,
             "root_fqn": root_fqn,
-            "error": str(exc),
+            "error": "An internal error has occurred.",
         }
 
 
@@ -262,4 +268,8 @@ async def openmetadata_artifacts(
         }
     except Exception as exc:
         _log.warning("AmSC catalog search failed: %s", exc)
-        return {"artifacts": [], "total": 0, "error": str(exc)}
+        return {
+            "artifacts": [],
+            "total": 0,
+            "error": "Internal error while querying catalog",
+        }

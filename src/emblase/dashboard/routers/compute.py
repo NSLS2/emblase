@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import logging
 from typing import Any, AsyncGenerator
 
 import httpx
@@ -10,6 +12,9 @@ from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
 from ...config import settings
+
+_log = logging.getLogger(__name__)
+_log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/compute", tags=["compute"])
 
@@ -46,8 +51,9 @@ async def orion_status() -> dict[str, Any]:
         }
     except httpx.TimeoutException:
         return {"status": "timeout", "api_url": settings.orion_api_url}
-    except Exception as exc:
-        return {"status": "error", "error": str(exc), "api_url": settings.orion_api_url}
+    except Exception:
+        _log.exception("Failed to fetch Orion status")
+        return {"status": "error", "error": "Internal server error", "api_url": settings.orion_api_url}
 
 
 @router.get("/orion/jobs")
@@ -55,8 +61,9 @@ async def orion_jobs() -> dict[str, Any]:
     """List recent Orion jobs."""
     if not settings.orion_api_key:
         return {"jobs": [], "error": "EMBLASE_ORION_API_KEY not set"}
-    try:
-        data = await _orion_get(f"/api/v1/compute/{settings.orion_cluster}/jobs")
+    except Exception:
+        _log.exception("Failed to fetch Orion jobs from Orion API")
+        return {"jobs": [], "error": "Failed to fetch Orion jobs"}
         jobs = data if isinstance(data, list) else data.get("jobs", [])
         return {"jobs": jobs[:20]}
     except Exception as exc:
