@@ -51,7 +51,11 @@ async def orion_status() -> dict[str, Any]:
         return {"status": "timeout", "api_url": settings.orion_api_url}
     except Exception:
         _log.exception("Failed to fetch Orion status")
-        return {"status": "error", "error": "Internal server error", "api_url": settings.orion_api_url}
+        return {
+            "status": "error",
+            "error": "Internal server error",
+            "api_url": settings.orion_api_url,
+        }
 
 
 @router.get("/orion/jobs")

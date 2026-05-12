@@ -87,8 +87,13 @@ async def tiled_container_info() -> dict[str, Any]:
                 "metadata": attributes.get("metadata", {}),
             }
         except Exception:
-            logger.exception("Unexpected error while fetching Tiled container info for path '%s'", path)
-            return {"path": path, "error": "An internal error occurred while retrieving container info."}
+            logger.exception(
+                "Unexpected error while fetching Tiled container info for path '%s'", path
+            )
+            return {
+                "path": path,
+                "error": "An internal error occurred while retrieving container info.",
+            }
 
     input_info, output_info = await asyncio.gather(
         _container_info(settings.tiled_input_container),
