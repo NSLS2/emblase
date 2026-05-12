@@ -2256,50 +2256,24 @@ function EmbeddingScatter({
                       alignItems: msg.role === "user" ? "flex-end" : "flex-start",
                     },
                   },
-                  React.createElement(
-                    "div",
-                    {
-                      style: {
-                        background: msg.role === "user" ? "#1976d2" : "#f0f0f0",
-                        color: msg.role === "user" ? "#fff" : "#333",
-                        padding: "6px 10px",
-                        borderRadius: msg.role === "user" ? "12px 12px 2px 12px" : "12px 12px 12px 2px",
-                        maxWidth: "85%",
-                        fontSize: 12,
-                        lineHeight: "1.4",
+                   React.createElement(
+                     "div",
+                     {
+                       style: {
+                         background: msg.role === "user" ? "#1976d2" : "#f0f0f0",
+                         color: msg.role === "user" ? "#fff" : (msg.content === "" ? "#999" : "#333"),
+                         padding: "6px 10px",
+                         borderRadius: msg.role === "user" ? "12px 12px 2px 12px" : "12px 12px 12px 2px",
+                         maxWidth: "85%",
+                         fontSize: 12,
+                         lineHeight: "1.4",
                         wordBreak: "break-word" as const,
                       },
                     },
-                    msg.role === "user" ? msg.content : renderMarkdown(msg.content),
+                    msg.role === "user" ? msg.content : (msg.content === "" ? "Thinking..." : renderMarkdown(msg.content)),
                   ),
                 ),
               ),
-              // Typing indicator while sending
-              chatSending
-                ? React.createElement(
-                    "div",
-                    {
-                      style: {
-                        display: "flex",
-                        alignItems: "flex-start",
-                        marginBottom: 10,
-                      },
-                    },
-                    React.createElement(
-                      "div",
-                      {
-                        style: {
-                          background: "#f0f0f0",
-                          padding: "6px 10px",
-                          borderRadius: "12px 12px 12px 2px",
-                          fontSize: 12,
-                          color: "#999",
-                        },
-                      },
-                      "Thinking...",
-                    ),
-                  )
-                : null,
             ),
             // Input area
             React.createElement(
