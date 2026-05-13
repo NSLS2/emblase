@@ -58,6 +58,16 @@ not by session UUID — the ``sub`` claim (principal UUID) is present in access
 tokens, whereas ``sid`` (session UUID) only appears in refresh tokens.
 Because a principal may have multiple concurrent sessions, the state update is
 applied to **all** valid non-revoked sessions for that principal.  In practice
+
+Priming context design
+~~~~~~~~~~~~~~~~~~~~~~
+On the first message of a new session (no ``chat_session_id``), dataset
+context is injected via the ``developer_prompt`` field of the AmSC request.
+This keeps the context out of the visible message history and avoids a
+separate hidden POST that could trigger AmSC's tool-calling layer on the
+node path string.  The server-side ``developer_prompt`` (built from Tiled
+metadata) is merged with any ``developer_prompt`` already sent by the browser
+(which may include selection context from the UI).
 a user has at most one active browser session, so this is equivalent to a
 targeted update.
 
@@ -152,11 +162,7 @@ _JSON_CT = {"Content-Type": "application/json"}
 _obo_cache: TTLCache = TTLCache(maxsize=1024, ttl=45 * 60)
 _obo_cache_lock = threading.Lock()
 
-# In-memory store mapping chat_session_id → message_id of the hidden priming
-# message. Used to filter it out when returning history to the browser.
-# NOTE: this is per-process; multi-worker deployments fall back to the
-# content-marker filter for sessions created on a different worker.
-_priming_message_ids: dict[str, int] = {}
+
 
 
 # ---------------------------------------------------------------------------
@@ -478,47 +484,45 @@ if _OBO_ENABLED and _session_state_dep is None:
 # ---------------------------------------------------------------------------
 
 
-def _build_priming_message(node_path: str, metadata: dict) -> str:
-    """Build a hidden context message describing the dataset for the LLM."""
+def _build_developer_prompt(node_path: str, metadata: dict) -> str:
+    """Build a developer_prompt describing the dataset context for the LLM.
+
+    This is injected on the first message of a new session via AmSC's
+    ``developer_prompt`` field so the context is invisible in chat history
+    and does not trigger AmSC's tool-calling layer.
+    """
     md = metadata.get("metadata", {})
-    model_name = md.get("model_name", "unknown")
-    embedding_dim = md.get("embedding_dim", "unknown")
-    projection_dim = md.get("projection_dim", 2)
     description = md.get("description", "")
     param_specs = md.get("param_specs", {})
 
     params_lines = []
     for name, spec in param_specs.items():
-        dtype = spec.get("dtype", "")
         units = spec.get("units", "")
-        source = spec.get("source", "")
-        params_lines.append(f"  - {name} ({dtype}, units: {units}, source: {source})")
+        params_lines.append(f"  - param_{name} (name: {name}, units: {units})")
 
     lines = [
-        # Marker used by the history filter to strip this message after a
-        # server restart.  The LLM treats it as an innocuous HTML comment.
-        "<!-- emblase-priming -->",
-        "",
-        "The user is currently viewing a LatentSpaceEmbedding container in the Emblase Latent Space Explorer.",
-        f"The Tiled path for this specific container is: {node_path}",
-        "Please treat this as the primary dataset for this conversation — do not confuse it with other nodes you may find in Tiled.",
-        "The only exception are the source datasets used to produce these embeddings (the `path` column in the `_index` table).",
-        "",
-        "Container metadata:",
-        f"  - Embedding model: {model_name}",
-        f"  - Embedding dimensionality: {embedding_dim}D, projected to {projection_dim}D for visualisation",
+        f"The user is viewing a Latent Space Embedding container. The node for this container is: `{node_path}`",
+        "Please treat this as the primary dataset for this conversation. You can query it using your tools. ",
+        "This node is a 'composite' containing several arrays representing different aspects of the dataset. ",
+        "The most relevant arrays are: ",
+        " - `embeddings` (found for each datapoint/frame by ML model), ",
+        " - `projections` (2D representations used for visualization), ",
+        " - `label` (ML classification results), ",
+        " - `user_labels` and `notes` (any user-assigned labels and annotations per datapoint/frame). ",
+        "Arrays 'path' and 'slice' encode the location of the original images in Tiled and ",
+        "slicing information for each embedded frame; you are allowed to access these data, "
+        "their parent containers, and their metadata only if needed to answer the user's questions.",
     ]
     if description:
-        lines.append(f"  - Description: {description}")
+        lines.append(f"  - Dataset description: {description}")
     if params_lines:
-        lines.append("  - Experimental parameters tracked per sample:")
+        lines.append("  - The following arrays contain experimental parameters tracked per datapoint:")
         lines.extend(f"  {line}" for line in params_lines)
     lines += [
-        "",
-        f"You can query the contents of this container directly using your Tiled tools (path: {node_path}).",
-        "",
         "Important: keep answers concise, up to 3 sentences. Expect follow-up questions.",
         "Avoid large headers and excessive structure — short paragraphs or brief bullet points are preferred.",
+        "Do not mention the internal details of Tiled: container structures, node names, paths. Focus on the "
+        "scientific content and the user's questions.",
     ]
     return "\n".join(lines)
 
@@ -526,8 +530,8 @@ def _build_priming_message(node_path: str, metadata: dict) -> str:
 async def _fetch_tiled_metadata(request: Request, node_path: str) -> dict:
     """Fetch metadata for a Tiled node, reusing the browser's auth token.
 
-    Returns an empty dict on failure and logs a warning — priming will still
-    proceed but with unknown metadata fields.
+    Returns an empty dict on failure and logs a warning — context will still
+    be injected but with unknown metadata fields.
     """
     auth = request.headers.get("Authorization", "")
     tiled_base = str(request.base_url).rstrip("/")
@@ -537,68 +541,11 @@ async def _fetch_tiled_metadata(request: Request, node_path: str) -> dict:
     if res.status_code == 200:
         return res.json().get("data", {}).get("attributes", {})
     logger.warning(
-        "_fetch_tiled_metadata: got %s for path %r — priming will use empty metadata",
+        "_fetch_tiled_metadata: got %s for path %r — developer_prompt will use empty metadata",
         res.status_code,
         node_path,
     )
     return {}
-
-
-async def _send_priming_message(
-    session_id: Optional[str],
-    priming_text: str,
-    username: Optional[str],
-    auth_header: dict,
-) -> str:
-    """Send the hidden context message to AmSC and return the resulting session_id.
-
-    Raises ``HTTPException(502)`` if the upstream chat service rejects the
-    priming message, so the caller does not silently start a context-free
-    session.
-    """
-    payload: dict = {
-        "message": priming_text,
-        "model_name": _CHAT_MODEL,
-        "chat_session_id": session_id,
-        "image_refs": [],
-    }
-    if username:
-        payload["username"] = username
-    async with httpx.AsyncClient(timeout=60) as client:
-        res = await client.post(
-            f"{_CHAT_URL}/chat",
-            json=payload,
-            headers=auth_header,
-        )
-    if res.status_code != 200:
-        logger.error(
-            "_send_priming_message: upstream returned %s — %s",
-            res.status_code,
-            res.text,
-        )
-        raise HTTPException(
-            status_code=502,
-            detail=f"Chat service rejected priming message ({res.status_code}). Cannot start session.",
-        )
-    data = res.json()
-    new_session_id = data.get("chat_session_id")
-    if not new_session_id:
-        # Chatapp did not return a session ID — this should not happen in
-        # normal operation, but guard against it to avoid propagating None.
-        logger.error(
-            "_send_priming_message: upstream returned no chat_session_id — response body: %s",
-            data,
-        )
-        raise HTTPException(
-            status_code=502,
-            detail="Chat service did not return a session ID. Cannot start session.",
-        )
-    msg_id = data.get("message_id")
-    if new_session_id and msg_id is not None:
-        # Store assistant reply id; user turn will be msg_id - 1.
-        # Both are filtered from the history returned to the browser.
-        _priming_message_ids[new_session_id] = msg_id
-    return new_session_id
 
 
 # ---------------------------------------------------------------------------
@@ -610,6 +557,7 @@ class ChatRequest(BaseModel):
     message: str
     node_path: str
     chat_session_id: Optional[str] = None
+    developer_prompt: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -631,10 +579,11 @@ async def chat_stream(
     Performs a per-user Entra OBO exchange (when configured) so AmSC receives
     the user's real Entra identity rather than a service-account token.
 
-    On a new session (no ``chat_session_id``), a hidden priming message
-    describing the dataset is sent first to give the LLM context about the
-    LatentSpaceEmbedding container the user is viewing.  The priming exchange
-    is filtered from the history returned by ``GET /emblase/chat/history/{id}``.
+    On a new session (no ``chat_session_id``), dataset context is injected via
+    the ``developer_prompt`` field of the upstream request.  The server builds
+    a ``developer_prompt`` from Tiled metadata and merges it with any
+    ``developer_prompt`` already supplied by the browser (which may include
+    selection context from the UI).
     """
     _require_principal(principal)
     username = _get_username(principal)
@@ -645,10 +594,15 @@ async def chat_stream(
     auth_header = await _get_chat_auth_header(session_state, principal_uuid_hex, db_factory)
     session_id = req.chat_session_id
 
+    developer_prompt: Optional[str] = None
     if not session_id:
         metadata = await _fetch_tiled_metadata(request, req.node_path)
-        priming_text = _build_priming_message(req.node_path, metadata)
-        session_id = await _send_priming_message(None, priming_text, username, auth_header)
+        server_prompt = _build_developer_prompt(req.node_path, metadata)
+        # Merge with any client-provided developer_prompt (e.g. selection context).
+        if req.developer_prompt:
+            developer_prompt = server_prompt + "\n\n" + req.developer_prompt
+        else:
+            developer_prompt = server_prompt
 
     payload: dict = {
         "message": req.message,
@@ -656,6 +610,8 @@ async def chat_stream(
         "chat_session_id": session_id,
         "image_refs": [],
     }
+    if developer_prompt is not None:
+        payload["developer_prompt"] = developer_prompt
     if username:
         payload["username"] = username
 
@@ -667,10 +623,29 @@ async def chat_stream(
                 json=payload,
                 headers={**auth_header, "Accept": "text/event-stream"},
             ) as response:
+                if response.status_code != 200:
+                    body = await response.aread()
+                    logger.error(
+                        "chat/stream upstream returned %s — %s",
+                        response.status_code,
+                        body[:500],
+                    )
+                    yield (
+                        f'data: {{"type": "error", "message": "Upstream chat service error ({response.status_code})"}}\n\n'
+                        .encode()
+                    )
+                    return
                 async for chunk in response.aiter_bytes():
                     yield chunk
 
-    return StreamingResponse(stream(), media_type="text/event-stream")
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.post("/chat")
@@ -694,10 +669,14 @@ async def chat(
     auth_header = await _get_chat_auth_header(session_state, principal_uuid_hex, db_factory)
     session_id = req.chat_session_id
 
+    developer_prompt: Optional[str] = None
     if not session_id:
         metadata = await _fetch_tiled_metadata(request, req.node_path)
-        priming_text = _build_priming_message(req.node_path, metadata)
-        session_id = await _send_priming_message(None, priming_text, username, auth_header)
+        server_prompt = _build_developer_prompt(req.node_path, metadata)
+        if req.developer_prompt:
+            developer_prompt = server_prompt + "\n\n" + req.developer_prompt
+        else:
+            developer_prompt = server_prompt
 
     payload: dict = {
         "message": req.message,
@@ -705,6 +684,8 @@ async def chat(
         "chat_session_id": session_id,
         "image_refs": [],
     }
+    if developer_prompt is not None:
+        payload["developer_prompt"] = developer_prompt
     if username:
         payload["username"] = username
 
@@ -726,12 +707,11 @@ async def chat_history(
     decoded_token=_decoded_token_dep,
     db_factory=_db_factory_dep,
 ):
-    """Fetch message history for a session from AmSC, stripping the priming exchange.
+    """Fetch message history for a session from AmSC.
 
-    The priming exchange (the hidden dataset-context message sent at session
-    start) is filtered by stored ``message_id`` when possible, or by the
-    ``<!-- emblase-priming -->`` content marker as a fallback after a server
-    restart.
+    Returns the message list from AmSC directly.  Since context is now
+    injected via ``developer_prompt`` (invisible in history) rather than a
+    hidden priming message, no filtering is required.
     """
     _require_principal(principal)
     principal_uuid_hex = decoded_token.get("sub") if decoded_token else None
@@ -745,27 +725,7 @@ async def chat_history(
     if res.status_code != 200:
         return []
 
-    messages = res.json()
-
-    # Filter out the hidden priming exchange (user context msg + assistant ack).
-    # Primary filter: by stored message_id (works when server hasn't restarted).
-    # Fallback filter: by content marker (works across restarts / workers).
-    priming_id = _priming_message_ids.get(session_id)
-    if priming_id is not None:
-        hidden_ids = {priming_id, priming_id - 1}
-        messages = [m for m in messages if m.get("message_id") not in hidden_ids]
-    else:
-        messages = [
-            m
-            for m in messages
-            if not (
-                m.get("role") == "user"
-                and isinstance(m.get("content"), str)
-                and m["content"].startswith("<!-- emblase-priming -->")
-            )
-        ]
-
-    return messages
+    return res.json()
 
 
 # ---------------------------------------------------------------------------
