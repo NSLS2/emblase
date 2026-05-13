@@ -492,40 +492,37 @@ def _build_developer_prompt(node_path: str, metadata: dict) -> str:
     and does not trigger AmSC's tool-calling layer.
     """
     md = metadata.get("metadata", {})
-    model_name = md.get("model_name", "unknown")
-    embedding_dim = md.get("embedding_dim", "unknown")
-    projection_dim = md.get("projection_dim", 2)
     description = md.get("description", "")
     param_specs = md.get("param_specs", {})
 
     params_lines = []
     for name, spec in param_specs.items():
-        dtype = spec.get("dtype", "")
         units = spec.get("units", "")
-        source = spec.get("source", "")
-        params_lines.append(f"  - {name} ({dtype}, units: {units}, source: {source})")
+        params_lines.append(f"  - param_{name} (name: {name}, units: {units})")
 
     lines = [
-        "The user is currently viewing a LatentSpaceEmbedding container in the Emblase Latent Space Explorer.",
-        f"The node for this container is: `{node_path}`",
-        "Please treat this as the primary dataset for this conversation — do not confuse it with other nodes you may find in Tiled.",
-        "The only exception are the source datasets used to produce these embeddings (the `path` column in the `_index` table).",
-        "",
-        "Container metadata:",
-        f"  - Embedding model: {model_name}",
-        f"  - Embedding dimensionality: {embedding_dim}D, projected to {projection_dim}D for visualisation",
+        f"The user is viewing a Latent Space Embedding container. The node for this container is: `{node_path}`",
+        "Please treat this as the primary dataset for this conversation. You can query it using your tools. ",
+        "This node is a 'composite' containing several arrays representing different aspects of the dataset. ",
+        "The most relevant arrays are: ",
+        " - `embeddings` (found for each datapoint/frame by ML model), ",
+        " - `projections` (2D representations used for visualization), ",
+        " - `label` (ML classification results), ",
+        " - `user_labels` and `notes` (any user-assigned labels and annotations per datapoint/frame). ",
+        "Arrays 'path' and 'slice' encode the location of the original images in Tiled and ",
+        "slicing information for each embedded frame; you are allowed to access these data, "
+        "their parent containers, and their metadata only if needed to answer the user's questions.",
     ]
     if description:
-        lines.append(f"  - Description: {description}")
+        lines.append(f"  - Dataset description: {description}")
     if params_lines:
-        lines.append("  - Experimental parameters tracked per sample:")
+        lines.append("  - The following arrays contain experimental parameters tracked per datapoint:")
         lines.extend(f"  {line}" for line in params_lines)
     lines += [
-        "",
-        f"You can query the contents of this container using your tools (node: `{node_path}`).",
-        "",
         "Important: keep answers concise, up to 3 sentences. Expect follow-up questions.",
         "Avoid large headers and excessive structure — short paragraphs or brief bullet points are preferred.",
+        "Do not mention the internal details of Tiled: container structures, node names, paths. Focus on the "
+        "scientific content and the user's questions.",
     ]
     return "\n".join(lines)
 
